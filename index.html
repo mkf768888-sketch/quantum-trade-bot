@@ -1,0 +1,976 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>QuantumTrade AI</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+  :root {
+    --bg:#060810;--bg2:#0d1117;--bg3:#131820;--card:#0f1623;
+    --border:rgba(99,179,237,0.12);--border2:rgba(99,179,237,0.22);
+    --accent:#63b3ed;--accent2:#90cdf4;--quantum:#68d391;--quantum2:#48bb78;
+    --warn:#f6ad55;--danger:#fc8181;--profit:#68d391;--loss:#fc8181;
+    --text:#e2e8f0;--text2:#94a3b8;--text3:#64748b;
+    --font:'Space Grotesk',sans-serif;--mono:'JetBrains Mono',monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{width:100%;min-height:100vh;overflow-x:hidden;background:var(--bg);color:var(--text);font-family:var(--font)}
+  .quantum-bg{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+  .quantum-bg::before{content:'';position:absolute;width:600px;height:600px;background:radial-gradient(circle,rgba(99,179,237,0.04) 0%,transparent 70%);top:-200px;right:-200px;border-radius:50%;animation:drift1 12s ease-in-out infinite}
+  .quantum-bg::after{content:'';position:absolute;width:400px;height:400px;background:radial-gradient(circle,rgba(104,211,145,0.05) 0%,transparent 70%);bottom:-100px;left:-100px;border-radius:50%;animation:drift2 15s ease-in-out infinite}
+  @keyframes drift1{0%,100%{transform:translate(0,0)}50%{transform:translate(-30px,20px)}}
+  @keyframes drift2{0%,100%{transform:translate(0,0)}50%{transform:translate(20px,-30px)}}
+  .grid-overlay{position:fixed;inset:0;z-index:0;pointer-events:none;background-image:linear-gradient(rgba(99,179,237,0.03) 1px,transparent 1px),linear-gradient(90deg,rgba(99,179,237,0.03) 1px,transparent 1px);background-size:40px 40px}
+  .app{position:relative;z-index:1;min-height:100vh;display:flex;flex-direction:column}
+
+  /* HEADER */
+  .header{padding:14px 16px 10px;background:linear-gradient(180deg,rgba(6,8,16,0.98) 0%,rgba(6,8,16,0.85) 100%);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100}
+  .header-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  .logo{display:flex;align-items:center;gap:8px}
+  .logo-icon{width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#63b3ed 0%,#68d391 100%);display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 0 20px rgba(99,179,237,0.3);animation:pulse-logo 3s ease-in-out infinite}
+  @keyframes pulse-logo{0%,100%{box-shadow:0 0 20px rgba(99,179,237,0.3)}50%{box-shadow:0 0 32px rgba(99,179,237,0.5)}}
+  .logo-text{font-size:16px;font-weight:700;letter-spacing:-0.3px}
+  .logo-text span{color:var(--quantum)}
+  .status-pill{display:flex;align-items:center;gap:5px;background:rgba(104,211,145,0.1);border:1px solid rgba(104,211,145,0.25);padding:4px 10px;border-radius:20px;font-size:11px;font-weight:500;color:var(--quantum)}
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--quantum);animation:blink 1.5s ease-in-out infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
+  .nav-tabs{display:flex;gap:4px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none}
+  .nav-tabs::-webkit-scrollbar{display:none}
+  .tab{flex-shrink:0;padding:6px 14px;border-radius:20px;font-size:12px;font-weight:500;color:var(--text3);cursor:pointer;transition:all 0.2s;white-space:nowrap;border:1px solid transparent}
+  .tab.active{background:rgba(99,179,237,0.12);color:var(--accent);border-color:var(--border2)}
+
+  /* TICKER */
+  .ticker-wrap{background:var(--bg2);border-bottom:1px solid var(--border);padding:6px 0;overflow:hidden}
+  .ticker{display:flex;gap:16px;animation:ticker 22s linear infinite;width:max-content}
+  @keyframes ticker{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+  .ticker-item{display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:12px;font-family:var(--mono)}
+  .ticker-symbol{color:var(--accent);font-weight:600}
+  .positive{color:var(--profit)}
+  .negative{color:var(--loss)}
+  .neutral{color:var(--accent)}
+
+  /* CONTENT */
+  .content{flex:1;padding:12px 14px;display:flex;flex-direction:column;gap:12px}
+  .page{display:none;flex-direction:column;gap:12px}
+  .page.active{display:flex}
+
+  /* CARD */
+  .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px 15px;position:relative;overflow:hidden}
+  .card::before{content:'';position:absolute;inset:0;border-radius:14px;opacity:0;background:linear-gradient(135deg,rgba(99,179,237,0.04) 0%,transparent 60%);transition:opacity 0.3s;pointer-events:none}
+  .card:hover::before{opacity:1}
+  .card-title{font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:10px}
+
+  /* METRICS */
+  .metric-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .metric{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+  .metric-label{font-size:10px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px}
+  .metric-value{font-size:18px;font-weight:700;font-family:var(--mono)}
+  .metric-sub{font-size:10px;color:var(--text3);margin-top:2px}
+
+  /* QUANTUM RING */
+  .quantum-score-wrap{display:flex;align-items:center;gap:14px}
+  .quantum-ring{position:relative;width:80px;height:80px;flex-shrink:0}
+  .quantum-ring svg{transform:rotate(-90deg)}
+  .ring-track{fill:none;stroke:rgba(104,211,145,0.15);stroke-width:6}
+  .ring-fill{fill:none;stroke:url(#ringGrad);stroke-width:6;stroke-linecap:round;stroke-dasharray:201;stroke-dashoffset:201;transition:stroke-dashoffset 1.5s cubic-bezier(0.34,1.56,0.64,1)}
+  .ring-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+  .ring-number{font-size:20px;font-weight:700;font-family:var(--mono);color:var(--quantum)}
+  .ring-label{font-size:8px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px}
+  .quantum-title{font-size:15px;font-weight:700;margin-bottom:4px}
+  .quantum-desc{font-size:12px;color:var(--text2);line-height:1.5}
+
+  /* SIGNALS */
+  .signal-item{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(99,179,237,0.06)}
+  .signal-item:last-child{border-bottom:none}
+  .signal-coin{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;font-family:var(--mono);flex-shrink:0}
+  .signal-coin.buy{background:rgba(104,211,145,0.12);color:var(--quantum);border:1px solid rgba(104,211,145,0.2)}
+  .signal-coin.sell{background:rgba(252,129,129,0.12);color:var(--loss);border:1px solid rgba(252,129,129,0.2)}
+  .signal-coin.short{background:rgba(246,173,85,0.12);color:var(--warn);border:1px solid rgba(246,173,85,0.2)}
+  .signal-info{flex:1;min-width:0}
+  .signal-pair{font-size:13px;font-weight:600}
+  .signal-detail{font-size:10px;color:var(--text3);margin-top:2px}
+  .signal-action{text-align:right}
+  .signal-badge{font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;font-family:var(--mono)}
+  .badge-buy{background:rgba(104,211,145,0.15);color:var(--quantum)}
+  .badge-sell{background:rgba(252,129,129,0.15);color:var(--loss)}
+  .badge-short{background:rgba(246,173,85,0.15);color:var(--warn)}
+  .signal-conf{font-size:10px;color:var(--text3);margin-top:2px;text-align:right}
+
+  /* CHART */
+  .chart-container{position:relative;width:100%}
+
+  /* FUTURES GRID */
+  .futures-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+  .futures-card{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px;text-align:center;cursor:pointer;transition:all 0.2s}
+  .futures-card:hover{border-color:var(--border2);transform:translateY(-1px)}
+  .futures-pair{font-size:12px;font-weight:700;font-family:var(--mono);margin-bottom:4px}
+  .futures-lev{font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px;margin-bottom:6px;display:inline-block}
+  .lev-long{background:rgba(104,211,145,0.15);color:var(--quantum)}
+  .lev-short{background:rgba(252,129,129,0.15);color:var(--loss)}
+  .futures-pnl{font-size:16px;font-weight:700;font-family:var(--mono)}
+  .futures-detail{font-size:10px;color:var(--text3);margin-top:2px}
+
+  /* WHALE */
+  .whale-item{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(99,179,237,0.06)}
+  .whale-item:last-child{border-bottom:none}
+  .whale-rank{font-size:11px;font-family:var(--mono);color:var(--text3);width:24px;flex-shrink:0;text-align:center}
+  .whale-avatar{width:32px;height:32px;border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:14px}
+  .whale-info{flex:1;min-width:0}
+  .whale-addr{font-size:11px;font-family:var(--mono);color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .whale-action{font-size:10px;color:var(--text3);margin-top:2px}
+  .whale-amount{text-align:right}
+  .whale-val{font-size:12px;font-weight:600;font-family:var(--mono)}
+  .whale-pct{font-size:10px;color:var(--text3);margin-top:2px}
+
+  /* EVENTS */
+  .event-item{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid rgba(99,179,237,0.06)}
+  .event-item:last-child{border-bottom:none}
+  .event-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-top:4px}
+  .event-info{flex:1}
+  .event-title{font-size:12px;font-weight:600;margin-bottom:2px}
+  .event-desc{font-size:11px;color:var(--text3);line-height:1.4}
+  .event-impact{font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px;display:inline-block;margin-top:4px}
+  .impact-bull{background:rgba(104,211,145,0.12);color:var(--quantum)}
+  .impact-bear{background:rgba(252,129,129,0.12);color:var(--loss)}
+  .impact-neut{background:rgba(99,179,237,0.12);color:var(--accent)}
+
+  /* AI CHAT */
+  .chat-messages{background:var(--bg3);border:1px solid var(--border);border-radius:12px;padding:12px;height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:10px;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+  .msg{max-width:88%;display:flex;flex-direction:column;gap:3px}
+  .msg.user{align-self:flex-end;align-items:flex-end}
+  .msg.ai{align-self:flex-start}
+  .msg-bubble{padding:8px 12px;border-radius:12px;font-size:13px;line-height:1.5}
+  .msg.user .msg-bubble{background:rgba(99,179,237,0.15);border:1px solid rgba(99,179,237,0.2);color:var(--accent2);border-radius:12px 12px 4px 12px}
+  .msg.ai .msg-bubble{background:rgba(104,211,145,0.08);border:1px solid rgba(104,211,145,0.15);color:var(--text);border-radius:12px 12px 12px 4px}
+  .msg-time{font-size:9px;color:var(--text3);font-family:var(--mono)}
+  .chat-input-row{display:flex;gap:8px;margin-top:8px}
+  .chat-input{flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 14px;font-size:13px;color:var(--text);font-family:var(--font);outline:none;transition:border-color 0.2s}
+  .chat-input:focus{border-color:var(--border2)}
+  .chat-input::placeholder{color:var(--text3)}
+  .chat-send{width:40px;height:40px;border-radius:10px;background:rgba(99,179,237,0.15);border:1px solid rgba(99,179,237,0.25);color:var(--accent);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.2s}
+  .chat-send:hover{background:rgba(99,179,237,0.25)}
+
+  /* AUTOPILOT */
+  .autopilot-wrap{display:flex;align-items:center;justify-content:space-between;background:var(--bg3);border:1px solid var(--border);border-radius:12px;padding:12px 14px}
+  .autopilot-label{font-size:13px;font-weight:600}
+  .autopilot-sub{font-size:11px;color:var(--text3);margin-top:2px}
+  .toggle{width:48px;height:26px;border-radius:13px;background:var(--bg2);border:1px solid var(--border);position:relative;cursor:pointer;transition:all 0.3s}
+  .toggle.on{background:rgba(104,211,145,0.2);border-color:rgba(104,211,145,0.4)}
+  .toggle-knob{position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:var(--text3);transition:all 0.3s}
+  .toggle.on .toggle-knob{left:25px;background:var(--quantum);box-shadow:0 0 8px rgba(104,211,145,0.5)}
+
+  /* RISK */
+  .risk-wrap{margin-top:8px}
+  .risk-labels{display:flex;justify-content:space-between;margin-top:4px;font-size:10px;color:var(--text3)}
+  input[type=range]{-webkit-appearance:none;width:100%;height:4px;background:linear-gradient(90deg,var(--quantum) 0%,var(--quantum) var(--val,20%),var(--bg2) var(--val,20%),var(--bg2) 100%);border-radius:2px;outline:none}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:var(--quantum);cursor:pointer;box-shadow:0 0 8px rgba(104,211,145,0.4)}
+
+  /* QC STATUS */
+  .qc-status{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .qc-item{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px}
+  .qc-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px}
+  .qc-val{font-size:14px;font-weight:700;font-family:var(--mono)}
+  .qc-sub{font-size:9px;color:var(--text3);margin-top:2px}
+
+  /* BUTTONS */
+  .btn{display:flex;align-items:center;justify-content:center;gap:6px;padding:11px 16px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.2s;font-family:var(--font);border:none;width:100%}
+  .btn-primary{background:linear-gradient(135deg,rgba(99,179,237,0.2) 0%,rgba(104,211,145,0.15) 100%);color:var(--accent);border:1px solid var(--border2)}
+  .btn-primary:hover{border-color:var(--accent);transform:translateY(-1px)}
+  .btn-danger{background:rgba(252,129,129,0.1);color:var(--loss);border:1px solid rgba(252,129,129,0.2)}
+  .btn-success{background:rgba(104,211,145,0.1);color:var(--quantum);border:1px solid rgba(104,211,145,0.2)}
+  .btn-row{display:flex;gap:8px}
+  .btn-row .btn{flex:1}
+
+  /* ALERTS */
+  .alert{padding:10px 14px;border-radius:10px;font-size:12px;font-weight:500;display:flex;align-items:flex-start;gap:8px;line-height:1.5}
+  .alert-quantum{background:rgba(104,211,145,0.08);border:1px solid rgba(104,211,145,0.2);color:var(--quantum)}
+  .alert-warn{background:rgba(246,173,85,0.08);border:1px solid rgba(246,173,85,0.2);color:var(--warn)}
+
+  /* TAGS */
+  .tag{font-size:10px;font-weight:600;padding:2px 7px;border-radius:5px;font-family:var(--mono)}
+  .tag-q{background:rgba(104,211,145,0.1);color:var(--quantum);border:1px solid rgba(104,211,145,0.2)}
+  .tag-a{background:rgba(99,179,237,0.1);color:var(--accent);border:1px solid rgba(99,179,237,0.2)}
+
+  /* PERF BARS */
+  .perf-bar-wrap{margin-bottom:8px}
+  .perf-bar-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+  .perf-bar-label{font-size:12px;color:var(--text2)}
+  .perf-bar-val{font-size:12px;font-weight:600;font-family:var(--mono)}
+  .perf-bar-track{height:6px;background:var(--bg2);border-radius:3px;overflow:hidden}
+  .perf-bar-fill{height:100%;border-radius:3px;transition:width 1.2s cubic-bezier(0.34,1.56,0.64,1)}
+
+  /* LEARN */
+  .learn-item{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid rgba(99,179,237,0.06)}
+  .learn-item:last-child{border-bottom:none}
+  .learn-icon{font-size:16px;flex-shrink:0;width:28px;text-align:center}
+  .learn-info{flex:1}
+  .learn-title{font-size:12px;font-weight:600;margin-bottom:2px}
+  .learn-desc{font-size:11px;color:var(--text3);line-height:1.4}
+  .learn-acc{font-size:12px;font-weight:700;font-family:var(--mono);color:var(--quantum);align-self:center;flex-shrink:0}
+
+  .section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+  .section-title{font-size:12px;font-weight:700;color:var(--text2)}
+  .section-action{font-size:11px;color:var(--accent);cursor:pointer}
+
+  ::-webkit-scrollbar{width:4px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+</style>
+</head>
+<body>
+
+<div class="quantum-bg"></div>
+<div class="grid-overlay"></div>
+
+<div class="app">
+  <!-- HEADER -->
+  <div class="header">
+    <div class="header-top">
+      <div class="logo">
+        <div class="logo-icon">⚛</div>
+        <div class="logo-text">Quantum<span>Trade</span></div>
+      </div>
+      <div class="status-pill" id="statusPill">
+        <div class="dot"></div>AUTOPILOT ON
+      </div>
+    </div>
+    <div class="nav-tabs">
+      <div class="tab active" onclick="showPage('dashboard')">Дашборд</div>
+      <div class="tab" onclick="showPage('signals')">Сигналы</div>
+      <div class="tab" onclick="showPage('futures')">Фьючерсы</div>
+      <div class="tab" onclick="showPage('whales')">Киты</div>
+      <div class="tab" onclick="showPage('events')">События</div>
+      <div class="tab" onclick="showPage('ai')">AI Советник</div>
+      <div class="tab" onclick="showPage('settings')">Настройки</div>
+    </div>
+  </div>
+
+  <!-- TICKER -->
+  <div class="ticker-wrap">
+    <div class="ticker" id="ticker">
+      <div class="ticker-item"><span class="ticker-symbol">BTC</span><span id="btcPrice">$67,420</span><span class="positive">+2.3%</span></div>
+      <div class="ticker-item"><span class="ticker-symbol">ETH</span><span id="ethPrice">$3,521</span><span class="positive">+1.8%</span></div>
+      <div class="ticker-item"><span class="ticker-symbol">SOL</span><span>$178.4</span><span class="negative">-0.9%</span></div>
+      <div class="ticker-item"><span class="ticker-symbol">BNB</span><span>$602.1</span><span class="positive">+0.4%</span></div>
+      <div class="ticker-item"><span class="ticker-symbol">XRP</span><span>$0.612</span><span class="positive">+3.2%</span></div>
+      <div class="ticker-item"><span class="ticker-symbol">ADA</span><span>$0.445</span><span class="negative">-1.1%</span></div>
+      <div class="ticker-item"><span class="ticker-symbol">AVAX</span><span>$38.7</span><span class="positive">+4.1%</span></div>
+      <div class="ticker-item"><span class="ticker-symbol">DOT</span><span>$7.84</span><span class="negative">-2.0%</span></div>
+      <!-- duplicate -->
+      <div class="ticker-item"><span class="ticker-symbol">BTC</span><span>$67,420</span><span class="positive">+2.3%</span></div>
+      <div class="ticker-item"><span class="ticker-symbol">ETH</span><span>$3,521</span><span class="positive">+1.8%</span></div>
+      <div class="ticker-item"><span class="ticker-symbol">SOL</span><span>$178.4</span><span class="negative">-0.9%</span></div>
+      <div class="ticker-item"><span class="ticker-symbol">BNB</span><span>$602.1</span><span class="positive">+0.4%</span></div>
+      <div class="ticker-item"><span class="ticker-symbol">XRP</span><span>$0.612</span><span class="positive">+3.2%</span></div>
+      <div class="ticker-item"><span class="ticker-symbol">ADA</span><span>$0.445</span><span class="negative">-1.1%</span></div>
+      <div class="ticker-item"><span class="ticker-symbol">AVAX</span><span>$38.7</span><span class="positive">+4.1%</span></div>
+      <div class="ticker-item"><span class="ticker-symbol">DOT</span><span>$7.84</span><span class="negative">-2.0%</span></div>
+    </div>
+  </div>
+
+  <div class="content">
+
+    <!-- DASHBOARD -->
+    <div class="page active" id="page-dashboard">
+      <div class="card">
+        <div class="card-title">Квантовый индекс рынка</div>
+        <div class="quantum-score-wrap">
+          <div class="quantum-ring">
+            <svg width="80" height="80" viewBox="0 0 80 80">
+              <defs>
+                <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#63b3ed"/>
+                  <stop offset="100%" stop-color="#68d391"/>
+                </linearGradient>
+              </defs>
+              <circle class="ring-track" cx="40" cy="40" r="32"/>
+              <circle class="ring-fill" id="ringFill" cx="40" cy="40" r="32"/>
+            </svg>
+            <div class="ring-center">
+              <div class="ring-number">78</div>
+              <div class="ring-label">Q-Score</div>
+            </div>
+          </div>
+          <div class="quantum-info">
+            <div class="quantum-title">БЫЧИЙ <span class="positive">↑</span></div>
+            <div class="quantum-desc">Origin QC проанализировал 847 переменных. Обработано 2.4M исторических паттернов с 2009 года.</div>
+            <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+              <span class="tag tag-q">78% BUY</span>
+              <span class="tag tag-a">Conf: HIGH</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="metric-grid">
+        <div class="metric">
+          <div class="metric-label">Портфель (USDT)</div>
+          <div class="metric-value neutral" id="portfolioVal">$24,381</div>
+          <div class="metric-sub positive">+$1,847 сегодня</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Прибыль 30 дней</div>
+          <div class="metric-value positive">+8.21%</div>
+          <div class="metric-sub">$1,847 USDT</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Открытых позиций</div>
+          <div class="metric-value neutral">7</div>
+          <div class="metric-sub">4 spot · 3 futures</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Win Rate</div>
+          <div class="metric-value positive">73.4%</div>
+          <div class="metric-sub">Из 312 сделок</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-header">
+          <div class="card-title" style="margin:0">Баланс портфеля (7 дней)</div>
+          <span class="tag tag-q">LIVE</span>
+        </div>
+        <div class="chart-container" style="height:130px;margin-top:10px;">
+          <canvas id="portfolioChart"></canvas>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-header">
+          <div class="card-title" style="margin:0">Топ сигналы</div>
+          <span class="section-action" onclick="showPage('signals')">Все →</span>
+        </div>
+        <div class="signal-item">
+          <div class="signal-coin buy">BTC</div>
+          <div class="signal-info">
+            <div class="signal-pair">BTC/USDT</div>
+            <div class="signal-detail">Вход: $66,800 · TP: $71,200 · SL: $64,500</div>
+          </div>
+          <div class="signal-action">
+            <div class="signal-badge badge-buy">LONG</div>
+            <div class="signal-conf">Conf: 91%</div>
+          </div>
+        </div>
+        <div class="signal-item">
+          <div class="signal-coin sell">ETH</div>
+          <div class="signal-info">
+            <div class="signal-pair">ETH/USDT Futures</div>
+            <div class="signal-detail">Вход: $3,540 · TP: $3,200 · SL: $3,620</div>
+          </div>
+          <div class="signal-action">
+            <div class="signal-badge badge-short">SHORT</div>
+            <div class="signal-conf">Conf: 84%</div>
+          </div>
+        </div>
+        <div class="signal-item">
+          <div class="signal-coin buy">SOL</div>
+          <div class="signal-info">
+            <div class="signal-pair">SOL/USDT</div>
+            <div class="signal-detail">Вход: $176.2 · TP: $198.0 · SL: $168.0</div>
+          </div>
+          <div class="signal-action">
+            <div class="signal-badge badge-buy">LONG</div>
+            <div class="signal-conf">Conf: 79%</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="alert alert-quantum">
+        <span>⚛</span>
+        <div>Квантовый анализ: заседание ФРС через 3 дня. Исторически высокая волатильность. Origin QC рекомендует снизить плечо на 20%.</div>
+      </div>
+    </div>
+
+    <!-- SIGNALS -->
+    <div class="page" id="page-signals">
+      <div class="card">
+        <div class="card-title">Квантовые торговые сигналы</div>
+        <div class="alert alert-quantum" style="margin-bottom:12px;">
+          <span>⚛</span>
+          <div>Origin QC: 847 квантовых переменных. Коррелировано с 15 глобальными событиями и топ-500 кошельками.</div>
+        </div>
+        <div class="signal-item">
+          <div class="signal-coin buy">BTC</div>
+          <div class="signal-info">
+            <div class="signal-pair">BTC/USDT Spot</div>
+            <div class="signal-detail">Вход: $66,800 · TP1: $69,500 · TP2: $71,200 · SL: $64,500</div>
+          </div>
+          <div class="signal-action"><div class="signal-badge badge-buy">BUY</div><div class="signal-conf">91%</div></div>
+        </div>
+        <div class="signal-item">
+          <div class="signal-coin sell">ETH</div>
+          <div class="signal-info">
+            <div class="signal-pair">ETH/USDT Futures 5x</div>
+            <div class="signal-detail">Вход: $3,540 · TP: $3,200 · SL: $3,620</div>
+          </div>
+          <div class="signal-action"><div class="signal-badge badge-short">SHORT</div><div class="signal-conf">84%</div></div>
+        </div>
+        <div class="signal-item">
+          <div class="signal-coin buy">SOL</div>
+          <div class="signal-info">
+            <div class="signal-pair">SOL/USDT Spot</div>
+            <div class="signal-detail">Вход: $176.2 · TP: $198.0 · SL: $168.0</div>
+          </div>
+          <div class="signal-action"><div class="signal-badge badge-buy">BUY</div><div class="signal-conf">79%</div></div>
+        </div>
+        <div class="signal-item">
+          <div class="signal-coin buy">AVAX</div>
+          <div class="signal-info">
+            <div class="signal-pair">AVAX/USDT Futures 10x</div>
+            <div class="signal-detail">Вход: $37.8 · TP: $44.5 · SL: $35.2</div>
+          </div>
+          <div class="signal-action"><div class="signal-badge badge-buy">LONG</div><div class="signal-conf">88%</div></div>
+        </div>
+        <div class="signal-item">
+          <div class="signal-coin sell">XRP</div>
+          <div class="signal-info">
+            <div class="signal-pair">XRP/USDT Spot</div>
+            <div class="signal-detail">Вход: $0.618 · TP: $0.540 · SL: $0.640</div>
+          </div>
+          <div class="signal-action"><div class="signal-badge badge-sell">SELL</div><div class="signal-conf">71%</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Самообучение · Последние паттерны</div>
+        <div class="learn-item">
+          <div class="learn-icon">🎯</div>
+          <div class="learn-info">
+            <div class="learn-title">Паттерн "ФРС + Whale dump"</div>
+            <div class="learn-desc">За 48ч до заседания ФРС топ-10 кошельков сокращают BTC-позиции на 12–18%</div>
+          </div>
+          <div class="learn-acc">+4.2%</div>
+        </div>
+        <div class="learn-item">
+          <div class="learn-icon">📊</div>
+          <div class="learn-info">
+            <div class="learn-title">Ложный пробой SOL</div>
+            <div class="learn-desc">Скорректирован вес пробойных сигналов SOL — точность выросла с 74% до 81%</div>
+          </div>
+          <div class="learn-acc">+1.8%</div>
+        </div>
+        <div class="learn-item">
+          <div class="learn-icon">🌍</div>
+          <div class="learn-info">
+            <div class="learn-title">Геополитика → альткоины</div>
+            <div class="learn-desc">Региональные конфликты с высокой крипто-адопцией → рост USDT-пар +3–7%</div>
+          </div>
+          <div class="learn-acc">+2.9%</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- FUTURES -->
+    <div class="page" id="page-futures">
+      <div class="card">
+        <div class="card-title">Открытые фьючерсные позиции</div>
+        <div class="futures-grid">
+          <div class="futures-card">
+            <div class="futures-pair">BTC</div>
+            <div class="futures-lev lev-long">LONG 10x</div>
+            <div class="futures-pnl positive">+$842</div>
+            <div class="futures-detail">+12.3%</div>
+          </div>
+          <div class="futures-card">
+            <div class="futures-pair">ETH</div>
+            <div class="futures-lev lev-short">SHORT 5x</div>
+            <div class="futures-pnl positive">+$320</div>
+            <div class="futures-detail">+8.9%</div>
+          </div>
+          <div class="futures-card">
+            <div class="futures-pair">AVAX</div>
+            <div class="futures-lev lev-long">LONG 7x</div>
+            <div class="futures-pnl negative">-$45</div>
+            <div class="futures-detail">-2.1%</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">P&L фьючерсов (7 дней)</div>
+        <div class="metric-grid" style="margin-bottom:10px;">
+          <div class="metric">
+            <div class="metric-label">Реализованный PnL</div>
+            <div class="metric-value positive">+$3,241</div>
+            <div class="metric-sub">За 7 дней</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Нереализованный</div>
+            <div class="metric-value positive">+$1,117</div>
+            <div class="metric-sub">Открытые позиции</div>
+          </div>
+        </div>
+        <div class="chart-container" style="height:120px;">
+          <canvas id="futuresChart"></canvas>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Квантовый прогноз фьючерсов</div>
+        <div class="signal-item">
+          <div class="signal-coin buy">BTC</div>
+          <div class="signal-info">
+            <div class="signal-pair">BTC-PERP · 10x Long</div>
+            <div class="signal-detail">Вход: $67,200 · Ликвидация: $60,480 · TP: $74,500</div>
+          </div>
+          <div class="signal-action"><div class="signal-badge badge-buy">HOLD</div><div class="signal-conf">91%</div></div>
+        </div>
+        <div class="signal-item">
+          <div class="signal-coin short">DOGE</div>
+          <div class="signal-info">
+            <div class="signal-pair">DOGE-PERP · 5x Short</div>
+            <div class="signal-detail">Вход: $0.142 · SL: $0.155 · TP: $0.118</div>
+          </div>
+          <div class="signal-action"><div class="signal-badge badge-short">OPEN</div><div class="signal-conf">77%</div></div>
+        </div>
+        <div class="btn-row" style="margin-top:12px;">
+          <button class="btn btn-success" onclick="executeSignal('BUY BTC 10x LONG')">▲ BTC LONG</button>
+          <button class="btn btn-danger" onclick="executeSignal('SHORT DOGE 5x')">▼ DOGE SHORT</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- WHALES -->
+    <div class="page" id="page-whales">
+      <div class="card">
+        <div class="card-title">Топ-500 мониторинг кошельков</div>
+        <div class="alert alert-warn" style="margin-bottom:12px;">
+          <span>🐋</span>
+          <div>3 кита из топ-20 начали синхронное накопление BTC за последние 2 часа.</div>
+        </div>
+        <div class="whale-item">
+          <div class="whale-rank">#1</div>
+          <div class="whale-avatar" style="background:rgba(104,211,145,0.1);border:1px solid rgba(104,211,145,0.2)">🐋</div>
+          <div class="whale-info">
+            <div class="whale-addr">0x3f4a...8b2c · Binance Hot</div>
+            <div class="whale-action">📥 Накопление BTC · 2ч назад</div>
+          </div>
+          <div class="whale-amount">
+            <div class="whale-val positive">+2,847 BTC</div>
+            <div class="whale-pct">≈ $191M</div>
+          </div>
+        </div>
+        <div class="whale-item">
+          <div class="whale-rank">#4</div>
+          <div class="whale-avatar" style="background:rgba(252,129,129,0.1);border:1px solid rgba(252,129,129,0.2)">🔴</div>
+          <div class="whale-info">
+            <div class="whale-addr">0x7c1d...4a9e · Unknown</div>
+            <div class="whale-action">📤 Продажа ETH · 4ч назад</div>
+          </div>
+          <div class="whale-amount">
+            <div class="whale-val negative">-18,400 ETH</div>
+            <div class="whale-pct">≈ $64M</div>
+          </div>
+        </div>
+        <div class="whale-item">
+          <div class="whale-rank">#9</div>
+          <div class="whale-avatar" style="background:rgba(99,179,237,0.1);border:1px solid rgba(99,179,237,0.2)">🔵</div>
+          <div class="whale-info">
+            <div class="whale-addr">0x2b8f...1c5a · Galaxy Digital</div>
+            <div class="whale-action">⚖ Перебалансировка · 6ч назад</div>
+          </div>
+          <div class="whale-amount">
+            <div class="whale-val neutral">±$42M</div>
+            <div class="whale-pct">BTC→SOL→ETH</div>
+          </div>
+        </div>
+        <div class="whale-item">
+          <div class="whale-rank">#17</div>
+          <div class="whale-avatar" style="background:rgba(246,173,85,0.1);border:1px solid rgba(246,173,85,0.2)">🟡</div>
+          <div class="whale-info">
+            <div class="whale-addr">0x9a4b...7f3d · Jump Trading</div>
+            <div class="whale-action">📥 Накопление SOL · 8ч назад</div>
+          </div>
+          <div class="whale-amount">
+            <div class="whale-val positive">+420K SOL</div>
+            <div class="whale-pct">≈ $74M</div>
+          </div>
+        </div>
+        <div class="whale-item">
+          <div class="whale-rank">#23</div>
+          <div class="whale-avatar" style="background:rgba(104,211,145,0.1);border:1px solid rgba(104,211,145,0.2)">🟢</div>
+          <div class="whale-info">
+            <div class="whale-addr">0x5c2e...0b8f · Cumberland DRW</div>
+            <div class="whale-action">📥 Накопление BNB · 10ч назад</div>
+          </div>
+          <div class="whale-amount">
+            <div class="whale-val positive">+84,200 BNB</div>
+            <div class="whale-pct">≈ $50M</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Индекс сантимента китов (7д)</div>
+        <div class="chart-container" style="height:120px;margin-bottom:10px;">
+          <canvas id="whaleChart"></canvas>
+        </div>
+        <div class="metric-grid">
+          <div class="metric">
+            <div class="metric-label">Накопление (24h)</div>
+            <div class="metric-value positive">62%</div>
+            <div class="metric-sub">308 из 500 китов</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Продажи (24h)</div>
+            <div class="metric-value negative">38%</div>
+            <div class="metric-sub">192 из 500 китов</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- EVENTS -->
+    <div class="page" id="page-events">
+      <div class="card">
+        <div class="card-title">Мировые события · Влияние на крипторынок</div>
+        <div class="alert alert-quantum" style="margin-bottom:12px;">
+          <span>⚛</span>
+          <div>Квантовый анализ: обработано 15,000+ событий с 2009 года. Точность корреляции: 84.3%</div>
+        </div>
+        <div class="event-item">
+          <div class="event-dot" style="background:var(--warn)"></div>
+          <div class="event-info">
+            <div class="event-title">🏛 Заседание ФРС (20 марта)</div>
+            <div class="event-desc">Ожидается сохранение ставки. Нейтральное решение → рост BTC +3–8% в течение 72ч</div>
+            <span class="event-impact impact-bull">BULLISH +4.2%</span>
+          </div>
+        </div>
+        <div class="event-item">
+          <div class="event-dot" style="background:var(--quantum)"></div>
+          <div class="event-info">
+            <div class="event-title">🌐 ETH Denver Conference</div>
+            <div class="event-desc">Паттерн: рост ETH +6–12% в неделю крупного события Ethereum</div>
+            <span class="event-impact impact-bull">BULLISH +7.8%</span>
+          </div>
+        </div>
+        <div class="event-item">
+          <div class="event-dot" style="background:var(--loss)"></div>
+          <div class="event-info">
+            <div class="event-title">🇨🇳 Китай: ограничение VPN</div>
+            <div class="event-desc">Новый законопроект коррелирует с падением объёмов торгов на 8–15%</div>
+            <span class="event-impact impact-bear">BEARISH -5.1%</span>
+          </div>
+        </div>
+        <div class="event-item">
+          <div class="event-dot" style="background:var(--accent)"></div>
+          <div class="event-info">
+            <div class="event-title">🏦 BlackRock BTC ETF притоки</div>
+            <div class="event-desc">Рекордный приток $812M за неделю. Устойчивый институциональный спрос</div>
+            <span class="event-impact impact-bull">STRONG BULL +11%</span>
+          </div>
+        </div>
+        <div class="event-item">
+          <div class="event-dot" style="background:var(--warn)"></div>
+          <div class="event-info">
+            <div class="event-title">🌍 Геополитическая напряжённость</div>
+            <div class="event-desc">Рост неопределённости → повышенный спрос на BTC как "цифровое золото"</div>
+            <span class="event-impact impact-bull">BULLISH +3.7%</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Корреляция событий с рынком</div>
+        <div class="chart-container" style="height:140px;">
+          <canvas id="eventsChart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI ADVISOR -->
+    <div class="page" id="page-ai">
+      <div class="card">
+        <div class="card-title">AI Советник · Origin QC + Quantum Analysis</div>
+        <div class="chat-messages" id="chatMessages">
+          <div class="msg ai">
+            <div class="msg-bubble">⚛ Привет! Я QuantumTrade AI — анализирую рынок с помощью квантовых вычислений Origin QC. Текущий Q-Score: <strong>78/100</strong> (Бычий). Задайте вопрос о торговле, прогнозах или стратегии.</div>
+            <div class="msg-time">Сейчас</div>
+          </div>
+        </div>
+        <div class="chat-input-row">
+          <input class="chat-input" id="chatInput" type="text" placeholder="Спросите о рынке или стратегии..." onkeydown="if(event.key==='Enter')sendChat()">
+          <button class="chat-send" onclick="sendChat()">↑</button>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+          <span class="tag tag-a" style="cursor:pointer" onclick="quickChat('Прогноз BTC на неделю')">BTC прогноз</span>
+          <span class="tag tag-a" style="cursor:pointer" onclick="quickChat('Лучшие фьючерсы сейчас')">Топ фьючерсы</span>
+          <span class="tag tag-a" style="cursor:pointer" onclick="quickChat('Что делают киты?')">Активность китов</span>
+          <span class="tag tag-q" style="cursor:pointer" onclick="quickChat('Оптимизируй мою стратегию')">Оптимизация</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div class="page" id="page-settings">
+      <div class="card">
+        <div class="card-title">API Подключения</div>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;">
+            <div>
+              <div style="font-size:12px;font-weight:600;">KuCoin API</div>
+              <div style="font-size:10px;color:var(--quantum);margin-top:2px;">● Активно · Spot + Futures</div>
+            </div>
+            <span class="tag tag-q">LIVE</span>
+          </div>
+          <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;">
+            <div>
+              <div style="font-size:12px;font-weight:600;">Origin QC API</div>
+              <div style="font-size:10px;color:var(--quantum);margin-top:2px;">● console.originqc.com.cn · Активно</div>
+            </div>
+            <span class="tag tag-q">LIVE</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Автопилот · Управление</div>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <div class="autopilot-wrap">
+            <div><div class="autopilot-label">Автоторговля</div><div class="autopilot-sub">KuCoin исполнение сигналов</div></div>
+            <div class="toggle on" onclick="toggleFeature(this,'autoTrade')"><div class="toggle-knob"></div></div>
+          </div>
+          <div class="autopilot-wrap">
+            <div><div class="autopilot-label">Фьючерсы</div><div class="autopilot-sub">Деривативная торговля</div></div>
+            <div class="toggle on" onclick="toggleFeature(this,'autoFutures')"><div class="toggle-knob"></div></div>
+          </div>
+          <div class="autopilot-wrap">
+            <div><div class="autopilot-label">Самообучение</div><div class="autopilot-sub">Анализ результатов, обновление модели</div></div>
+            <div class="toggle on" onclick="toggleFeature(this,'selfLearn')"><div class="toggle-knob"></div></div>
+          </div>
+          <div class="autopilot-wrap">
+            <div><div class="autopilot-label">Whale Tracker</div><div class="autopilot-sub">Мониторинг топ-500 кошельков</div></div>
+            <div class="toggle on" onclick="toggleFeature(this,'whaleTrack')"><div class="toggle-knob"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Управление рисками</div>
+        <div class="risk-wrap">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <span style="font-size:12px;color:var(--text2);">Риск на сделку</span>
+            <span style="font-size:13px;font-weight:700;font-family:var(--mono);color:var(--accent);" id="riskVal">2%</span>
+          </div>
+          <input type="range" min="0.5" max="10" step="0.5" value="2" oninput="updateRisk(this)" style="--val:16%">
+          <div class="risk-labels"><span>0.5%</span><span>Умеренный</span><span>10%</span></div>
+        </div>
+        <div class="risk-wrap">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <span style="font-size:12px;color:var(--text2);">Макс. плечо</span>
+            <span style="font-size:13px;font-weight:700;font-family:var(--mono);color:var(--warn);" id="levVal">10x</span>
+          </div>
+          <input type="range" min="1" max="20" step="1" value="10" oninput="updateLev(this)" style="--val:47%">
+          <div class="risk-labels"><span>1x</span><span>Умеренно</span><span>20x</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Квантовая система · Статус</div>
+        <div class="qc-status">
+          <div class="qc-item"><div class="qc-label">Кубиты</div><div class="qc-val neutral">127 Q</div><div class="qc-sub">Origin QC · IBM Eagle</div></div>
+          <div class="qc-item"><div class="qc-label">Точность</div><div class="qc-val positive">84.3%</div><div class="qc-sub">Последние 30 дней</div></div>
+          <div class="qc-item"><div class="qc-label">Паттернов</div><div class="qc-val neutral">2.4M</div><div class="qc-sub">С 2009 года</div></div>
+          <div class="qc-item"><div class="qc-label">Обновление</div><div class="qc-val neutral">15м</div><div class="qc-sub">Интервал анализа</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Обнаруженные поведенческие модели</div>
+        <div class="perf-bar-wrap">
+          <div class="perf-bar-header"><span class="perf-bar-label">Накопление перед халвингом</span><span class="perf-bar-val positive">92%</span></div>
+          <div class="perf-bar-track"><div class="perf-bar-fill" style="width:0%;background:var(--quantum)" data-target="92"></div></div>
+        </div>
+        <div class="perf-bar-wrap">
+          <div class="perf-bar-header"><span class="perf-bar-label">Паника при регуляторных новостях</span><span class="perf-bar-val negative">78%</span></div>
+          <div class="perf-bar-track"><div class="perf-bar-fill" style="width:0%;background:var(--loss)" data-target="78"></div></div>
+        </div>
+        <div class="perf-bar-wrap">
+          <div class="perf-bar-header"><span class="perf-bar-label">Whale pump &amp; dump</span><span class="perf-bar-val positive">86%</span></div>
+          <div class="perf-bar-track"><div class="perf-bar-fill" style="width:0%;background:var(--warn)" data-target="86"></div></div>
+        </div>
+        <div class="perf-bar-wrap">
+          <div class="perf-bar-header"><span class="perf-bar-label">Сезонность альткоинов</span><span class="perf-bar-val positive">71%</span></div>
+          <div class="perf-bar-track"><div class="perf-bar-fill" style="width:0%;background:var(--accent)" data-target="71"></div></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+// Telegram WebApp Init
+if (window.Telegram?.WebApp) {
+  const tg = window.Telegram.WebApp;
+  tg.ready(); tg.expand();
+  try { tg.setHeaderColor('#060810'); tg.setBackgroundColor('#060810'); } catch(e){}
+}
+
+// Navigation
+function showPage(id) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('page-' + id).classList.add('active');
+  const map = {dashboard:0,signals:1,futures:2,whales:3,events:4,ai:5,settings:6};
+  if (map[id] !== undefined) document.querySelectorAll('.tab')[map[id]].classList.add('active');
+  if (id === 'settings') setTimeout(animateBars, 200);
+}
+
+// Quantum ring
+setTimeout(() => {
+  const offset = 201 - (78/100)*201;
+  document.getElementById('ringFill').style.strokeDashoffset = offset;
+}, 400);
+
+// Charts
+const gridColor = 'rgba(99,179,237,0.07)';
+const tickColor = '#64748b';
+
+new Chart(document.getElementById('portfolioChart'), {
+  type:'line',
+  data:{
+    labels:['Пн','Вт','Ср','Чт','Пт','Сб','Вс'],
+    datasets:[{data:[22100,22800,22300,23400,23100,23900,24381],borderColor:'#63b3ed',backgroundColor:'rgba(99,179,237,0.07)',borderWidth:2,fill:true,tension:0.4,pointRadius:0}]
+  },
+  options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+    scales:{x:{grid:{color:gridColor},ticks:{color:tickColor,font:{size:10}}},
+      y:{grid:{color:gridColor},ticks:{color:tickColor,font:{size:10},callback:v=>'$'+(v/1000).toFixed(1)+'K'}}}}
+});
+
+new Chart(document.getElementById('futuresChart'), {
+  type:'bar',
+  data:{
+    labels:['D1','D2','D3','D4','D5','D6','D7'],
+    datasets:[{data:[120,-45,380,210,-80,540,320],backgroundColor:ctx=>ctx.raw>=0?'rgba(104,211,145,0.6)':'rgba(252,129,129,0.6)',borderRadius:4}]
+  },
+  options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+    scales:{x:{grid:{display:false},ticks:{color:tickColor,font:{size:10}}},
+      y:{grid:{color:gridColor},ticks:{color:tickColor,font:{size:10},callback:v=>'$'+v}}}}
+});
+
+new Chart(document.getElementById('whaleChart'), {
+  type:'line',
+  data:{
+    labels:['1д','2д','3д','4д','5д','6д','7д'],
+    datasets:[
+      {data:[52,48,55,61,58,65,62],borderColor:'#68d391',tension:0.4,pointRadius:0,borderWidth:2},
+      {data:[48,52,45,39,42,35,38],borderColor:'#fc8181',tension:0.4,pointRadius:0,borderWidth:2}
+    ]
+  },
+  options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+    scales:{x:{grid:{color:gridColor},ticks:{color:tickColor,font:{size:10}}},
+      y:{grid:{color:gridColor},ticks:{color:tickColor,font:{size:10},callback:v=>v+'%'},min:0,max:100}}}
+});
+
+new Chart(document.getElementById('eventsChart'), {
+  type:'radar',
+  data:{
+    labels:['ФРС','ETF','Геополитика','Конференции','Регуляции','Халвинг','Техника'],
+    datasets:[{data:[72,88,65,74,78,95,82],borderColor:'#63b3ed',backgroundColor:'rgba(99,179,237,0.1)',pointBackgroundColor:'#63b3ed',borderWidth:2}]
+  },
+  options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+    scales:{r:{grid:{color:'rgba(99,179,237,0.1)'},ticks:{display:false},pointLabels:{color:'#94a3b8',font:{size:10}},min:0,max:100}}}
+});
+
+// Perf bars animation
+function animateBars() {
+  document.querySelectorAll('.perf-bar-fill').forEach(el => {
+    el.style.width = el.dataset.target + '%';
+  });
+}
+
+// AI Chat
+const aiResponses = {
+  'Прогноз BTC на неделю': '⚛ Квантовый анализ BTC: Q-Score 91%. Паттерн «pre-halving accumulation» активен. Топ-500 кошельков набирают позиции.\n\n📈 Прогноз на 7 дней: +8–14%\nTP1: $71,200 · TP2: $74,500\nСтоп-лосс: $63,800\nРиск: умеренный',
+  'Лучшие фьючерсы сейчас': '📊 Топ фьючерсов по Q-Score:\n1. BTC-PERP LONG 10x: 91% → открытая прибыль +$842\n2. AVAX-PERP LONG 7x: 88% → сигнал активен\n3. ETH-PERP SHORT 5x: 84% → продолжается\n\nАвтопилот отслеживает ликвидации и закроет позиции по TP/SL автоматически.',
+  'Что делают киты?': '🐋 Активность топ-500 кошельков (24ч):\n• 62% — накапливают (BTC, SOL, BNB)\n• 38% — продают (ETH, XRP)\n• Кит #1: куплено 2,847 BTC ($191M) — сильный бычий сигнал\n• 3 кита из топ-20 синхронно накапливают BTC\n\nКвантовая корреляция: 84% вероятность роста BTC в течение 48 часов.',
+  'Оптимизируй мою стратегию': '🧠 Анализ 312 сделок завершён. Рекомендации самообучающейся модели:\n\n1. Снизить риск ETH-SHORT до 1.5% (3 убыточных подряд)\n2. Увеличить BTC-LONG на 30% — win rate 87%\n3. Избегать DOGE в пятницу вечером (паттерн манипуляции)\n4. SOL — лучший risk/reward в текущем цикле\n\nОжидаемое улучшение: +12% к доходности.',
+};
+
+const fallback = [
+  '⚛ Origin QC обработал данные: накопление перед коррекцией. Удержание текущих позиций оптимально.',
+  '📈 Квантовая модель: схожесть с паттерном Q3 2020 (BTC +42% за 30 дней). Вероятность повторения: 67%.',
+  '🌊 8 из топ-20 кошельков переводят средства на биржи. Возможное давление через 12–24ч. Рекомендую частичный тейк-профит.',
+  '⚡ Самообучение: точность SOL-модели выросла с 74% до 81%. 3 активных сигнала скорректированы.',
+];
+
+function sendChat() {
+  const input = document.getElementById('chatInput');
+  const text = input.value.trim();
+  if (!text) return;
+  addMsg(text, 'user');
+  input.value = '';
+  setTimeout(() => {
+    addMsg(aiResponses[text] || fallback[Math.floor(Math.random() * fallback.length)], 'ai');
+  }, 700);
+}
+
+function quickChat(text) {
+  document.getElementById('chatInput').value = text;
+  sendChat();
+}
+
+function addMsg(text, type) {
+  const wrap = document.getElementById('chatMessages');
+  const now = new Date().toLocaleTimeString('ru', {hour:'2-digit',minute:'2-digit'});
+  const div = document.createElement('div');
+  div.className = 'msg ' + type;
+  div.innerHTML = `<div class="msg-bubble">${text.replace(/\n/g,'<br>')}</div><div class="msg-time">${now}</div>`;
+  wrap.appendChild(div);
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+// Toggles
+function toggleFeature(el, id) {
+  el.classList.toggle('on');
+  if (id === 'autoTrade') {
+    const pill = document.getElementById('statusPill');
+    if (el.classList.contains('on')) {
+      pill.innerHTML = '<div class="dot"></div>AUTOPILOT ON';
+      pill.style.cssText = '';
+    } else {
+      pill.innerHTML = '<div class="dot" style="background:var(--text3)"></div>MANUAL';
+      pill.style.background = 'rgba(100,116,139,0.1)';
+      pill.style.borderColor = 'rgba(100,116,139,0.25)';
+      pill.style.color = 'var(--text3)';
+    }
+  }
+}
+
+// Risk sliders
+function updateRisk(input) {
+  const v = parseFloat(input.value);
+  document.getElementById('riskVal').textContent = v + '%';
+  const pct = ((v - 0.5) / 9.5 * 100).toFixed(0);
+  input.style.setProperty('--val', pct + '%');
+}
+function updateLev(input) {
+  const v = parseInt(input.value);
+  document.getElementById('levVal').textContent = v + 'x';
+  const pct = ((v - 1) / 19 * 100).toFixed(0);
+  input.style.setProperty('--val', pct + '%');
+}
+
+// Execute signal
+function executeSignal(signal) {
+  if (window.Telegram?.WebApp?.showAlert) {
+    window.Telegram.WebApp.showAlert(`✅ Отправлено на KuCoin:\n${signal}\n\nАвтопилот исполняет ордер...`);
+  } else {
+    alert(`✅ Сигнал → KuCoin API:\n${signal}`);
+  }
+}
+
+// Simulate live prices
+let pVal = 24381;
+setInterval(() => {
+  pVal += Math.round((Math.random() - 0.45) * 35);
+  const el = document.getElementById('portfolioVal');
+  if (el) el.textContent = '$' + pVal.toLocaleString();
+}, 3500);
+</script>
+</body>
+</html>
