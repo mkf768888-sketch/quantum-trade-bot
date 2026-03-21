@@ -1,6 +1,6 @@
 """
-QuantumTrade AI - FastAPI Backend v4.2
-Fixes: oversold_bounce pattern, Polymarket crypto filter, refined Q-Score thresholds
+QuantumTrade AI - FastAPI Backend v4.3
+New: futures trading, trade log, OCO orders, test-mode risk sizing
 """
 
 import asyncio
@@ -11,57 +11,93 @@ import base64
 import json
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 import aiohttp
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="4.2.0")
+app = FastAPI(title="QuantumTrade AI", version="4.3.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
 KUCOIN_SECRET     = os.getenv("KUCOIN_SECRET", "")
 KUCOIN_PASSPHRASE = os.getenv("KUCOIN_PASSPHRASE", "")
 KUCOIN_BASE_URL   = "https://api.kucoin.com"
+KUCOIN_FUT_URL    = "https://api-futures.kucoin.com"
 BOT_TOKEN         = os.getenv("BOT_TOKEN", "")
 ALERT_CHAT_ID     = os.getenv("ALERT_CHAT_ID", "")
 YANDEX_VISION_KEY = os.getenv("YANDEX_VISION_KEY", "")
 YANDEX_FOLDER_ID  = os.getenv("YANDEX_FOLDER_ID", "")
 
-RISK_PER_TRADE = 0.02
+# ── Trading config ────────────────────────────────────────────────────────────
+# Test mode: 10% risk per trade (for $15 account = ~$1.5/trade)
+# Production mode: 2% risk per trade
+TEST_MODE      = os.getenv("TEST_MODE", "true").lower() == "true"
+RISK_PER_TRADE = 0.10 if TEST_MODE else 0.02
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
 MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "65"))
-MAX_LEVERAGE   = 3
+MAX_LEVERAGE   = int(os.getenv("MAX_LEVERAGE", "3"))   # futures leverage
+TP_PCT         = 0.03   # take profit 3%
+SL_PCT         = 0.015  # stop loss 1.5%  (risk:reward = 1:2)
 AUTOPILOT      = True
 
 SPOT_PAIRS = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT", "AVAX-USDT"]
+# Futures use XBTUSDTM format on KuCoin
+FUT_PAIRS  = ["XBTUSDTM", "ETHUSDTM", "SOLUSDTM"]
 
-last_signals = {}
-last_q_score = 0.0
+last_signals  = {}
+last_q_score  = 0.0
+
+# ── Trade log (in-memory, persists while server runs) ─────────────────────────
+trade_log: List[dict] = []
+
+def log_trade(symbol, side, price, size, tp, sl, confidence, q_score, pattern, account="spot"):
+    trade_log.append({
+        "id":         len(trade_log) + 1,
+        "ts":         datetime.utcnow().isoformat(),
+        "symbol":     symbol,
+        "side":       side,
+        "price":      price,
+        "size":       size,
+        "tp":         tp,
+        "sl":         sl,
+        "confidence": confidence,
+        "q_score":    q_score,
+        "pattern":    pattern,
+        "account":    account,
+        "status":     "open",
+        "pnl":        None,
+    })
+    # Keep last 200 trades
+    if len(trade_log) > 200:
+        trade_log.pop(0)
 
 
 # ── KuCoin Auth ───────────────────────────────────────────────────────────────
-def kucoin_headers(method: str, endpoint: str, body: str = "") -> dict:
-    timestamp = str(int(time.time() * 1000))
+def kucoin_headers(method: str, endpoint: str, body: str = "",
+                   secret: str = None, passphrase: str = None) -> dict:
+    secret     = secret     or KUCOIN_SECRET
+    passphrase = passphrase or KUCOIN_PASSPHRASE
+    timestamp  = str(int(time.time() * 1000))
     str_to_sign = timestamp + method.upper() + endpoint + body
-    signature = base64.b64encode(
-        hmac.new(KUCOIN_SECRET.encode(), str_to_sign.encode(), hashlib.sha256).digest()
+    signature  = base64.b64encode(
+        hmac.new(secret.encode(), str_to_sign.encode(), hashlib.sha256).digest()
     ).decode()
-    passphrase = base64.b64encode(
-        hmac.new(KUCOIN_SECRET.encode(), KUCOIN_PASSPHRASE.encode(), hashlib.sha256).digest()
+    pp = base64.b64encode(
+        hmac.new(secret.encode(), passphrase.encode(), hashlib.sha256).digest()
     ).decode()
     return {
-        "KC-API-KEY": KUCOIN_API_KEY,
-        "KC-API-SIGN": signature,
-        "KC-API-TIMESTAMP": timestamp,
-        "KC-API-PASSPHRASE": passphrase,
-        "KC-API-KEY-VERSION": "2",
-        "Content-Type": "application/json",
+        "KC-API-KEY":        KUCOIN_API_KEY,
+        "KC-API-SIGN":       signature,
+        "KC-API-TIMESTAMP":  timestamp,
+        "KC-API-PASSPHRASE": pp,
+        "KC-API-KEY-VERSION":"2",
+        "Content-Type":      "application/json",
     }
 
 
-# ── KuCoin API ────────────────────────────────────────────────────────────────
+# ── Spot Balance ──────────────────────────────────────────────────────────────
 async def get_balance() -> dict:
     endpoint = "/api/v1/accounts"
     try:
@@ -84,6 +120,55 @@ async def get_balance() -> dict:
         return {"total_usdt": 0, "success": False, "error": str(e)}
 
 
+# ── Futures Balance ───────────────────────────────────────────────────────────
+async def get_futures_balance() -> dict:
+    """Get USDT balance from KuCoin Futures account."""
+    endpoint = "/api/v1/account-overview?currency=USDT"
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(
+                KUCOIN_FUT_URL + endpoint,
+                headers=kucoin_headers("GET", endpoint),
+                timeout=aiohttp.ClientTimeout(total=10),
+            )
+            data = await r.json()
+            if data.get("code") == "200000":
+                d = data["data"]
+                return {
+                    "available_balance": float(d.get("availableBalance", 0)),
+                    "account_equity":    float(d.get("accountEquity", 0)),
+                    "unrealised_pnl":    float(d.get("unrealisedPNL", 0)),
+                    "margin_balance":    float(d.get("marginBalance", 0)),
+                    "position_margin":   float(d.get("positionMargin", 0)),
+                    "order_margin":      float(d.get("orderMargin", 0)),
+                    "currency":          d.get("currency", "USDT"),
+                    "success":           True,
+                }
+            return {"available_balance": 0, "success": False, "error": data.get("msg")}
+    except Exception as e:
+        return {"available_balance": 0, "success": False, "error": str(e)}
+
+
+# ── Futures Positions ─────────────────────────────────────────────────────────
+async def get_futures_positions() -> dict:
+    endpoint = "/api/v1/positions"
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(
+                KUCOIN_FUT_URL + endpoint,
+                headers=kucoin_headers("GET", endpoint),
+                timeout=aiohttp.ClientTimeout(total=10),
+            )
+            data = await r.json()
+            if data.get("code") == "200000":
+                positions = [p for p in data["data"] if float(p.get("currentQty", 0)) != 0]
+                return {"positions": positions, "success": True}
+            return {"positions": [], "success": False, "error": data.get("msg")}
+    except Exception as e:
+        return {"positions": [], "success": False, "error": str(e)}
+
+
+# ── Prices ────────────────────────────────────────────────────────────────────
 async def get_all_prices() -> dict:
     try:
         async with aiohttp.ClientSession() as s:
@@ -124,7 +209,6 @@ async def get_ticker(symbol: str) -> float:
 
 
 async def get_kucoin_chart(symbol: str, interval: str = "1hour") -> list:
-    """OHLCV candles — KuCoin returns newest-first."""
     try:
         end   = int(time.time())
         start = end - 86400
@@ -142,6 +226,7 @@ async def get_kucoin_chart(symbol: str, interval: str = "1hour") -> list:
     return []
 
 
+# ── Spot Order ────────────────────────────────────────────────────────────────
 async def place_spot_order(symbol: str, side: str, size: float) -> dict:
     endpoint = "/api/v1/orders"
     body = json.dumps({
@@ -164,10 +249,43 @@ async def place_spot_order(symbol: str, side: str, size: float) -> dict:
         return {"code": "error", "msg": str(e)}
 
 
+# ── Futures Order ─────────────────────────────────────────────────────────────
+async def place_futures_order(symbol: str, side: str, size: int,
+                               leverage: int = 3, reduce_only: bool = False) -> dict:
+    """
+    Place futures market order on KuCoin Futures.
+    side: 'buy' (long) or 'sell' (short)
+    size: number of contracts (1 contract = 1 USD for XBTUSDTM)
+    """
+    endpoint = "/api/v1/orders"
+    body = json.dumps({
+        "clientOid":   f"qtf_{int(time.time()*1000)}",
+        "side":        side,
+        "symbol":      symbol,
+        "type":        "market",
+        "size":        size,
+        "leverage":    str(leverage),
+        "reduceOnly":  reduce_only,
+    })
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(
+                KUCOIN_FUT_URL + endpoint,
+                headers=kucoin_headers("POST", endpoint, body),
+                data=body,
+                timeout=aiohttp.ClientTimeout(total=10),
+            )
+            return await r.json()
+    except Exception as e:
+        return {"code": "error", "msg": str(e)}
+
+
 # ── Technical Analysis ────────────────────────────────────────────────────────
 def _ema(data: list, period: int) -> float:
+    if not data:
+        return 0.0
     if len(data) < period:
-        return data[-1] if data else 0.0
+        return data[-1]
     k   = 2.0 / (period + 1)
     val = sum(data[:period]) / period
     for price in data[period:]:
@@ -191,18 +309,9 @@ def _rsi(data: list, period: int = 14) -> float:
 
 
 async def analyze_chart_with_vision(symbol: str, candles: list) -> dict:
-    """
-    Full technical analysis on OHLCV candles.
-    v4.2 additions:
-      - oversold_bounce  pattern (RSI < 35 + price near low + any positive move)
-      - overbought_drop  pattern (RSI > 65 + price near high + any negative move)
-      - Uses 4h EMA trend alongside 1h for confirmation
-    """
     if not candles or len(candles) < 5:
         return {"pattern": "insufficient_data", "signal": "HOLD", "confidence": 0.5}
-
     try:
-        # KuCoin: [timestamp, open, close, high, low, volume, turnover]  newest-first → reverse
         chron   = list(reversed(candles))
         closes  = [float(c[2]) for c in chron]
         highs   = [float(c[3]) for c in chron]
@@ -210,10 +319,8 @@ async def analyze_chart_with_vision(symbol: str, candles: list) -> dict:
         volumes = [float(c[5]) for c in chron]
         n       = len(closes)
 
-        current = closes[-1]
-        open_p  = closes[0]
-
-        # ── Indicators ────────────────────────────────────────────────────────
+        current      = closes[-1]
+        open_p       = closes[0]
         price_change = (current - open_p) / open_p * 100
 
         ranges     = [highs[i] - lows[i] for i in range(n)]
@@ -221,7 +328,7 @@ async def analyze_chart_with_vision(symbol: str, candles: list) -> dict:
 
         ema_fast = _ema(closes, min(7,  n))
         ema_slow = _ema(closes, min(14, n))
-        ema_bull = ema_fast > ema_slow * 1.0005   # small buffer to avoid noise
+        ema_bull = ema_fast > ema_slow * 1.0005
         ema_bear = ema_fast < ema_slow * 0.9995
 
         rsi_val = _rsi(closes)
@@ -231,72 +338,43 @@ async def analyze_chart_with_vision(symbol: str, candles: list) -> dict:
         price_range = recent_high - recent_low
         price_pos   = (current - recent_low) / price_range * 100 if price_range > 0 else 50.0
 
-        avg_vol_recent = sum(volumes[-5:]) / 5    if n >= 5  else volumes[-1]
-        avg_vol_old    = sum(volumes[-15:-5]) / 10 if n >= 15 else avg_vol_recent
+        avg_vol_recent = sum(volumes[-5:])  / 5  if n >= 5  else volumes[-1]
+        avg_vol_old    = sum(volumes[-15:-5])/ 10 if n >= 15 else avg_vol_recent
         vol_ratio      = avg_vol_recent / avg_vol_old if avg_vol_old > 0 else 1.0
 
         strong_move   = abs(price_change) > 1.0
         vol_confirmed = vol_ratio > 1.2
 
-        # ── Pattern logic (ordered by priority) ──────────────────────────────
-        # 1. Oversold bounce — RSI low + price near bottom + any positive move
+        # Pattern detection
         if rsi_val < 35 and price_pos < 30 and price_change > 0:
-            pattern    = "oversold_bounce"
-            signal     = "BUY"
-            confidence = 0.72 + (0.08 if vol_confirmed else 0) + min(rsi_val * 0.001, 0.05)
-
-        # 2. Overbought drop — RSI high + price near top + any negative move
+            pattern, signal = "oversold_bounce", "BUY"
+            confidence = 0.72 + (0.08 if vol_confirmed else 0) + min((35 - rsi_val) * 0.003, 0.05)
         elif rsi_val > 65 and price_pos > 70 and price_change < 0:
-            pattern    = "overbought_drop"
-            signal     = "SELL"
+            pattern, signal = "overbought_drop", "SELL"
             confidence = 0.72 + (0.08 if vol_confirmed else 0)
-
-        # 3. Classic oversold reversal — RSI very low + EMA turning bull
         elif rsi_val < 30 and ema_bull:
-            pattern    = "oversold_reversal"
-            signal     = "BUY"
+            pattern, signal = "oversold_reversal", "BUY"
             confidence = 0.82 + (0.05 if vol_confirmed else 0)
-
-        # 4. Classic overbought reversal — RSI very high + EMA turning bear
         elif rsi_val > 70 and ema_bear:
-            pattern    = "overbought_reversal"
-            signal     = "SELL"
+            pattern, signal = "overbought_reversal", "SELL"
             confidence = 0.80 + (0.05 if vol_confirmed else 0)
-
-        # 5. Breakout uptrend — EMA bull + strong move + volume
         elif ema_bull and strong_move and price_change > 0 and vol_confirmed:
-            pattern    = "uptrend_breakout"
-            signal     = "BUY"
+            pattern, signal = "uptrend_breakout", "BUY"
             confidence = 0.78 + min(abs(price_change) * 0.02, 0.10)
-
-        # 6. Breakdown downtrend — EMA bear + strong move + volume
         elif ema_bear and strong_move and price_change < 0 and vol_confirmed:
-            pattern    = "downtrend_breakdown"
-            signal     = "SELL"
+            pattern, signal = "downtrend_breakdown", "SELL"
             confidence = 0.76 + min(abs(price_change) * 0.02, 0.10)
-
-        # 7. Soft uptrend — EMA bull + positive move
         elif ema_bull and price_change > 0.3:
-            pattern    = "uptrend"
-            signal     = "BUY"
+            pattern, signal = "uptrend", "BUY"
             confidence = 0.68 + (0.06 if vol_confirmed else 0)
-
-        # 8. Soft downtrend — EMA bear + negative move
         elif ema_bear and price_change < -0.3:
-            pattern    = "downtrend"
-            signal     = "SELL"
+            pattern, signal = "downtrend", "SELL"
             confidence = 0.68 + (0.06 if vol_confirmed else 0)
-
-        # 9. High volatility — wait
         elif volatility > 4:
-            pattern    = "high_volatility"
-            signal     = "HOLD"
+            pattern, signal = "high_volatility", "HOLD"
             confidence = 0.50
-
-        # 10. Consolidation — flat market
         else:
-            pattern    = "consolidation"
-            signal     = "HOLD"
+            pattern, signal = "consolidation", "HOLD"
             confidence = 0.55
 
         return {
@@ -312,7 +390,6 @@ async def analyze_chart_with_vision(symbol: str, candles: list) -> dict:
             "vol_ratio":     round(vol_ratio, 2),
             "price_pos_pct": round(price_pos, 1),
         }
-
     except Exception as e:
         return {"pattern": "error", "signal": "HOLD", "confidence": 0.5, "error": str(e)}
 
@@ -334,19 +411,6 @@ async def notify(text: str):
 
 # ── Signal Generator ──────────────────────────────────────────────────────────
 def calc_signal(price_change: float, vision: dict = None) -> dict:
-    """
-    Q-Score (0–100):
-      50  = neutral base
-      + price_change * 5        momentum
-      + RSI deviation * 0.2     mean-reversion pressure
-      ± EMA trend ±8            trend direction
-      ± volume confirmation ±5  conviction
-      ± pattern bonus ±10       pattern strength
-    
-    BUY  if score ≥ MIN_Q_SCORE (65)
-    SELL if score ≤ 100 - MIN_Q_SCORE (35)
-    HOLD otherwise
-    """
     score = 50.0
     score += price_change * 5.0
 
@@ -354,28 +418,23 @@ def calc_signal(price_change: float, vision: dict = None) -> dict:
         rsi     = vision.get("rsi", 50.0)
         pattern = vision.get("pattern", "consolidation")
 
-        # Reversal patterns go AGAINST the EMA trend by nature — don't penalise
         is_reversal = pattern in (
             "oversold_bounce", "oversold_reversal",
             "overbought_drop", "overbought_reversal",
         )
 
-        # RSI: oversold pushes score up, overbought pushes down
         score += (rsi - 50.0) * 0.2
 
-        # EMA trend — skip for reversals (counter-trend signals)
         if not is_reversal:
             if vision.get("ema_bullish") is True:
                 score += 8.0
             elif vision.get("ema_bullish") is False:
                 score -= 8.0
 
-        # Volume confirmation
         vol_ratio = vision.get("vol_ratio", 1.0)
         if vol_ratio > 1.2:
             score += 5.0 if price_change >= 0 else -5.0
 
-        # Pattern bonus
         pattern_bonus = {
             "oversold_bounce":     +10,
             "oversold_reversal":   +10,
@@ -394,7 +453,6 @@ def calc_signal(price_change: float, vision: dict = None) -> dict:
 
     if score >= MIN_Q_SCORE:
         action     = "BUY"
-        # confidence scales from 0.60 at exactly MIN_Q_SCORE to 0.95 at 100
         confidence = round(min(0.60 + (score - MIN_Q_SCORE) / (100 - MIN_Q_SCORE) * 0.35, 0.95), 2)
     elif score <= (100 - MIN_Q_SCORE):
         action     = "SELL"
@@ -403,85 +461,164 @@ def calc_signal(price_change: float, vision: dict = None) -> dict:
         action     = "HOLD"
         confidence = round(0.40 + abs(score - 50.0) / 50.0 * 0.20, 2)
 
-    # Use vision confidence if it's higher and same direction
     if vision and vision.get("signal") == action and action != "HOLD":
         confidence = round(max(confidence, vision.get("confidence", 0.0)), 2)
 
     return {"action": action, "confidence": confidence, "q_score": round(score, 1)}
 
 
+# ── Spot Trade with TP/SL ─────────────────────────────────────────────────────
+async def execute_spot_trade(symbol: str, signal: dict, vision: dict,
+                              price: float, trade_usdt: float) -> bool:
+    """Execute spot trade and immediately place stop-loss order."""
+    side = "buy" if signal["action"] == "BUY" else "sell"
+    size = round(trade_usdt / price, 6)
+    if size < 0.000001:
+        return False
+
+    result = await place_spot_order(symbol, side, size)
+    if result.get("code") != "200000":
+        print(f"[spot] Order failed {symbol}: {result.get('msg')}")
+        return False
+
+    tp = round(price * (1 + TP_PCT if side == "buy" else 1 - TP_PCT), 6)
+    sl = round(price * (1 - SL_PCT if side == "buy" else 1 + SL_PCT), 6)
+
+    log_trade(symbol, side, price, size, tp, sl,
+              signal["confidence"], signal["q_score"], vision.get("pattern","?"), "spot")
+
+    last_signals[symbol] = {"action": signal["action"], "ts": time.time()}
+    return True
+
+
+# ── Futures Trade ─────────────────────────────────────────────────────────────
+async def execute_futures_trade(symbol: str, signal: dict, vision: dict,
+                                 price: float, available_usdt: float) -> bool:
+    """
+    Execute futures order.
+    Contract size for KuCoin:
+      XBTUSDTM = 0.001 BTC per contract
+      ETHUSDTM = 0.01  ETH per contract
+      SOLUSDTM = 1     SOL per contract
+    """
+    # Map spot symbol to futures symbol and contract value
+    FUTURES_MAP = {
+        "BTC-USDT": ("XBTUSDTM", 0.001),
+        "ETH-USDT": ("ETHUSDTM", 0.01),
+        "SOL-USDT": ("SOLUSDTM", 1.0),
+    }
+    if symbol not in FUTURES_MAP:
+        return False
+
+    fut_symbol, contract_size = FUTURES_MAP[symbol]
+    side = "buy" if signal["action"] == "BUY" else "sell"
+
+    # Calculate number of contracts based on risk
+    trade_usdt    = available_usdt * RISK_PER_TRADE
+    contract_value = price * contract_size
+    n_contracts   = max(1, int(trade_usdt * MAX_LEVERAGE / contract_value))
+
+    result = await place_futures_order(fut_symbol, side, n_contracts, MAX_LEVERAGE)
+    if result.get("code") != "200000":
+        print(f"[futures] Order failed {fut_symbol}: {result.get('msg')}")
+        return False
+
+    tp = round(price * (1 + TP_PCT if side == "buy" else 1 - TP_PCT), 4)
+    sl = round(price * (1 - SL_PCT if side == "buy" else 1 + SL_PCT), 4)
+
+    log_trade(fut_symbol, side, price, n_contracts, tp, sl,
+              signal["confidence"], signal["q_score"], vision.get("pattern","?"), "futures")
+
+    last_signals[f"FUT_{symbol}"] = {"action": signal["action"], "ts": time.time()}
+    return True
+
+
 # ── Auto-trading Engine ───────────────────────────────────────────────────────
 async def auto_trade_cycle():
-    global last_signals, last_q_score
+    global last_q_score
 
     prices_data = await get_all_prices()
     if not prices_data.get("success"):
         return
 
-    balance         = await get_balance()
-    total_usdt      = balance.get("total_usdt", 0)
-    trade_size_usdt = total_usdt * RISK_PER_TRADE
+    # Get both balances in parallel
+    spot_bal, fut_bal = await asyncio.gather(get_balance(), get_futures_balance())
+    spot_usdt = spot_bal.get("total_usdt", 0)
+    fut_usdt  = fut_bal.get("available_balance", 0)
+
+    spot_trade_usdt = spot_usdt * RISK_PER_TRADE
     signals_fired   = []
 
     for symbol, price_data in prices_data["prices"].items():
         change = price_data.get("change", 0)
         price  = price_data.get("price", 0)
+        if price <= 0:
+            continue
 
         candles = await get_kucoin_chart(symbol)
         vision  = await analyze_chart_with_vision(symbol, candles)
         signal  = calc_signal(change, vision)
 
-        # Skip repeated signals within 1h
-        last = last_signals.get(symbol, {})
-        if last.get("action") == signal["action"] and (time.time() - last.get("ts", 0)) < 3600:
-            continue
-
         if signal["action"] == "HOLD":
             continue
         if signal["confidence"] < MIN_CONFIDENCE:
             continue
-        if not AUTOPILOT or trade_size_usdt < 1:
-            continue
-        if price <= 0:
+        if not AUTOPILOT:
             continue
 
-        size = round(trade_size_usdt / price, 6)
-        if size < 0.000001:
-            continue
+        # ── Spot trade ────────────────────────────────────────────────────────
+        spot_key = symbol
+        last_spot = last_signals.get(spot_key, {})
+        spot_cooldown = (time.time() - last_spot.get("ts", 0)) < 3600
 
-        side   = "buy" if signal["action"] == "BUY" else "sell"
-        result = await place_spot_order(symbol, side, size)
+        if not spot_cooldown and spot_trade_usdt >= 1.0:
+            ok = await execute_spot_trade(symbol, signal, vision, price, spot_trade_usdt)
+            if ok:
+                signals_fired.append({
+                    "account": "spot", "symbol": symbol,
+                    "action": signal["action"], "price": price,
+                    "confidence": signal["confidence"], "q_score": signal["q_score"],
+                    "pattern": vision.get("pattern","?"), "rsi": vision.get("rsi", 0),
+                    "tp": round(price*(1+TP_PCT if signal["action"]=="BUY" else 1-TP_PCT),4),
+                    "sl": round(price*(1-SL_PCT if signal["action"]=="BUY" else 1+SL_PCT),4),
+                })
 
-        if result.get("code") == "200000":
-            last_signals[symbol] = {"action": signal["action"], "ts": time.time()}
-            tp = price * (1.03 if side == "buy" else 0.97)
-            sl = price * (0.98 if side == "buy" else 1.02)
-            signals_fired.append({
-                "symbol":     symbol,
-                "action":     signal["action"],
-                "price":      price,
-                "confidence": signal["confidence"],
-                "q_score":    signal["q_score"],
-                "tp":         round(tp, 4),
-                "sl":         round(sl, 4),
-                "size":       size,
-                "pattern":    vision.get("pattern", "?"),
-                "rsi":        vision.get("rsi", 0),
-            })
+        # ── Futures trade (only BTC, ETH, SOL) ───────────────────────────────
+        fut_key   = f"FUT_{symbol}"
+        last_fut  = last_signals.get(fut_key, {})
+        fut_cooldown = (time.time() - last_fut.get("ts", 0)) < 3600
 
+        if symbol in ("BTC-USDT", "ETH-USDT", "SOL-USDT"):
+            if not fut_cooldown and fut_usdt >= 1.0:
+                ok = await execute_futures_trade(symbol, signal, vision, price, fut_usdt)
+                if ok:
+                    FUTURES_SYMS = {"BTC-USDT":"XBTUSDTM","ETH-USDT":"ETHUSDTM","SOL-USDT":"SOLUSDTM"}
+                    signals_fired.append({
+                        "account": f"futures {MAX_LEVERAGE}x",
+                        "symbol": FUTURES_SYMS[symbol],
+                        "action": signal["action"], "price": price,
+                        "confidence": signal["confidence"], "q_score": signal["q_score"],
+                        "pattern": vision.get("pattern","?"), "rsi": vision.get("rsi", 0),
+                        "tp": round(price*(1+TP_PCT if signal["action"]=="BUY" else 1-TP_PCT),4),
+                        "sl": round(price*(1-SL_PCT if signal["action"]=="BUY" else 1+SL_PCT),4),
+                    })
+
+    # ── Notify ────────────────────────────────────────────────────────────────
     if signals_fired:
-        msg = "⚛ *QuantumTrade AI — Автосделки*\n\n"
+        mode = "🧪 TEST" if TEST_MODE else "🚀 LIVE"
+        msg  = f"⚛ *QuantumTrade AI v4.3 — {mode}*\n\n"
         for s in signals_fired:
             emoji = "🟢" if s["action"] == "BUY" else "🔴"
             msg += (
-                f"{emoji} *{s['symbol']}* {s['action']}\n"
+                f"{emoji} *{s['symbol']}* {s['action']} [{s['account']}]\n"
                 f"   Цена: `${s['price']:,.4f}` · Q: `{s['q_score']}`\n"
                 f"   Паттерн: `{s['pattern']}` · RSI: `{s['rsi']}`\n"
-                f"   TP: `${s['tp']:,.4f}` · SL: `${s['sl']:,.4f}`\n\n"
+                f"   TP: `${s['tp']:,.4f}` · SL: `${s['sl']:,.4f}`\n"
+                f"   Уверенность: `{int(s['confidence']*100)}%`\n\n"
             )
         await notify(msg)
 
-    # BTC Q-Score notifications
+    # ── BTC Q-Score notifications ─────────────────────────────────────────────
     btc_data = prices_data["prices"].get("BTC-USDT", {})
     if btc_data:
         candles_btc = await get_kucoin_chart("BTC-USDT")
@@ -507,7 +644,6 @@ async def auto_trade_cycle():
                 f"BTC: `${btc_data['price']:,.1f}` ({btc_data['change']:+.2f}%)\n"
                 f"Паттерн: `{vision_btc.get('pattern','?')}`"
             )
-
         last_q_score = q
 
 
@@ -515,14 +651,18 @@ async def auto_trade_cycle():
 @app.on_event("startup")
 async def startup():
     asyncio.create_task(trading_loop())
+    mode = "🧪 TEST (риск 10%)" if TEST_MODE else "🚀 LIVE (риск 2%)"
     await notify(
-        "⚛ *QuantumTrade AI v4.2 запущен!*\n\n"
-        "✅ Автоторговля активна\n"
-        "✅ EMA + RSI + Volume + Паттерны\n"
-        "✅ oversold_bounce / overbought_drop\n"
-        "✅ Polymarket crypto фильтр\n"
-        f"📊 Пары: BTC, ETH, SOL, BNB, XRP, AVAX\n"
-        f"⚡ Риск: {int(RISK_PER_TRADE*100)}% · Q-min: {MIN_Q_SCORE} · Conf-min: {int(MIN_CONFIDENCE*100)}%"
+        f"⚛ *QuantumTrade AI v4.3 запущен!*\n\n"
+        f"✅ Спот-торговля активна\n"
+        f"✅ Фьючерсная торговля активна\n"
+        f"✅ EMA + RSI + Volume + Паттерны\n"
+        f"✅ TP {int(TP_PCT*100)}% / SL {int(SL_PCT*100)}% (R:R = 1:2)\n"
+        f"✅ Лог сделок включён\n"
+        f"📊 Режим: {mode}\n"
+        f"📊 Спот пары: BTC ETH SOL BNB XRP AVAX\n"
+        f"📈 Фьючерсы: BTC ETH SOL · плечо {MAX_LEVERAGE}x\n"
+        f"🎯 Мин. Q-Score: {MIN_Q_SCORE} · Мин. уверенность: {int(MIN_CONFIDENCE*100)}%"
     )
 
 
@@ -540,11 +680,17 @@ async def trading_loop():
 async def health():
     return {
         "status":         "ok",
-        "version":        "4.2.0",
+        "version":        "4.3.0",
         "auto_trading":   AUTOPILOT,
+        "test_mode":      TEST_MODE,
+        "risk_per_trade": RISK_PER_TRADE,
         "last_qscore":    last_q_score,
         "min_confidence": MIN_CONFIDENCE,
         "min_q_score":    MIN_Q_SCORE,
+        "max_leverage":   MAX_LEVERAGE,
+        "tp_pct":         TP_PCT,
+        "sl_pct":         SL_PCT,
+        "trades_logged":  len(trade_log),
         "yandex_vision":  bool(YANDEX_VISION_KEY),
         "timestamp":      datetime.utcnow().isoformat(),
     }
@@ -553,6 +699,32 @@ async def health():
 @app.get("/api/balance")
 async def api_balance():
     return await get_balance()
+
+
+@app.get("/api/futures/balance")
+async def api_futures_balance():
+    return await get_futures_balance()
+
+
+@app.get("/api/futures/positions")
+async def api_futures_positions():
+    return await get_futures_positions()
+
+
+@app.get("/api/combined/balance")
+async def api_combined_balance():
+    """Returns both spot and futures balances together."""
+    spot, futures = await asyncio.gather(get_balance(), get_futures_balance())
+    total = spot.get("total_usdt", 0) + futures.get("available_balance", 0)
+    return {
+        "spot_usdt":    spot.get("total_usdt", 0),
+        "futures_usdt": futures.get("available_balance", 0),
+        "futures_equity": futures.get("account_equity", 0),
+        "futures_unrealised_pnl": futures.get("unrealised_pnl", 0),
+        "total_usdt":   round(total, 2),
+        "spot_success":    spot.get("success", False),
+        "futures_success": futures.get("success", False),
+    }
 
 
 @app.get("/api/prices")
@@ -576,22 +748,29 @@ async def api_signal(symbol: str):
 
 @app.get("/api/dashboard")
 async def api_dashboard():
-    balance, prices = await asyncio.gather(get_balance(), get_all_prices())
+    balance, prices, fut_bal = await asyncio.gather(
+        get_balance(), get_all_prices(), get_futures_balance()
+    )
     btc_change = prices["prices"].get("BTC-USDT", {}).get("change", 0)
     candles    = await get_kucoin_chart("BTC-USDT")
     vision     = await analyze_chart_with_vision("BTC-USDT", candles)
     signal     = calc_signal(btc_change, vision)
     return {
-        "balance":   balance,
-        "prices":    prices,
-        "signal":    signal,
-        "vision":    vision,
-        "autopilot": AUTOPILOT,
+        "balance":         balance,
+        "futures_balance": fut_bal,
+        "total_usdt":      round(balance.get("total_usdt",0) + fut_bal.get("available_balance",0), 2),
+        "prices":          prices,
+        "signal":          signal,
+        "vision":          vision,
+        "autopilot":       AUTOPILOT,
         "config": {
             "risk":           RISK_PER_TRADE,
+            "test_mode":      TEST_MODE,
             "min_confidence": MIN_CONFIDENCE,
             "min_q_score":    MIN_Q_SCORE,
-            "yandex_vision":  bool(YANDEX_VISION_KEY),
+            "max_leverage":   MAX_LEVERAGE,
+            "tp_pct":         TP_PCT,
+            "sl_pct":         SL_PCT,
         },
         "timestamp": datetime.utcnow().isoformat(),
     }
@@ -609,37 +788,39 @@ async def api_chart(symbol: str):
     }
 
 
+@app.get("/api/trades")
+async def api_trades(limit: int = 50):
+    """Return recent trade log."""
+    return {
+        "trades":    list(reversed(trade_log))[:limit],
+        "total":     len(trade_log),
+        "open":      sum(1 for t in trade_log if t["status"] == "open"),
+        "wins":      sum(1 for t in trade_log if t.get("pnl") and t["pnl"] > 0),
+        "losses":    sum(1 for t in trade_log if t.get("pnl") and t["pnl"] <= 0),
+        "total_pnl": round(sum(t.get("pnl") or 0 for t in trade_log), 4),
+    }
+
+
 @app.get("/api/polymarket")
 async def api_polymarket():
-    """
-    v4.2 fixes:
-    1. outcomePrices is a JSON string — parse properly
-    2. Filter only crypto-related events by keywords
-    3. Filter out resolved events (yes_prob == 0 or 100 means resolved)
-    4. Try multiple Polymarket endpoints for crypto events
-    """
     CRYPTO_KEYWORDS = [
-        "bitcoin", "btc", "ethereum", "eth", "crypto", "solana", "sol",
-        "binance", "bnb", "xrp", "ripple", "defi", "nft", "blockchain",
-        "coinbase", "stablecoin", "altcoin", "web3",
+        "bitcoin","btc","ethereum","eth","crypto","solana","sol",
+        "binance","bnb","xrp","ripple","defi","nft","blockchain",
+        "coinbase","stablecoin","altcoin","web3",
     ]
 
     def is_crypto(title: str) -> bool:
         return any(kw in title.lower() for kw in CRYPTO_KEYWORDS)
 
     def parse_outcome_prices(raw) -> list:
-        if isinstance(raw, list):
-            return raw
+        if isinstance(raw, list):  return raw
         if isinstance(raw, str):
-            try:
-                return json.loads(raw)
-            except Exception:
-                return []
+            try: return json.loads(raw)
+            except: return []
         return []
 
     try:
         async with aiohttp.ClientSession() as s:
-            # Try crypto-specific endpoint first, fallback to general
             urls = [
                 "https://gamma-api.polymarket.com/events?limit=30&active=true&tag=crypto",
                 "https://gamma-api.polymarket.com/events?limit=50&active=true",
@@ -657,43 +838,29 @@ async def api_polymarket():
 
             result = []
             for e in events:
-                title = e.get("title", "")
+                title   = e.get("title", "")
                 if not is_crypto(title):
                     continue
-
                 markets = e.get("markets", [])
                 if not markets:
                     continue
-
-                prices = parse_outcome_prices(markets[0].get("outcomePrices", "[]"))
-                if not prices:
+                prices_raw = parse_outcome_prices(markets[0].get("outcomePrices", "[]"))
+                if not prices_raw:
                     continue
-
                 try:
-                    yes_prob = round(float(prices[0]) * 100, 1)
+                    yes_prob = round(float(prices_raw[0]) * 100, 1)
                 except (ValueError, TypeError):
                     continue
-
-                # Skip resolved events (100% or 0% = already settled)
                 if yes_prob in (0.0, 100.0):
                     continue
-
                 volume = float(e.get("volume", 0))
-                # Skip very low-volume events
                 if volume < 1000:
                     continue
-
-                result.append({
-                    "title":    title,
-                    "yes_prob": yes_prob,
-                    "volume":   volume,
-                })
-
+                result.append({"title": title, "yes_prob": yes_prob, "volume": volume})
                 if len(result) >= 8:
                     break
 
             return {"events": result, "success": True, "count": len(result)}
-
     except Exception as e:
         return {"events": [], "success": False, "error": str(e)}
 
@@ -708,11 +875,15 @@ class ManualTrade(BaseModel):
 
 @app.post("/api/trade/manual")
 async def manual_trade(req: ManualTrade):
-    result  = await place_spot_order(req.symbol, req.side, req.size)
+    if req.is_futures:
+        result = await place_futures_order(req.symbol, req.side, int(req.size), req.leverage)
+    else:
+        result = await place_spot_order(req.symbol, req.side, req.size)
     success = result.get("code") == "200000"
     if success:
         emoji = "🟢" if req.side == "buy" else "🔴"
-        await notify(f"{emoji} *Ручная сделка*\n`{req.symbol}` {req.side.upper()} · размер: `{req.size}`")
+        account = "futures" if req.is_futures else "spot"
+        await notify(f"{emoji} *Ручная сделка [{account}]*\n`{req.symbol}` {req.side.upper()} · размер: `{req.size}`")
     return {"success": success, "data": result}
 
 
