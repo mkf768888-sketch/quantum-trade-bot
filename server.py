@@ -35,6 +35,7 @@ RISK_PER_TRADE = 0.02
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
 MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "65"))
 MAX_LEVERAGE   = int(os.getenv("MAX_LEVERAGE", "3"))
+# With $100 futures balance, risk 10% = $10/trade, leverage 3x = $30 position size
 TP_PCT         = 0.03
 SL_PCT         = 0.015
 TEST_MODE      = os.getenv("TEST_MODE", "true").lower() == "true"
@@ -334,17 +335,33 @@ async def execute_futures_trade(symbol, signal, vision, price, available_usdt):
 
 async def auto_trade_cycle():
     global last_q_score
+    log_activity(f"[cycle start] {datetime.utcnow().strftime('%H:%M:%S')}")
     prices_data = await get_all_prices()
-    if not prices_data.get("success"): return
-    spot_bal, fut_bal = await asyncio.gather(get_balance(), get_futures_balance())
+    if not prices_data.get("success"):
+        log_activity("[cycle] prices fetch FAILED"); return
+    try:
+        spot_bal, fut_bal = await asyncio.wait_for(
+            asyncio.gather(get_balance(), get_futures_balance()), timeout=10.0
+        )
+    except asyncio.TimeoutError:
+        print("[cycle] Balance timeout — skipping cycle")
+        return
     spot_usdt = spot_bal.get("total_usdt", 0)
     fut_usdt  = fut_bal.get("available_balance", 0)
     spot_trade_usdt = spot_usdt * RISK_PER_TRADE
     signals_fired = []
+    # Fetch all charts in parallel (was sequential = very slow)
+    chart_tasks = {sym: asyncio.create_task(get_kucoin_chart(sym)) for sym in prices_data["prices"]}
+    for symbol in chart_tasks:
+        try:
+            chart_tasks[symbol] = await asyncio.wait_for(chart_tasks[symbol], timeout=8.0)
+        except asyncio.TimeoutError:
+            chart_tasks[symbol] = []
+
     for symbol, price_data in prices_data["prices"].items():
         change = price_data.get("change", 0); price = price_data.get("price", 0)
         if price <= 0: continue
-        candles = await get_kucoin_chart(symbol)
+        candles = chart_tasks.get(symbol, [])
         vision  = await analyze_chart_with_vision(symbol, candles)
         signal  = calc_signal(change, vision)
 
@@ -373,7 +390,9 @@ async def auto_trade_cycle():
             elif spot_trade_usdt < 1.0:
                 print(f"[cycle] {symbol}: SKIP spot — size ${spot_trade_usdt:.2f} < $1")
             else:
-                print(f"[cycle] {symbol}: PLACING spot BUY ${spot_trade_usdt:.2f}")
+                msg = f"[cycle] {symbol}: PLACING spot BUY ${spot_trade_usdt:.2f}"
+                print(msg)
+                log_activity(msg)
                 ok = await execute_spot_trade(symbol, signal, vision, price, spot_trade_usdt)
                 if ok:
                     signals_fired.append({"account": "spot", "symbol": symbol, "action": action,
@@ -395,7 +414,9 @@ async def auto_trade_cycle():
                 print(f"[cycle] {symbol}: SKIP futures — balance ${fut_usdt:.2f} < $1")
             else:
                 fut_side = "buy" if action == "BUY" else "sell"
-                print(f"[cycle] {symbol}: PLACING futures {fut_side.upper()} (bal=${fut_usdt:.2f})")
+                msg = f"[cycle] {symbol}: PLACING futures {fut_side.upper()} (bal=${fut_usdt:.2f})"
+                print(msg)
+                log_activity(msg)
                 ok = await execute_futures_trade(symbol, signal, vision, price, fut_usdt)
                 if ok:
                     FSYMS = {"BTC-USDT":"XBTUSDTM","ETH-USDT":"ETHUSDTM","SOL-USDT":"SOLUSDTM"}
@@ -404,9 +425,13 @@ async def auto_trade_cycle():
                         "pattern": vision.get("pattern","?"), "rsi": vision.get("rsi", 0),
                         "tp": round(price*(1+TP_PCT if action=="BUY" else 1-TP_PCT),4),
                         "sl": round(price*(1-SL_PCT if action=="BUY" else 1+SL_PCT),4)})
-                    print(f"[cycle] {symbol}: futures {fut_side.upper()} OK")
+                    msg = f"[cycle] {symbol}: futures {fut_side.upper()} OK"
+                    print(msg)
+                    log_activity(msg)
                 else:
-                    print(f"[cycle] {symbol}: futures {fut_side.upper()} FAILED")
+                    msg = f"[cycle] {symbol}: futures {fut_side.upper()} FAILED"
+                    print(msg)
+                    log_activity(msg)
     if signals_fired:
         mode = "TEST" if TEST_MODE else "LIVE"
         msg = f"⚛ *QuantumTrade {mode}*\n\n"
@@ -416,7 +441,10 @@ async def auto_trade_cycle():
         await notify(msg)
     btc_data = prices_data["prices"].get("BTC-USDT", {})
     if btc_data:
-        candles_btc = await get_kucoin_chart("BTC-USDT")
+        try:
+            candles_btc = await asyncio.wait_for(get_kucoin_chart("BTC-USDT"), timeout=8.0)
+        except asyncio.TimeoutError:
+            candles_btc = []
         vision_btc  = await analyze_chart_with_vision("BTC-USDT", candles_btc)
         btc_signal  = calc_signal(btc_data.get("change", 0), vision_btc)
         q = btc_signal["q_score"]; conf = btc_signal["confidence"]
@@ -590,6 +618,12 @@ class ManualTrade(BaseModel):
     symbol: str; side: str; size: float; is_futures: bool = False; leverage: int = 3
 
 
+# In-memory activity log
+activity_log = []
+def log_activity(msg: str):
+    activity_log.append({"ts": datetime.utcnow().isoformat(), "msg": msg})
+    if len(activity_log) > 100: activity_log.pop(0)
+
 @app.get("/api/debug")
 async def api_debug():
     """Returns last known state for debugging."""
@@ -601,6 +635,7 @@ async def api_debug():
         "risk":          RISK_PER_TRADE,
         "min_confidence":MIN_CONFIDENCE,
         "cooldown_sec":  300,
+        "activity_log":  list(reversed(activity_log))[:20],
         "timestamp":     datetime.utcnow().isoformat(),
     }
 
