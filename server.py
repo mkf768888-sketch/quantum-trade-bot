@@ -1,7 +1,6 @@
 """
-QuantumTrade AI - FastAPI Backend v4.5
-Fixed: NameError in execute_spot/futures_trade, marginMode CROSS, smart balance check
-Added: /api/settings, activity_log improvements
+QuantumTrade AI - FastAPI Backend v5.0
+Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
 """
 
 import asyncio
@@ -18,7 +17,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="4.5.0")
+app = FastAPI(title="QuantumTrade AI", version="5.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -271,12 +270,17 @@ async def notify(text: str):
     except: pass
 
 
-# ── Signal Generator ───────────────────────────────────────────────────────────
-def calc_signal(price_change: float, vision: dict = None) -> dict:
+# ── Signal Generator v5.0 ──────────────────────────────────────────────────────
+def calc_signal(price_change: float, vision: dict = None,
+                fear_greed: dict = None, polymarket_bonus: float = 0.0,
+                whale_bonus: float = 0.0) -> dict:
+    """Q-Score v5.0: технический анализ + мировые события + киты."""
     score = 50.0
-    score += price_change * 5.0
+
+    # ── Технический анализ (max ±35) ─────────────────────────────────────
+    score += price_change * 2.0  # было × 5 — слишком доминировало
     if vision and vision.get("pattern") not in ("error", "insufficient_data"):
-        rsi = vision.get("rsi", 50.0)
+        rsi     = vision.get("rsi", 50.0)
         pattern = vision.get("pattern", "consolidation")
         is_reversal = pattern in ("oversold_bounce", "oversold_reversal", "overbought_drop", "overbought_reversal")
         score += (rsi - 50.0) * 0.2
@@ -285,20 +289,42 @@ def calc_signal(price_change: float, vision: dict = None) -> dict:
             elif vision.get("ema_bullish") is False: score -= 8.0
         vol_ratio = vision.get("vol_ratio", 1.0)
         if vol_ratio > 1.2: score += 5.0 if price_change >= 0 else -5.0
-        pattern_bonus = {"oversold_bounce": +10, "oversold_reversal": +10, "uptrend_breakout": +7,
-                         "uptrend": +4, "consolidation": 0, "high_volatility": -3,
-                         "downtrend": -4, "downtrend_breakdown": -7, "overbought_reversal": -10, "overbought_drop": -10}
-        score += pattern_bonus.get(pattern, 0)
+        pattern_bonus_map = {
+            "oversold_bounce": +10, "oversold_reversal": +10, "uptrend_breakout": +7,
+            "uptrend": +4, "consolidation": 0, "high_volatility": -3,
+            "downtrend": -4, "downtrend_breakdown": -7, "overbought_reversal": -10, "overbought_drop": -10
+        }
+        score += pattern_bonus_map.get(pattern, 0)
+
+    # ── Внешние сигналы (max ±23) ─────────────────────────────────────────
+    fg_bonus = fear_greed.get("bonus", 0) if fear_greed else 0
+    score += fg_bonus          # Fear&Greed контрарный: ±8
+    score += polymarket_bonus  # Polymarket события: ±5
+    score += whale_bonus       # Whale flow: ±5 (упрощённо)
+
     score = max(0.0, min(100.0, score))
+
     if score >= MIN_Q_SCORE:
-        action = "BUY"; confidence = round(min(0.60 + (score - MIN_Q_SCORE) / (100 - MIN_Q_SCORE) * 0.35, 0.95), 2)
+        action = "BUY"
+        confidence = round(min(0.60 + (score - MIN_Q_SCORE) / (100 - MIN_Q_SCORE) * 0.35, 0.95), 2)
     elif score <= (100 - MIN_Q_SCORE):
-        action = "SELL"; confidence = round(min(0.60 + ((100 - MIN_Q_SCORE) - score) / (100 - MIN_Q_SCORE) * 0.35, 0.95), 2)
+        action = "SELL"
+        confidence = round(min(0.60 + ((100 - MIN_Q_SCORE) - score) / (100 - MIN_Q_SCORE) * 0.35, 0.95), 2)
     else:
-        action = "HOLD"; confidence = round(0.40 + abs(score - 50.0) / 50.0 * 0.20, 2)
+        action = "HOLD"
+        confidence = round(0.40 + abs(score - 50.0) / 50.0 * 0.20, 2)
+
     if vision and vision.get("signal") == action and action != "HOLD":
         confidence = round(max(confidence, vision.get("confidence", 0.0)), 2)
-    return {"action": action, "confidence": confidence, "q_score": round(score, 1)}
+
+    return {
+        "action": action, "confidence": confidence, "q_score": round(score, 1),
+        "breakdown": {
+            "price_momentum": round(price_change * 2.0, 1),
+            "fear_greed": fg_bonus, "polymarket": round(polymarket_bonus, 1),
+            "whale": round(whale_bonus, 1),
+        }
+    }
 
 
 # ── Trading ────────────────────────────────────────────────────────────────────
@@ -315,205 +341,518 @@ async def execute_spot_trade(symbol, signal, vision, price, trade_usdt):
     last_signals[symbol] = {"action": signal["action"], "ts": time.time()}
     return True
 
+async def place_futures_stop_order(symbol: str, side: str, size: int,
+                                   stop_price: float, stop_dir: str) -> dict:
+    """Выставляет stop-market ордер на KuCoin Futures (для TP/SL)."""
+    endpoint = "/api/v1/st-orders"
+    body = json.dumps({
+        "clientOid": f"qts_{int(time.time()*1000)}",
+        "side": side, "symbol": symbol, "type": "market",
+        "size": size, "stop": stop_dir,
+        "stopPrice": str(stop_price), "stopPriceType": "TP",
+        "reduceOnly": True, "marginMode": "CROSS",
+    })
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(KUCOIN_FUT_URL + endpoint,
+                             headers=kucoin_headers("POST", endpoint, body),
+                             data=body, timeout=aiohttp.ClientTimeout(total=10))
+            return await r.json()
+    except Exception as e:
+        return {"code": "error", "msg": str(e)}
+
+
 async def execute_futures_trade(symbol, signal, vision, price, available_usdt):
     FUTURES_MAP = {"BTC-USDT": ("XBTUSDTM", 0.001), "ETH-USDT": ("ETHUSDTM", 0.01), "SOL-USDT": ("SOLUSDTM", 1.0)}
     if symbol not in FUTURES_MAP: return False
     fut_symbol, contract_size = FUTURES_MAP[symbol]
-    # BUY signal = LONG (buy contracts), SELL signal = SHORT (sell contracts)
     side = "buy" if signal["action"] == "BUY" else "sell"
     trade_usdt = available_usdt * RISK_PER_TRADE
     contract_value = price * contract_size
     n_contracts = max(1, int(trade_usdt * MAX_LEVERAGE / contract_value))
-    # Safety check: skip if insufficient margin
     margin_needed = contract_value / MAX_LEVERAGE
     if margin_needed > available_usdt:
-        print(f"[futures] {symbol}: SKIP — need ${margin_needed:.2f} margin, have ${available_usdt:.2f}")
+        log_activity(f"[futures] {symbol}: SKIP — need ${margin_needed:.2f}, have ${available_usdt:.2f}")
         return False
-    print(f"[futures] {symbol} -> {fut_symbol}: {side.upper()} {n_contracts} contracts @ ${price:.2f}")
+    print(f"[futures] {symbol} -> {fut_symbol}: {side.upper()} {n_contracts} @ ${price:.2f}")
     result = await place_futures_order(fut_symbol, side, n_contracts, MAX_LEVERAGE)
     if result.get("code") != "200000":
-        err = result.get("msg", result.get("code", "unknown"))
-        log_activity(f"[futures] {fut_symbol} {side.upper()} FAILED: {err}")
+        err = result.get("msg", result.get("code", "?"))
+        log_activity(f"[futures] {fut_symbol} FAILED: {err}")
         return False
+    # ── Реальные TP/SL стоп-ордера на KuCoin ─────────────────────────────
     tp = round(price * (1 + TP_PCT if side == "buy" else 1 - TP_PCT), 4)
     sl = round(price * (1 - SL_PCT if side == "buy" else 1 + SL_PCT), 4)
+    close_side = "sell" if side == "buy" else "buy"
+    tp_dir = "up" if side == "buy" else "down"
+    sl_dir = "down" if side == "buy" else "up"
+    tp_res = await place_futures_stop_order(fut_symbol, close_side, n_contracts, tp, tp_dir)
+    sl_res = await place_futures_stop_order(fut_symbol, close_side, n_contracts, sl, sl_dir)
+    log_activity(f"[futures] {fut_symbol} TP={tp}({'ok' if tp_res.get('code')=='200000' else 'err'}) SL={sl}({'ok' if sl_res.get('code')=='200000' else 'err'})")
     log_trade(fut_symbol, side, price, n_contracts, tp, sl, signal["confidence"], signal["q_score"], vision.get("pattern","?"), "futures")
     last_signals[f"FUT_{symbol}"] = {"action": signal["action"], "ts": time.time()}
     return True
 
+
+# ── Кеш ────────────────────────────────────────────────────────────────────────
+_cache: dict = {}
+def _cache_get(key: str, ttl: int):
+    entry = _cache.get(key)
+    if entry and (time.time() - entry["ts"]) < ttl:
+        return entry["val"]
+    return None
+def _cache_set(key: str, val):
+    _cache[key] = {"val": val, "ts": time.time()}
+
+
+# ── Fear & Greed Index ─────────────────────────────────────────────────────────
+async def get_fear_greed() -> dict:
+    cached = _cache_get("fear_greed", 3600)
+    if cached: return cached
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.get("https://api.alternative.me/fng/?limit=1",
+                            timeout=aiohttp.ClientTimeout(total=5))
+            data = await r.json()
+            val = int(data["data"][0]["value"])
+            cls = data["data"][0]["value_classification"]
+        if val <= 25:   bonus = +8
+        elif val <= 40: bonus = +4
+        elif val <= 60: bonus = 0
+        elif val <= 75: bonus = -4
+        else:           bonus = -8
+        result = {"value": val, "classification": cls, "bonus": bonus, "success": True}
+        _cache_set("fear_greed", result)
+        return result
+    except Exception as e:
+        return {"value": 50, "classification": "Neutral", "bonus": 0, "success": False, "error": str(e)}
+
+
+# ── Whale Tracker ──────────────────────────────────────────────────────────────
+async def get_whale_signal(symbol: str) -> dict:
+    coin_map = {"BTC-USDT": "bitcoin", "ETH-USDT": "ethereum"}
+    coin = coin_map.get(symbol)
+    if not coin: return {"bonus": 0, "success": False}
+    cache_key = f"whale_{coin}"
+    cached = _cache_get(cache_key, 300)
+    if cached: return cached
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(
+                f"https://api.blockchair.com/{coin}/stats",
+                timeout=aiohttp.ClientTimeout(total=6)
+            )
+            data = await r.json()
+            stats = data.get("data", {})
+            # Используем mempool_transactions_count как proxy активности
+            txn_count = stats.get("mempool_transactions_count", 0)
+            # Нормализуем: высокая активность мемпула = потенциальная продажа
+            if txn_count > 50000:   bonus = -5
+            elif txn_count > 20000: bonus = -2
+            elif txn_count < 5000:  bonus = +3
+            else:                   bonus = 0
+        result = {"txn_count": txn_count, "bonus": bonus, "success": True}
+        _cache_set(cache_key, result)
+        return result
+    except Exception as e:
+        return {"bonus": 0, "success": False, "error": str(e)}
+
+
+# ── Polymarket bonus ───────────────────────────────────────────────────────────
+def calc_polymarket_bonus(symbol: str, events: list) -> float:
+    sym_keywords = {
+        "BTC-USDT": ["bitcoin", "btc"], "ETH-USDT": ["ethereum", "eth"],
+        "SOL-USDT": ["solana", "sol"],  "BNB-USDT": ["binance", "bnb"],
+        "XRP-USDT": ["xrp", "ripple"],  "AVAX-USDT": ["avalanche", "avax"],
+    }
+    keywords = sym_keywords.get(symbol, [])
+    if not keywords or not events: return 0.0
+    relevant = [e for e in events if any(k in e.get("title","").lower() for k in keywords)]
+    if not relevant: return 0.0
+    avg_yes = sum(e.get("yes_prob", 50) for e in relevant) / len(relevant)
+    if avg_yes >= 65:   return +5.0
+    elif avg_yes >= 55: return +2.0
+    elif avg_yes <= 35: return -5.0
+    elif avg_yes <= 45: return -2.0
+    return 0.0
+
+
+# ── Pending strategy choices ───────────────────────────────────────────────────
+pending_strategies: dict = {}  # trade_id → {symbol, signal, vision, price, fut_usdt, expires_at}
+
+# ── Стратегии A/B/C ────────────────────────────────────────────────────────────
+STRATEGIES = {
+    "A": {"name": "Консервативная", "risk": 0.05, "leverage": 2, "tp": 0.02, "sl": 0.01,  "emoji": "🛡"},
+    "B": {"name": "Стандартная",    "risk": 0.10, "leverage": 3, "tp": 0.03, "sl": 0.015, "emoji": "⚖️"},
+    "C": {"name": "Агрессивная",    "risk": 0.20, "leverage": 5, "tp": 0.05, "sl": 0.02,  "emoji": "🚀"},
+}
+STRATEGY_TIMEOUT = 180  # 3 минуты
+
+
+async def send_strategy_choice(trade_id, symbol, action, price, q, pattern, fg, poly_b, whale_b):
+    fg_txt = f"F&G: {fg.get('value',50)} {fg.get('classification','—')} ({fg.get('bonus',0):+d})" if fg.get("success") else ""
+    poly_txt = f"Poly: {poly_b:+.0f}" if poly_b != 0 else ""
+    whale_txt = f"Whale: {whale_b:+.0f}" if whale_b != 0 else ""
+    ctx = " · ".join(p for p in [fg_txt, poly_txt, whale_txt] if p)
+    act_emoji = "🟢 BUY" if action == "BUY" else "🔴 SELL"
+    text = (
+        f"⚛ *QuantumTrade — {act_emoji}*\n\n"
+        f"Пара: *{symbol}* · Цена: `${price:,.2f}`\n"
+        f"Q-Score: `{q}` · Паттерн: `{pattern}`\n"
+        f"{ctx}\n\n"
+        f"*Выбери стратегию:*\n"
+        f"🛡 *A* — Консерватив (5%, TP 2%, SL 1%)\n"
+        f"⚖️ *B* — Стандарт (10%, TP 3%, SL 1.5%)\n"
+        f"🚀 *C* — Агрессив (20%, TP 5%, SL 2%)\n\n"
+        f"_Нет ответа 3 мин → авто стратегия B_"
+    )
+    keyboard = {"inline_keyboard": [[
+        {"text": "🛡 A", "callback_data": f"strat_A_{symbol}_{int(time.time())}"},
+        {"text": "⚖️ B", "callback_data": f"strat_B_{symbol}_{int(time.time())}"},
+        {"text": "🚀 C", "callback_data": f"strat_C_{symbol}_{int(time.time())}"},
+    ]]}
+    # Сохраняем trade_id в keyboard через реальный id
+    keyboard["inline_keyboard"][0][0]["callback_data"] = f"strat_A_{trade_id}"
+    keyboard["inline_keyboard"][0][1]["callback_data"] = f"strat_B_{trade_id}"
+    keyboard["inline_keyboard"][0][2]["callback_data"] = f"strat_C_{trade_id}"
+    if not BOT_TOKEN or not ALERT_CHAT_ID: return
+    try:
+        async with aiohttp.ClientSession() as s:
+            await s.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={"chat_id": ALERT_CHAT_ID, "text": text,
+                      "parse_mode": "Markdown", "reply_markup": keyboard},
+                timeout=aiohttp.ClientTimeout(total=5)
+            )
+    except Exception as e:
+        print(f"[telegram] strategy choice error: {e}")
+
+
+async def execute_with_strategy(strategy: str, symbol: str, signal: dict,
+                                 vision: dict, price: float, fut_usdt: float) -> bool:
+    s = STRATEGIES.get(strategy, STRATEGIES["B"])
+    log_activity(f"[strategy] {s['emoji']} {strategy} риск={int(s['risk']*100)}% lev={s['leverage']}x TP={int(s['tp']*100)}% SL={int(s['sl']*100)}%")
+    FMAP = {"BTC-USDT": ("XBTUSDTM", 0.001), "ETH-USDT": ("ETHUSDTM", 0.01), "SOL-USDT": ("SOLUSDTM", 1.0)}
+    if symbol not in FMAP: return False
+    fut_symbol, contract_size = FMAP[symbol]
+    side = "buy" if signal["action"] == "BUY" else "sell"
+    trade_usdt = fut_usdt * s["risk"]
+    contract_value = price * contract_size
+    n_contracts = max(1, int(trade_usdt * s["leverage"] / contract_value))
+    if (contract_value / s["leverage"]) > fut_usdt:
+        log_activity(f"[strategy] {symbol} SKIP — маржи недостаточно")
+        return False
+    body = json.dumps({
+        "clientOid": f"qts_{int(time.time()*1000)}", "side": side, "symbol": fut_symbol,
+        "type": "market", "size": n_contracts, "leverage": str(s["leverage"]),
+        "reduceOnly": False, "marginMode": "CROSS",
+    })
+    endpoint = "/api/v1/orders"
+    try:
+        async with aiohttp.ClientSession() as sess:
+            r = await sess.post(KUCOIN_FUT_URL + endpoint,
+                                headers=kucoin_headers("POST", endpoint, body),
+                                data=body, timeout=aiohttp.ClientTimeout(total=10))
+            result = await r.json()
+    except Exception as e:
+        log_activity(f"[strategy] ошибка запроса: {e}"); return False
+    if result.get("code") != "200000":
+        log_activity(f"[strategy] {fut_symbol} FAILED: {result.get('msg','?')}"); return False
+    tp = round(price * (1 + s["tp"] if side == "buy" else 1 - s["tp"]), 4)
+    sl = round(price * (1 - s["sl"] if side == "buy" else 1 + s["sl"]), 4)
+    close_side = "sell" if side == "buy" else "buy"
+    await place_futures_stop_order(fut_symbol, close_side, n_contracts, tp, "up" if side == "buy" else "down")
+    await place_futures_stop_order(fut_symbol, close_side, n_contracts, sl, "down" if side == "buy" else "up")
+    log_trade(fut_symbol, side, price, n_contracts, tp, sl,
+              signal["confidence"], signal["q_score"], vision.get("pattern","?"), f"futures_{strategy}")
+    last_signals[f"FUT_{symbol}"] = {"action": signal["action"], "ts": time.time()}
+    log_activity(f"[strategy] {strategy} {fut_symbol} {side.upper()} OK TP={tp} SL={sl}")
+    await notify(f"{s['emoji']} *Стратегия {strategy} — {s['name']}*\n{fut_symbol} {side.upper()} Q={signal['q_score']}")
+    return True
+
+
+async def auto_execute_strategy_b(trade_id: str):
+    await asyncio.sleep(STRATEGY_TIMEOUT)
+    pending = pending_strategies.pop(trade_id, None)
+    if not pending: return
+    log_activity(f"[strategy] timeout {trade_id} → авто B")
+    await notify("⏱ _Таймаут 3 мин — выполняю стратегию B_")
+    await execute_with_strategy("B", pending["symbol"], pending["signal"],
+                                 pending["vision"], pending["price"], pending["fut_usdt"])
+
+
 async def auto_trade_cycle():
     global last_q_score
     log_activity(f"[cycle start] {datetime.utcnow().strftime('%H:%M:%S')}")
-    prices_data = await get_all_prices()
-    if not prices_data.get("success"):
-        log_activity("[cycle] prices fetch FAILED"); return
+
+    # ── Все внешние данные параллельно ───────────────────────────────────────
     try:
-        spot_bal, fut_bal = await asyncio.wait_for(
-            asyncio.gather(get_balance(), get_futures_balance()), timeout=10.0
+        prices_data, fg_data, spot_bal, fut_bal = await asyncio.wait_for(
+            asyncio.gather(get_all_prices(), get_fear_greed(), get_balance(), get_futures_balance()),
+            timeout=12.0
         )
     except asyncio.TimeoutError:
-        print("[cycle] Balance timeout — skipping cycle")
-        return
-    spot_usdt = spot_bal.get("total_usdt", 0)
-    fut_usdt  = fut_bal.get("available_balance", 0)
+        log_activity("[cycle] data fetch timeout — skipping"); return
+    if not prices_data.get("success"):
+        log_activity("[cycle] prices fetch FAILED"); return
+
+    spot_usdt       = spot_bal.get("total_usdt", 0)
+    fut_usdt        = fut_bal.get("available_balance", 0)
     spot_trade_usdt = spot_usdt * RISK_PER_TRADE
-    signals_fired = []
-    # Fetch all charts in parallel (was sequential = very slow)
-    chart_tasks = {sym: asyncio.create_task(get_kucoin_chart(sym)) for sym in prices_data["prices"]}
-    for symbol in chart_tasks:
+    fg_val = fg_data.get("value", 50)
+    log_activity(f"[cycle] F&G={fg_val}({fg_data.get('bonus',0):+d}) spot=${spot_usdt:.1f} fut=${fut_usdt:.1f}")
+
+    # ── Polymarket (кеш 15 мин) ───────────────────────────────────────────────
+    poly_events = _cache_get("polymarket", 900) or []
+    if not poly_events:
         try:
-            chart_tasks[symbol] = await asyncio.wait_for(chart_tasks[symbol], timeout=8.0)
+            async with aiohttp.ClientSession() as _s:
+                _r = await _s.get("https://gamma-api.polymarket.com/events?limit=30&active=true&tag=crypto",
+                                  timeout=aiohttp.ClientTimeout(total=6))
+                _data = await _r.json()
+            result = []
+            for e in (_data if isinstance(_data, list) else []):
+                markets = e.get("markets", [])
+                if not markets: continue
+                pr = markets[0].get("outcomePrices", "[]")
+                if isinstance(pr, str):
+                    try: pr = json.loads(pr)
+                    except: continue
+                if not pr: continue
+                try: yp = round(float(pr[0]) * 100, 1)
+                except: continue
+                if yp in (0.0, 100.0): continue
+                if float(e.get("volume", 0)) < 1000: continue
+                result.append({"title": e.get("title",""), "yes_prob": yp})
+            poly_events = result[:10]
+            _cache_set("polymarket", poly_events)
+        except Exception: poly_events = []
+
+    signals_fired = []
+    COOLDOWN = 300
+
+    # ── Параллельный fetch: chart + vision + whale ────────────────────────────
+    async def _get_sym_data(sym, pdata):
+        try:
+            candles = await asyncio.wait_for(get_kucoin_chart(sym), timeout=8.0)
         except asyncio.TimeoutError:
-            chart_tasks[symbol] = []
+            candles = []
+        vision  = await analyze_chart_with_vision(sym, candles)
+        whale   = await get_whale_signal(sym)
+        poly_b  = calc_polymarket_bonus(sym, poly_events)
+        signal  = calc_signal(pdata.get("change", 0), vision, fg_data, poly_b, whale.get("bonus", 0))
+        return sym, vision, signal, whale, poly_b
 
-    futures_candidates = []  # collect all eligible futures signals each cycle
-    for symbol, price_data in prices_data["prices"].items():
-        change = price_data.get("change", 0); price = price_data.get("price", 0)
+    cv_tasks = [_get_sym_data(sym, pdata)
+                for sym, pdata in prices_data["prices"].items()
+                if pdata.get("price", 0) > 0]
+    cv_results = await asyncio.gather(*cv_tasks, return_exceptions=True)
+
+    futures_candidates = []
+
+    for res in cv_results:
+        if isinstance(res, Exception):
+            log_activity(f"[cycle] error: {res}"); continue
+        symbol, vision, signal, whale, poly_b = res
+        price = prices_data["prices"].get(symbol, {}).get("price", 0)
         if price <= 0: continue
-        candles = chart_tasks.get(symbol, [])
-        vision  = await analyze_chart_with_vision(symbol, candles)
-        signal  = calc_signal(change, vision)
-
         action = signal["action"]
         conf   = signal["confidence"]
         q      = signal["q_score"]
+        bd     = signal.get("breakdown", {})
+        log_activity(f"[cycle] {symbol}: {action} Q={q:.1f} "
+                     f"fg={bd.get('fear_greed',0):+.0f} poly={bd.get('polymarket',0):+.0f} "
+                     f"whale={bd.get('whale',0):+.0f} pattern={vision.get('pattern','?')}")
 
-        print(f"[cycle] {symbol}: action={action} q={q} conf={conf:.2f} pattern={vision.get('pattern','?')}")
+        if action == "HOLD": continue
+        if conf < MIN_CONFIDENCE: continue
+        if not AUTOPILOT: continue
 
-        if action == "HOLD":
-            print(f"[cycle] {symbol}: SKIP — HOLD signal"); continue
-        if conf < MIN_CONFIDENCE:
-            print(f"[cycle] {symbol}: SKIP — conf {conf:.2f} < {MIN_CONFIDENCE}"); continue
-        if not AUTOPILOT:
-            print(f"[cycle] {symbol}: SKIP — autopilot off"); continue
-
-        COOLDOWN = 300  # 5 min cooldown in test mode (was 3600)
-
-        # ── Spot trade: ONLY BUY (we have USDT, not coins) ───────────────────
+        # ── Спот (только BUY) ─────────────────────────────────────────────────
         if action == "BUY":
-            spot_key = symbol
-            last_spot = last_signals.get(spot_key, {})
-            elapsed = time.time() - last_spot.get("ts", 0)
-            if elapsed < COOLDOWN:
-                print(f"[cycle] {symbol}: SKIP spot — cooldown {int(COOLDOWN-elapsed)}s left"); 
-            elif spot_trade_usdt < 1.0:
-                print(f"[cycle] {symbol}: SKIP spot — size ${spot_trade_usdt:.2f} < $1")
-            else:
-                msg = f"[cycle] {symbol}: PLACING spot BUY ${spot_trade_usdt:.2f}"
-                print(msg)
-                log_activity(msg)
+            elapsed = time.time() - last_signals.get(symbol, {}).get("ts", 0)
+            if elapsed >= COOLDOWN and spot_trade_usdt >= 1.0:
+                log_activity(f"[cycle] {symbol}: PLACING spot BUY ${spot_trade_usdt:.2f}")
                 ok = await execute_spot_trade(symbol, signal, vision, price, spot_trade_usdt)
                 if ok:
                     signals_fired.append({"account": "spot", "symbol": symbol, "action": action,
                         "price": price, "confidence": conf, "q_score": q,
                         "pattern": vision.get("pattern","?"), "rsi": vision.get("rsi", 0),
                         "tp": round(price*(1+TP_PCT),4), "sl": round(price*(1-SL_PCT),4)})
-                    print(f"[cycle] {symbol}: spot BUY OK")
-                else:
-                    print(f"[cycle] {symbol}: spot BUY FAILED")
 
-        # ── Futures: collect candidates, pick best after loop ───────────────
-        if symbol in ("BTC-USDT", "ETH-USDT", "SOL-USDT") and action != "HOLD":
-            FUTURES_MAP_C = {"BTC-USDT": ("XBTUSDTM", 0.001), "ETH-USDT": ("ETHUSDTM", 0.01), "SOL-USDT": ("SOLUSDTM", 1.0)}
-            fut_sym_c, cs_c = FUTURES_MAP_C[symbol]
-            cv_c = price * cs_c
-            margin_c = cv_c / MAX_LEVERAGE
-            fut_key  = f"FUT_{symbol}"
-            elapsed  = time.time() - last_signals.get(fut_key, {}).get("ts", 0)
+        # ── Фьючерсы: собираем кандидатов ────────────────────────────────────
+        if symbol in ("BTC-USDT", "ETH-USDT", "SOL-USDT"):
+            FMAP = {"BTC-USDT":("XBTUSDTM",0.001),"ETH-USDT":("ETHUSDTM",0.01),"SOL-USDT":("SOLUSDTM",1.0)}
+            _, cs = FMAP[symbol]
+            margin = (price * cs) / MAX_LEVERAGE
+            elapsed = time.time() - last_signals.get(f"FUT_{symbol}", {}).get("ts", 0)
             reason = None
-            if elapsed < COOLDOWN:
-                reason = f"cooldown {int(COOLDOWN-elapsed)}s"
-            elif fut_usdt < 1.0:
-                reason = f"balance ${fut_usdt:.2f} < $1"
-            elif margin_c > fut_usdt:
-                reason = f"need ${margin_c:.2f} margin, have ${fut_usdt:.2f}"
+            if elapsed < COOLDOWN:  reason = f"cooldown {int(COOLDOWN-elapsed)}s"
+            elif fut_usdt < 1.0:    reason = f"bal ${fut_usdt:.2f}<$1"
+            elif margin > fut_usdt: reason = f"margin ${margin:.2f}>${fut_usdt:.2f}"
             if reason:
-                print(f"[cycle] {symbol}: SKIP futures — {reason}")
+                log_activity(f"[cycle] {symbol}: SKIP fut — {reason}")
             else:
                 futures_candidates.append({
                     "symbol": symbol, "signal": signal, "vision": vision,
                     "price": price, "action": action, "conf": conf, "q": q,
-                    "margin_needed": margin_c, "fut_sym": fut_sym_c
+                    "fg": fg_data, "poly": poly_b, "whale": whale.get("bonus", 0),
+                    "pattern": vision.get("pattern","?")
                 })
-    # ── Smart futures execution: pick highest |q_score - 50| candidate ──────────
-    if futures_candidates:
-        FSYMS = {"BTC-USDT":"XBTUSDTM","ETH-USDT":"ETHUSDTM","SOL-USDT":"SOLUSDTM"}
-        # Sort: BUY by q desc, SELL by q asc (most extreme signal wins)
-        best = sorted(futures_candidates, key=lambda c: abs(c["q"] - 50), reverse=True)[0]
-        sym   = best["symbol"]; sig = best["signal"]; vis = best["vision"]
-        px    = best["price"];  act = best["action"]; cf  = best["conf"]; qs  = best["q"]
-        side  = "buy" if act == "BUY" else "sell"
-        others = [c["symbol"] for c in futures_candidates if c["symbol"] != sym]
-        skip_msg = f" (skipped: {', '.join(others)})" if others else ""
-        msg = f"[cycle] BEST futures signal: {sym} {act} Q={qs:.1f}{skip_msg} (bal=${fut_usdt:.2f})"
-        print(msg); log_activity(msg)
-        ok = await execute_futures_trade(sym, sig, vis, px, fut_usdt)
-        if ok:
-            signals_fired.append({"account": f"futures {MAX_LEVERAGE}x", "symbol": FSYMS[sym],
-                "action": act, "price": px, "confidence": cf, "q_score": qs,
-                "pattern": vis.get("pattern","?"), "rsi": vis.get("rsi", 0),
-                "tp": round(px*(1+TP_PCT if act=="BUY" else 1-TP_PCT),4),
-                "sl": round(px*(1-SL_PCT if act=="BUY" else 1+SL_PCT),4)})
-            log_activity(f"[cycle] {sym}: futures {side.upper()} OK")
-        else:
-            log_activity(f"[cycle] {sym}: futures {side.upper()} FAILED — trying next")
-            # Fallback: try remaining candidates in order
-            for fallback in futures_candidates[1:]:
-                fs = fallback["symbol"]
-                if abs(fallback["q"] - 50) < 5: continue  # skip weak signals
-                ok2 = await execute_futures_trade(fs, fallback["signal"], fallback["vision"],
-                                                   fallback["price"], fut_usdt)
-                if ok2:
-                    signals_fired.append({"account": f"futures {MAX_LEVERAGE}x", "symbol": FSYMS[fs],
-                        "action": fallback["action"], "price": fallback["price"],
-                        "confidence": fallback["conf"], "q_score": fallback["q"],
-                        "pattern": fallback["vision"].get("pattern","?"), "rsi": fallback["vision"].get("rsi",0),
-                        "tp": round(fallback["price"]*(1+TP_PCT if fallback["action"]=="BUY" else 1-TP_PCT),4),
-                        "sl": round(fallback["price"]*(1-SL_PCT if fallback["action"]=="BUY" else 1+SL_PCT),4)})
-                    log_activity(f"[cycle] {fs}: futures fallback OK")
-                    break
 
+    # ── Лучший кандидат → Telegram A/B/C (3 мин таймаут) ────────────────────
+    if futures_candidates:
+        best = sorted(futures_candidates, key=lambda c: abs(c["q"] - 50), reverse=True)[0]
+        others = [c["symbol"] for c in futures_candidates if c["symbol"] != best["symbol"]]
+        skip_txt = f" (skip: {', '.join(others)})" if others else ""
+        log_activity(f"[cycle] BEST: {best['symbol']} {best['action']} Q={best['q']:.1f}{skip_txt}")
+
+        trade_id = f"{best['symbol']}_{int(time.time())}"
+        pending_strategies[trade_id] = {
+            "symbol": best["symbol"], "signal": best["signal"], "vision": best["vision"],
+            "price": best["price"], "fut_usdt": fut_usdt,
+            "expires_at": time.time() + STRATEGY_TIMEOUT + 60
+        }
+        for k in [k for k, v in list(pending_strategies.items()) if time.time() > v["expires_at"]]:
+            del pending_strategies[k]
+
+        await send_strategy_choice(
+            trade_id, best["symbol"], best["action"], best["price"],
+            best["q"], best["pattern"], best["fg"], best["poly"], best["whale"]
+        )
+        asyncio.create_task(auto_execute_strategy_b(trade_id))
+
+    # ── Уведомление спот ─────────────────────────────────────────────────────
     if signals_fired:
         mode = "TEST" if TEST_MODE else "LIVE"
-        msg = f"⚛ *QuantumTrade {mode}*\n\n"
+        msg  = f"⚛ *QuantumTrade {mode}*\n\n"
         for s in signals_fired:
             emoji = "🟢" if s["action"] == "BUY" else "🔴"
-            msg += f"{emoji} *{s['symbol']}* {s['action']} [{s['account']}]\n   Цена: `${s['price']:,.4f}` · Q: `{s['q_score']}` · Паттерн: `{s['pattern']}`\n   TP: `${s['tp']:,.4f}` · SL: `${s['sl']:,.4f}`\n\n"
+            msg += f"{emoji} *{s['symbol']}* {s['action']} [spot]\n   Q:`{s['q_score']}` TP:`${s['tp']:,.2f}` SL:`${s['sl']:,.2f}`\n\n"
         await notify(msg)
-    btc_data = prices_data["prices"].get("BTC-USDT", {})
-    if btc_data:
-        try:
-            candles_btc = await asyncio.wait_for(get_kucoin_chart("BTC-USDT"), timeout=8.0)
-        except asyncio.TimeoutError:
-            candles_btc = []
-        vision_btc  = await analyze_chart_with_vision("BTC-USDT", candles_btc)
-        btc_signal  = calc_signal(btc_data.get("change", 0), vision_btc)
+
+    # ── BTC Q-Score алерты ────────────────────────────────────────────────────
+    btc_res = next((r for r in cv_results if not isinstance(r, Exception) and r[0] == "BTC-USDT"), None)
+    if btc_res:
+        _, _, btc_signal, _, _ = btc_res
         q = btc_signal["q_score"]; conf = btc_signal["confidence"]
+        btc_price = prices_data["prices"].get("BTC-USDT", {}).get("price", 0)
         if q >= MIN_Q_SCORE and last_q_score < MIN_Q_SCORE:
-            await notify(f"🚀 *Q-Score {q}!* BTC `${btc_data['price']:,.0f}` · {btc_signal['action']} `{int(conf*100)}%` · `{vision_btc.get('pattern','?')}`")
+            await notify(f"🚀 *Q-Score {q}!* BTC `${btc_price:,.0f}` · {btc_signal['action']} `{int(conf*100)}%` · F&G={fg_val}")
         elif q <= 35 and last_q_score > 35:
-            await notify(f"⚠️ *Q-Score упал до {q}!* BTC `${btc_data['price']:,.0f}` ({btc_data['change']:+.2f}%)")
+            await notify(f"⚠️ *Q-Score упал до {q}!* BTC `${btc_price:,.0f}`")
         last_q_score = q
 
 
 # ── Startup ────────────────────────────────────────────────────────────────────
+# ── Position Monitor ────────────────────────────────────────────────────────────
+async def position_monitor_loop():
+    """Каждые 30 сек проверяет открытые позиции — закрылись ли по TP/SL."""
+    await asyncio.sleep(30)
+    SYM_REV = {"XBTUSDTM": "BTC-USDT", "ETHUSDTM": "ETH-USDT", "SOLUSDTM": "SOL-USDT"}
+    while True:
+        try:
+            open_trades = [t for t in trade_log if t.get("status") == "open"]
+            if open_trades:
+                pos_data   = await get_futures_positions()
+                open_syms  = {p.get("symbol") for p in pos_data.get("positions", [])}
+                for trade in open_trades:
+                    if trade["symbol"] not in open_syms:
+                        base_sym  = SYM_REV.get(trade["symbol"], "BTC-USDT")
+                        price_now = await get_ticker(base_sym)
+                        entry     = trade["price"]
+                        if trade["side"] == "sell":
+                            pnl_pct = (entry - price_now) / entry
+                        else:
+                            pnl_pct = (price_now - entry) / entry
+                        pnl_usdt = round(pnl_pct * entry * trade["size"] * MAX_LEVERAGE, 4)
+                        trade["status"]      = "closed"
+                        trade["pnl"]         = pnl_usdt
+                        trade["close_price"] = price_now
+                        emoji = "✅" if pnl_usdt >= 0 else "❌"
+                        log_activity(f"[monitor] {trade['symbol']} closed PnL=${pnl_usdt:+.3f}")
+                        await notify(
+                            f"{emoji} *Позиция закрыта*\n"
+                            f"`{trade['symbol']}` {trade['side'].upper()}\n"
+                            f"Вход: `${entry:,.2f}` · Выход: `${price_now:,.2f}`\n"
+                            f"PnL: `${pnl_usdt:+.3f}` ({pnl_pct*100:+.2f}%)"
+                        )
+        except Exception as e:
+            print(f"[monitor] {e}")
+        await asyncio.sleep(30)
+
+
+# ── Telegram Webhook — callback для A/B/C ────────────────────────────────────
+class TelegramUpdate(BaseModel):
+    callback_query: Optional[dict] = None
+    message:        Optional[dict] = None
+
+@app.post("/api/telegram/callback")
+async def telegram_callback(req: TelegramUpdate):
+    cb = req.callback_query
+    if not cb: return {"ok": True}
+    data = cb.get("data", "")
+    if not data.startswith("strat_"): return {"ok": True}
+    parts = data.split("_", 2)  # strat_A_BTC-USDT_1234567890
+    if len(parts) < 3: return {"ok": True}
+    strategy = parts[1]
+    trade_id = parts[2]
+
+    pending = pending_strategies.pop(trade_id, None)
+    if not pending:
+        if BOT_TOKEN:
+            async with aiohttp.ClientSession() as _s:
+                await _s.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
+                    json={"callback_query_id": cb["id"], "text": "Сигнал устарел или уже исполнен"},
+                    timeout=aiohttp.ClientTimeout(total=3)
+                )
+        return {"ok": True}
+
+    s = STRATEGIES.get(strategy, STRATEGIES["B"])
+    if BOT_TOKEN:
+        try:
+            async with aiohttp.ClientSession() as _s:
+                await _s.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
+                    json={"callback_query_id": cb["id"], "text": f"{s['emoji']} Стратегия {strategy} принята!"},
+                    timeout=aiohttp.ClientTimeout(total=3)
+                )
+        except: pass
+
+    asyncio.create_task(execute_with_strategy(
+        strategy, pending["symbol"], pending["signal"], pending["vision"],
+        pending["price"], pending["fut_usdt"]
+    ))
+    return {"ok": True}
+
+
 @app.on_event("startup")
 async def startup():
     asyncio.create_task(trading_loop())
+    asyncio.create_task(position_monitor_loop())
     mode = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
-    await notify(f"⚛ *QuantumTrade v4.5*\n✅ Спот + Фьючерсы\n✅ AI Chat прокси\n✅ Настройки + баги исправлены\n📊 Режим: {mode}\n🎯 Q-min: {MIN_Q_SCORE} · Conf-min: {int(MIN_CONFIDENCE*100)}%")
+    await notify(
+        f"⚛ *QuantumTrade v5.0*\n"
+        f"✅ Спот + Фьючерсы + реальные TP/SL\n"
+        f"✅ Fear&Greed + Polymarket + Whale → Q-Score\n"
+        f"✅ Стратегии A/B/C (3 мин таймаут)\n"
+        f"✅ Position Monitor\n"
+        f"📊 Режим: {mode}\n"
+        f"🎯 Q-min: {MIN_Q_SCORE} · Conf-min: {int(MIN_CONFIDENCE*100)}%"
+    )
 
 async def trading_loop():
     while True:
         try: await auto_trade_cycle()
-        except Exception as e: print(f"[loop] {e}")
+        except Exception as e: log_activity(f"[loop] error: {e}")
         await asyncio.sleep(60)
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "4.5.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "5.0.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
