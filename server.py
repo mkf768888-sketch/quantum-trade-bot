@@ -301,7 +301,9 @@ def calc_signal(price_change: float, vision: dict = None) -> dict:
 
 # ── Trading ────────────────────────────────────────────────────────────────────
 async def execute_spot_trade(symbol, signal, vision, price, trade_usdt):
+    # BUY signal = LONG (buy contracts), SELL signal = SHORT (sell contracts)
     side = "buy" if signal["action"] == "BUY" else "sell"
+    print(f"[futures] {symbol} -> {fut_symbol}: {side.upper()} {n_contracts} contracts @ ${price:.2f}")
     size = round(trade_usdt / price, 6)
     if size < 0.000001: return False
     result = await place_spot_order(symbol, side, size)
@@ -316,7 +318,9 @@ async def execute_futures_trade(symbol, signal, vision, price, available_usdt):
     FUTURES_MAP = {"BTC-USDT": ("XBTUSDTM", 0.001), "ETH-USDT": ("ETHUSDTM", 0.01), "SOL-USDT": ("SOLUSDTM", 1.0)}
     if symbol not in FUTURES_MAP: return False
     fut_symbol, contract_size = FUTURES_MAP[symbol]
+    # BUY signal = LONG (buy contracts), SELL signal = SHORT (sell contracts)
     side = "buy" if signal["action"] == "BUY" else "sell"
+    print(f"[futures] {symbol} -> {fut_symbol}: {side.upper()} {n_contracts} contracts @ ${price:.2f}")
     trade_usdt = available_usdt * RISK_PER_TRADE
     contract_value = price * contract_size
     n_contracts = max(1, int(trade_usdt * MAX_LEVERAGE / contract_value))
@@ -343,27 +347,66 @@ async def auto_trade_cycle():
         candles = await get_kucoin_chart(symbol)
         vision  = await analyze_chart_with_vision(symbol, candles)
         signal  = calc_signal(change, vision)
-        if signal["action"] == "HOLD" or signal["confidence"] < MIN_CONFIDENCE or not AUTOPILOT: continue
-        spot_key = symbol; last_spot = last_signals.get(spot_key, {})
-        if not (time.time() - last_spot.get("ts", 0) < 3600) and spot_trade_usdt >= 1.0:
-            ok = await execute_spot_trade(symbol, signal, vision, price, spot_trade_usdt)
-            if ok:
-                signals_fired.append({"account": "spot", "symbol": symbol, "action": signal["action"],
-                    "price": price, "confidence": signal["confidence"], "q_score": signal["q_score"],
-                    "pattern": vision.get("pattern","?"), "rsi": vision.get("rsi", 0),
-                    "tp": round(price*(1+TP_PCT if signal["action"]=="BUY" else 1-TP_PCT),4),
-                    "sl": round(price*(1-SL_PCT if signal["action"]=="BUY" else 1+SL_PCT),4)})
+
+        action = signal["action"]
+        conf   = signal["confidence"]
+        q      = signal["q_score"]
+
+        print(f"[cycle] {symbol}: action={action} q={q} conf={conf:.2f} pattern={vision.get('pattern','?')}")
+
+        if action == "HOLD":
+            print(f"[cycle] {symbol}: SKIP — HOLD signal"); continue
+        if conf < MIN_CONFIDENCE:
+            print(f"[cycle] {symbol}: SKIP — conf {conf:.2f} < {MIN_CONFIDENCE}"); continue
+        if not AUTOPILOT:
+            print(f"[cycle] {symbol}: SKIP — autopilot off"); continue
+
+        COOLDOWN = 300  # 5 min cooldown in test mode (was 3600)
+
+        # ── Spot trade: ONLY BUY (we have USDT, not coins) ───────────────────
+        if action == "BUY":
+            spot_key = symbol
+            last_spot = last_signals.get(spot_key, {})
+            elapsed = time.time() - last_spot.get("ts", 0)
+            if elapsed < COOLDOWN:
+                print(f"[cycle] {symbol}: SKIP spot — cooldown {int(COOLDOWN-elapsed)}s left"); 
+            elif spot_trade_usdt < 1.0:
+                print(f"[cycle] {symbol}: SKIP spot — size ${spot_trade_usdt:.2f} < $1")
+            else:
+                print(f"[cycle] {symbol}: PLACING spot BUY ${spot_trade_usdt:.2f}")
+                ok = await execute_spot_trade(symbol, signal, vision, price, spot_trade_usdt)
+                if ok:
+                    signals_fired.append({"account": "spot", "symbol": symbol, "action": action,
+                        "price": price, "confidence": conf, "q_score": q,
+                        "pattern": vision.get("pattern","?"), "rsi": vision.get("rsi", 0),
+                        "tp": round(price*(1+TP_PCT),4), "sl": round(price*(1-SL_PCT),4)})
+                    print(f"[cycle] {symbol}: spot BUY OK")
+                else:
+                    print(f"[cycle] {symbol}: spot BUY FAILED")
+
+        # ── Futures: BUY=LONG, SELL=SHORT (works both ways) ──────────────────
         if symbol in ("BTC-USDT", "ETH-USDT", "SOL-USDT"):
-            fut_key = f"FUT_{symbol}"; last_fut = last_signals.get(fut_key, {})
-            if not (time.time() - last_fut.get("ts", 0) < 3600) and fut_usdt >= 1.0:
+            fut_key  = f"FUT_{symbol}"
+            last_fut = last_signals.get(fut_key, {})
+            elapsed  = time.time() - last_fut.get("ts", 0)
+            if elapsed < COOLDOWN:
+                print(f"[cycle] {symbol}: SKIP futures — cooldown {int(COOLDOWN-elapsed)}s left")
+            elif fut_usdt < 1.0:
+                print(f"[cycle] {symbol}: SKIP futures — balance ${fut_usdt:.2f} < $1")
+            else:
+                fut_side = "buy" if action == "BUY" else "sell"
+                print(f"[cycle] {symbol}: PLACING futures {fut_side.upper()} (bal=${fut_usdt:.2f})")
                 ok = await execute_futures_trade(symbol, signal, vision, price, fut_usdt)
                 if ok:
                     FSYMS = {"BTC-USDT":"XBTUSDTM","ETH-USDT":"ETHUSDTM","SOL-USDT":"SOLUSDTM"}
                     signals_fired.append({"account": f"futures {MAX_LEVERAGE}x", "symbol": FSYMS[symbol],
-                        "action": signal["action"], "price": price, "confidence": signal["confidence"],
-                        "q_score": signal["q_score"], "pattern": vision.get("pattern","?"), "rsi": vision.get("rsi", 0),
-                        "tp": round(price*(1+TP_PCT if signal["action"]=="BUY" else 1-TP_PCT),4),
-                        "sl": round(price*(1-SL_PCT if signal["action"]=="BUY" else 1+SL_PCT),4)})
+                        "action": action, "price": price, "confidence": conf, "q_score": q,
+                        "pattern": vision.get("pattern","?"), "rsi": vision.get("rsi", 0),
+                        "tp": round(price*(1+TP_PCT if action=="BUY" else 1-TP_PCT),4),
+                        "sl": round(price*(1-SL_PCT if action=="BUY" else 1+SL_PCT),4)})
+                    print(f"[cycle] {symbol}: futures {fut_side.upper()} OK")
+                else:
+                    print(f"[cycle] {symbol}: futures {fut_side.upper()} FAILED")
     if signals_fired:
         mode = "TEST" if TEST_MODE else "LIVE"
         msg = f"⚛ *QuantumTrade {mode}*\n\n"
@@ -545,6 +588,21 @@ async def api_ai_chat(req: ChatRequest):
 
 class ManualTrade(BaseModel):
     symbol: str; side: str; size: float; is_futures: bool = False; leverage: int = 3
+
+
+@app.get("/api/debug")
+async def api_debug():
+    """Returns last known state for debugging."""
+    return {
+        "last_signals":  last_signals,
+        "last_qscore":   last_q_score,
+        "trade_count":   len(trade_log),
+        "autopilot":     AUTOPILOT,
+        "risk":          RISK_PER_TRADE,
+        "min_confidence":MIN_CONFIDENCE,
+        "cooldown_sec":  300,
+        "timestamp":     datetime.utcnow().isoformat(),
+    }
 
 @app.post("/api/trade/manual")
 async def manual_trade(req: ManualTrade):
