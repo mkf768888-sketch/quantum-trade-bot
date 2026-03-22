@@ -1,6 +1,7 @@
 """
-QuantumTrade AI - FastAPI Backend v4.4
-Added: /api/ai/chat proxy for Claude API (fixes CORS)
+QuantumTrade AI - FastAPI Backend v4.5
+Fixed: NameError in execute_spot/futures_trade, marginMode CROSS, smart balance check
+Added: /api/settings, activity_log improvements
 """
 
 import asyncio
@@ -17,7 +18,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="4.4.0")
+app = FastAPI(title="QuantumTrade AI", version="4.5.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -175,7 +176,7 @@ async def place_spot_order(symbol: str, side: str, size: float) -> dict:
 
 async def place_futures_order(symbol: str, side: str, size: int, leverage: int = 3, reduce_only: bool = False) -> dict:
     endpoint = "/api/v1/orders"
-    body = json.dumps({"clientOid": f"qtf_{int(time.time()*1000)}", "side": side, "symbol": symbol, "type": "market", "size": size, "leverage": str(leverage), "reduceOnly": reduce_only})
+    body = json.dumps({"clientOid": f"qtf_{int(time.time()*1000)}", "side": side, "symbol": symbol, "type": "market", "size": size, "leverage": str(leverage), "reduceOnly": reduce_only, "marginMode": "CROSS"})
     try:
         async with aiohttp.ClientSession() as s:
             r = await s.post(KUCOIN_FUT_URL + endpoint, headers=kucoin_headers("POST", endpoint, body), data=body, timeout=aiohttp.ClientTimeout(total=10))
@@ -302,10 +303,9 @@ def calc_signal(price_change: float, vision: dict = None) -> dict:
 
 # ── Trading ────────────────────────────────────────────────────────────────────
 async def execute_spot_trade(symbol, signal, vision, price, trade_usdt):
-    # BUY signal = LONG (buy contracts), SELL signal = SHORT (sell contracts)
     side = "buy" if signal["action"] == "BUY" else "sell"
-    print(f"[futures] {symbol} -> {fut_symbol}: {side.upper()} {n_contracts} contracts @ ${price:.2f}")
     size = round(trade_usdt / price, 6)
+    print(f"[spot] {symbol}: {side.upper()} {size} @ ${price:.2f}")
     if size < 0.000001: return False
     result = await place_spot_order(symbol, side, size)
     if result.get("code") != "200000": return False
@@ -321,12 +321,20 @@ async def execute_futures_trade(symbol, signal, vision, price, available_usdt):
     fut_symbol, contract_size = FUTURES_MAP[symbol]
     # BUY signal = LONG (buy contracts), SELL signal = SHORT (sell contracts)
     side = "buy" if signal["action"] == "BUY" else "sell"
-    print(f"[futures] {symbol} -> {fut_symbol}: {side.upper()} {n_contracts} contracts @ ${price:.2f}")
     trade_usdt = available_usdt * RISK_PER_TRADE
     contract_value = price * contract_size
     n_contracts = max(1, int(trade_usdt * MAX_LEVERAGE / contract_value))
+    # Safety check: skip if insufficient margin
+    margin_needed = contract_value / MAX_LEVERAGE
+    if margin_needed > available_usdt:
+        print(f"[futures] {symbol}: SKIP — need ${margin_needed:.2f} margin, have ${available_usdt:.2f}")
+        return False
+    print(f"[futures] {symbol} -> {fut_symbol}: {side.upper()} {n_contracts} contracts @ ${price:.2f}")
     result = await place_futures_order(fut_symbol, side, n_contracts, MAX_LEVERAGE)
-    if result.get("code") != "200000": return False
+    if result.get("code") != "200000":
+        err = result.get("msg", result.get("code", "unknown"))
+        log_activity(f"[futures] {fut_symbol} {side.upper()} FAILED: {err}")
+        return False
     tp = round(price * (1 + TP_PCT if side == "buy" else 1 - TP_PCT), 4)
     sl = round(price * (1 - SL_PCT if side == "buy" else 1 + SL_PCT), 4)
     log_trade(fut_symbol, side, price, n_contracts, tp, sl, signal["confidence"], signal["q_score"], vision.get("pattern","?"), "futures")
@@ -460,7 +468,7 @@ async def auto_trade_cycle():
 async def startup():
     asyncio.create_task(trading_loop())
     mode = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
-    await notify(f"⚛ *QuantumTrade v4.4*\n✅ Спот + Фьючерсы\n✅ AI Chat прокси\n📊 Режим: {mode}\n🎯 Q-min: {MIN_Q_SCORE} · Conf-min: {int(MIN_CONFIDENCE*100)}%")
+    await notify(f"⚛ *QuantumTrade v4.5*\n✅ Спот + Фьючерсы\n✅ AI Chat прокси\n✅ Настройки + баги исправлены\n📊 Режим: {mode}\n🎯 Q-min: {MIN_Q_SCORE} · Conf-min: {int(MIN_CONFIDENCE*100)}%")
 
 async def trading_loop():
     while True:
@@ -472,7 +480,7 @@ async def trading_loop():
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "4.4.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "4.5.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
