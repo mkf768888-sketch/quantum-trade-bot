@@ -366,6 +366,7 @@ async def auto_trade_cycle():
         except asyncio.TimeoutError:
             chart_tasks[symbol] = []
 
+    futures_candidates = []  # collect all eligible futures signals each cycle
     for symbol, price_data in prices_data["prices"].items():
         change = price_data.get("change", 0); price = price_data.get("price", 0)
         if price <= 0: continue
@@ -411,35 +412,67 @@ async def auto_trade_cycle():
                 else:
                     print(f"[cycle] {symbol}: spot BUY FAILED")
 
-        # ── Futures: BUY=LONG, SELL=SHORT (works both ways) ──────────────────
-        if symbol in ("BTC-USDT", "ETH-USDT", "SOL-USDT"):
+        # ── Futures: collect candidates, pick best after loop ───────────────
+        if symbol in ("BTC-USDT", "ETH-USDT", "SOL-USDT") and action != "HOLD":
+            FUTURES_MAP_C = {"BTC-USDT": ("XBTUSDTM", 0.001), "ETH-USDT": ("ETHUSDTM", 0.01), "SOL-USDT": ("SOLUSDTM", 1.0)}
+            fut_sym_c, cs_c = FUTURES_MAP_C[symbol]
+            cv_c = price * cs_c
+            margin_c = cv_c / MAX_LEVERAGE
             fut_key  = f"FUT_{symbol}"
-            last_fut = last_signals.get(fut_key, {})
-            elapsed  = time.time() - last_fut.get("ts", 0)
+            elapsed  = time.time() - last_signals.get(fut_key, {}).get("ts", 0)
+            reason = None
             if elapsed < COOLDOWN:
-                print(f"[cycle] {symbol}: SKIP futures — cooldown {int(COOLDOWN-elapsed)}s left")
+                reason = f"cooldown {int(COOLDOWN-elapsed)}s"
             elif fut_usdt < 1.0:
-                print(f"[cycle] {symbol}: SKIP futures — balance ${fut_usdt:.2f} < $1")
+                reason = f"balance ${fut_usdt:.2f} < $1"
+            elif margin_c > fut_usdt:
+                reason = f"need ${margin_c:.2f} margin, have ${fut_usdt:.2f}"
+            if reason:
+                print(f"[cycle] {symbol}: SKIP futures — {reason}")
             else:
-                fut_side = "buy" if action == "BUY" else "sell"
-                msg = f"[cycle] {symbol}: PLACING futures {fut_side.upper()} (bal=${fut_usdt:.2f})"
-                print(msg)
-                log_activity(msg)
-                ok = await execute_futures_trade(symbol, signal, vision, price, fut_usdt)
-                if ok:
-                    FSYMS = {"BTC-USDT":"XBTUSDTM","ETH-USDT":"ETHUSDTM","SOL-USDT":"SOLUSDTM"}
-                    signals_fired.append({"account": f"futures {MAX_LEVERAGE}x", "symbol": FSYMS[symbol],
-                        "action": action, "price": price, "confidence": conf, "q_score": q,
-                        "pattern": vision.get("pattern","?"), "rsi": vision.get("rsi", 0),
-                        "tp": round(price*(1+TP_PCT if action=="BUY" else 1-TP_PCT),4),
-                        "sl": round(price*(1-SL_PCT if action=="BUY" else 1+SL_PCT),4)})
-                    msg = f"[cycle] {symbol}: futures {fut_side.upper()} OK"
-                    print(msg)
-                    log_activity(msg)
-                else:
-                    msg = f"[cycle] {symbol}: futures {fut_side.upper()} FAILED"
-                    print(msg)
-                    log_activity(msg)
+                futures_candidates.append({
+                    "symbol": symbol, "signal": signal, "vision": vision,
+                    "price": price, "action": action, "conf": conf, "q": q,
+                    "margin_needed": margin_c, "fut_sym": fut_sym_c
+                })
+    # ── Smart futures execution: pick highest |q_score - 50| candidate ──────────
+    if futures_candidates:
+        FSYMS = {"BTC-USDT":"XBTUSDTM","ETH-USDT":"ETHUSDTM","SOL-USDT":"SOLUSDTM"}
+        # Sort: BUY by q desc, SELL by q asc (most extreme signal wins)
+        best = sorted(futures_candidates, key=lambda c: abs(c["q"] - 50), reverse=True)[0]
+        sym   = best["symbol"]; sig = best["signal"]; vis = best["vision"]
+        px    = best["price"];  act = best["action"]; cf  = best["conf"]; qs  = best["q"]
+        side  = "buy" if act == "BUY" else "sell"
+        others = [c["symbol"] for c in futures_candidates if c["symbol"] != sym]
+        skip_msg = f" (skipped: {', '.join(others)})" if others else ""
+        msg = f"[cycle] BEST futures signal: {sym} {act} Q={qs:.1f}{skip_msg} (bal=${fut_usdt:.2f})"
+        print(msg); log_activity(msg)
+        ok = await execute_futures_trade(sym, sig, vis, px, fut_usdt)
+        if ok:
+            signals_fired.append({"account": f"futures {MAX_LEVERAGE}x", "symbol": FSYMS[sym],
+                "action": act, "price": px, "confidence": cf, "q_score": qs,
+                "pattern": vis.get("pattern","?"), "rsi": vis.get("rsi", 0),
+                "tp": round(px*(1+TP_PCT if act=="BUY" else 1-TP_PCT),4),
+                "sl": round(px*(1-SL_PCT if act=="BUY" else 1+SL_PCT),4)})
+            log_activity(f"[cycle] {sym}: futures {side.upper()} OK")
+        else:
+            log_activity(f"[cycle] {sym}: futures {side.upper()} FAILED — trying next")
+            # Fallback: try remaining candidates in order
+            for fallback in futures_candidates[1:]:
+                fs = fallback["symbol"]
+                if abs(fallback["q"] - 50) < 5: continue  # skip weak signals
+                ok2 = await execute_futures_trade(fs, fallback["signal"], fallback["vision"],
+                                                   fallback["price"], fut_usdt)
+                if ok2:
+                    signals_fired.append({"account": f"futures {MAX_LEVERAGE}x", "symbol": FSYMS[fs],
+                        "action": fallback["action"], "price": fallback["price"],
+                        "confidence": fallback["conf"], "q_score": fallback["q"],
+                        "pattern": fallback["vision"].get("pattern","?"), "rsi": fallback["vision"].get("rsi",0),
+                        "tp": round(fallback["price"]*(1+TP_PCT if fallback["action"]=="BUY" else 1-TP_PCT),4),
+                        "sl": round(fallback["price"]*(1-SL_PCT if fallback["action"]=="BUY" else 1+SL_PCT),4)})
+                    log_activity(f"[cycle] {fs}: futures fallback OK")
+                    break
+
     if signals_fired:
         mode = "TEST" if TEST_MODE else "LIVE"
         msg = f"⚛ *QuantumTrade {mode}*\n\n"
