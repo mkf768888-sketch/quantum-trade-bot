@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v5.1
+QuantumTrade AI - FastAPI Backend v5.2
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
 """
 
@@ -17,7 +17,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="5.1.0")
+app = FastAPI(title="QuantumTrade AI", version="5.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -482,10 +482,11 @@ pending_strategies: dict = {}  # trade_id → {symbol, signal, vision, price, fu
 
 # ── Стратегии A/B/C ────────────────────────────────────────────────────────────
 STRATEGIES = {
-    "A": {"name": "Консервативная", "risk": 0.05, "leverage": 2, "tp": 0.02, "sl": 0.01,  "emoji": "🛡"},
-    "B": {"name": "Стандартная",    "risk": 0.10, "leverage": 3, "tp": 0.03, "sl": 0.015, "emoji": "⚖️"},
-    "C": {"name": "Агрессивная",    "risk": 0.20, "leverage": 5, "tp": 0.05, "sl": 0.02,  "emoji": "🚀"},
+    "A": {"name": "Консервативная", "risk": 0.05, "leverage": 2, "tp": 0.02, "sl": 0.01,  "emoji": "🛡",  "tag": "real"},
+    "B": {"name": "Стандартная",    "risk": 0.10, "leverage": 3, "tp": 0.03, "sl": 0.015, "emoji": "⚖️", "tag": "real"},
+    "C": {"name": "Бонусная",       "risk": 0.25, "leverage": 5, "tp": 0.05, "sl": 0.025, "emoji": "🚀",  "tag": "bonus"},
 }
+# DUAL: одновременно B (реальный) + C (бонусный агрессивный)
 STRATEGY_TIMEOUT = 180  # 3 минуты
 
 
@@ -503,18 +504,20 @@ async def send_strategy_choice(trade_id, symbol, action, price, q, pattern, fg, 
         f"*Выбери стратегию:*\n"
         f"🛡 *A* — Консерватив (5%, TP 2%, SL 1%)\n"
         f"⚖️ *B* — Стандарт (10%, TP 3%, SL 1.5%)\n"
-        f"🚀 *C* — Агрессив (20%, TP 5%, SL 2%)\n\n"
+        f"🚀 *C* — Бонусная (25%, TP 5%, SL 2.5%)\n"
+        f"💥 *DUAL* — B + C одновременно\n\n"
         f"_Нет ответа 3 мин → авто стратегия B_"
     )
-    keyboard = {"inline_keyboard": [[
-        {"text": "🛡 A", "callback_data": f"strat_A_{symbol}_{int(time.time())}"},
-        {"text": "⚖️ B", "callback_data": f"strat_B_{symbol}_{int(time.time())}"},
-        {"text": "🚀 C", "callback_data": f"strat_C_{symbol}_{int(time.time())}"},
-    ]]}
-    # Сохраняем trade_id в keyboard через реальный id
-    keyboard["inline_keyboard"][0][0]["callback_data"] = f"strat_A_{trade_id}"
-    keyboard["inline_keyboard"][0][1]["callback_data"] = f"strat_B_{trade_id}"
-    keyboard["inline_keyboard"][0][2]["callback_data"] = f"strat_C_{trade_id}"
+    keyboard = {"inline_keyboard": [
+        [
+            {"text": "🛡 A", "callback_data": f"strat_A_{trade_id}"},
+            {"text": "⚖️ B", "callback_data": f"strat_B_{trade_id}"},
+            {"text": "🚀 C", "callback_data": f"strat_C_{trade_id}"},
+        ],
+        [
+            {"text": "💥 DUAL (B + C бонус)", "callback_data": f"strat_D_{trade_id}"},
+        ]
+    ]}
     if not BOT_TOKEN or not ALERT_CHAT_ID: return
     try:
         async with aiohttp.ClientSession() as s:
@@ -570,6 +573,28 @@ async def execute_with_strategy(strategy: str, symbol: str, signal: dict,
     await notify(f"{s['emoji']} *Стратегия {strategy} — {s['name']}*\n{fut_symbol} {side.upper()} Q={signal['q_score']}")
     return True
 
+
+
+async def execute_dual_strategy(symbol: str, signal: dict, vision: dict,
+                                 price: float, fut_usdt: float) -> bool:
+    """DUAL: открывает B (реальный) + C (бонусный) одновременно."""
+    log_activity(f"[dual] {symbol}: B(реальный) + C(бонусный) одновременно")
+    # Запускаем оба параллельно
+    ok_b, ok_c = await asyncio.gather(
+        execute_with_strategy("B", symbol, signal, vision, price, fut_usdt),
+        execute_with_strategy("C", symbol, signal, vision, price, fut_usdt),
+        return_exceptions=True
+    )
+    ok_b = ok_b is True; ok_c = ok_c is True
+    log_activity(f"[dual] результат: B={'OK' if ok_b else 'FAIL'} C={'OK' if ok_c else 'FAIL'}")
+    if ok_b or ok_c:
+        await notify(
+            f"💥 *DUAL стратегия*\n"
+            f"{symbol} {('BUY' if signal['action']=='BUY' else 'SELL')} Q={signal['q_score']}\n"
+            f"⚖️ B (реальный): {'✅' if ok_b else '❌'}\n"
+            f"🚀 C (бонусный): {'✅' if ok_c else '❌'}"
+        )
+    return ok_b or ok_c
 
 async def auto_execute_strategy_b(trade_id: str):
     await asyncio.sleep(STRATEGY_TIMEOUT)
@@ -824,10 +849,16 @@ async def telegram_callback(req: TelegramUpdate):
                 )
         except: pass
 
-    asyncio.create_task(execute_with_strategy(
-        strategy, pending["symbol"], pending["signal"], pending["vision"],
-        pending["price"], pending["fut_usdt"]
-    ))
+    if strategy == "D":
+        asyncio.create_task(execute_dual_strategy(
+            pending["symbol"], pending["signal"], pending["vision"],
+            pending["price"], pending["fut_usdt"]
+        ))
+    else:
+        asyncio.create_task(execute_with_strategy(
+            strategy, pending["symbol"], pending["signal"], pending["vision"],
+            pending["price"], pending["fut_usdt"]
+        ))
     return {"ok": True}
 
 
@@ -837,7 +868,7 @@ async def startup():
     asyncio.create_task(position_monitor_loop())
     mode = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     await notify(
-        f"⚛ *QuantumTrade v5.1*\n"
+        f"⚛ *QuantumTrade v5.2*\n"
         f"✅ Спот + Фьючерсы + реальные TP/SL\n"
         f"✅ Fear&Greed + Polymarket + Whale → Q-Score\n"
         f"✅ Стратегии A/B/C (3 мин таймаут)\n"
@@ -856,7 +887,7 @@ async def trading_loop():
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "5.1.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "5.2.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
@@ -915,11 +946,29 @@ async def api_chart(symbol: str):
 
 @app.get("/api/trades")
 async def api_trades(limit: int = 50):
-    return {"trades": list(reversed(trade_log))[:limit], "total": len(trade_log),
-            "open": sum(1 for t in trade_log if t["status"] == "open"),
-            "wins": sum(1 for t in trade_log if t.get("pnl") and t["pnl"] > 0),
-            "losses": sum(1 for t in trade_log if t.get("pnl") and t["pnl"] <= 0),
-            "total_pnl": round(sum(t.get("pnl") or 0 for t in trade_log), 4)}
+    # Статистика по трекам
+    def track_stats(tag_filter):
+        filtered = [t for t in trade_log if tag_filter in t.get("account","")]
+        wins   = sum(1 for t in filtered if (t.get("pnl") or 0) > 0)
+        losses = sum(1 for t in filtered if (t.get("pnl") or 0) <= 0 and t.get("pnl") is not None)
+        pnl    = round(sum(t.get("pnl") or 0 for t in filtered), 4)
+        return {"count": len(filtered), "wins": wins, "losses": losses,
+                "pnl": pnl, "win_rate": round(wins/len(filtered)*100, 1) if filtered else 0}
+    return {
+        "trades":     list(reversed(trade_log))[:limit],
+        "total":      len(trade_log),
+        "open":       sum(1 for t in trade_log if t["status"] == "open"),
+        "wins":       sum(1 for t in trade_log if (t.get("pnl") or 0) > 0),
+        "losses":     sum(1 for t in trade_log if (t.get("pnl") or 0) <= 0 and t.get("pnl") is not None),
+        "total_pnl":  round(sum(t.get("pnl") or 0 for t in trade_log), 4),
+        "by_track": {
+            "real":  track_stats("_A") if any("_A" in t.get("account","") for t in trade_log)
+                     else track_stats("_B") | {"note": "includes B"},
+            "bonus": track_stats("_C"),
+            "dual":  track_stats("_D"),
+            "all_real": {**track_stats("_A"), "plus_B": track_stats("_B")},
+        }
+    }
 
 @app.get("/api/polymarket")
 async def api_polymarket():
