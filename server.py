@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v5.7
+QuantumTrade AI - FastAPI Backend v6.0
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
 Phase3: Origin QC QAOA — квантовая оптимизация портфеля (CPU симулятор / Wukong 180 ready)
 """
@@ -20,7 +20,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="5.7.0")
+app = FastAPI(title="QuantumTrade AI", version="6.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -1205,6 +1205,8 @@ async def telegram_callback(req: TelegramUpdate):
 async def startup():
     asyncio.create_task(trading_loop())
     asyncio.create_task(position_monitor_loop())
+    asyncio.create_task(airdrop_digest_loop())
+    await get_airdrops()  # прогреваем кеш при старте
     mode = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     await notify(
         f"⚛ *QuantumTrade v5.5*\n"
@@ -1213,6 +1215,7 @@ async def startup():
         f"✅ Стратегии A/B/C (3 мин таймаут)\n"
         f"✅ Position Monitor\n"
         f"⚛️ QAOA CPU симулятор (Phase 3 Origin QC)\n"
+        f"🪂 Airdrop Tracker активен (Phase 4)\n"
         f"📊 Режим: {mode}\n"
         f"🎯 Q-min: {MIN_Q_SCORE} · Conf-min: {int(MIN_CONFIDENCE*100)}%"
     )
@@ -1224,7 +1227,233 @@ async def trading_loop():
         await asyncio.sleep(60)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ФАЗА 4 — AIRDROP TRACKER
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── State ──────────────────────────────────────────────────────────────────────
+_airdrop_cache: List[dict] = []
+_airdrop_cache_ts: float = 0.0
+_AIRDROP_TTL = 21600  # 6 часов
+
+# ── Hardcoded fallback список (топ проекты 2026) ───────────────────────────────
+_AIRDROP_FALLBACK = [
+    {
+        "id": "backpack-exchange", "name": "Backpack Exchange", "ecosystem": "EVM",
+        "status": "active", "potential": 5, "effort": "low",
+        "description": "Торгуй на споте/фьючерсах → фармишь очки к TGE. Команда с известными VC-бэкингом.",
+        "tasks": ["Торгуй на споте", "Торгуй на фьючерсах", "Пополни депозит"],
+        "deadline": None, "tge_estimate": "Q2 2026",
+        "url": "https://backpack.exchange", "volume_usd": 5e9,
+    },
+    {
+        "id": "monad-testnet", "name": "Monad Testnet", "ecosystem": "EVM",
+        "status": "active", "potential": 4, "effort": "low",
+        "description": "1 транзакция каждые 48ч достаточно. Консистентность важнее объёма.",
+        "tasks": ["Сделай транзакцию раз в 48ч", "Используй dApps на тестнете"],
+        "deadline": None, "tge_estimate": "Q3 2026",
+        "url": "https://testnet.monad.xyz", "volume_usd": 1e9,
+    },
+    {
+        "id": "base-ecosystem", "name": "Base Ecosystem", "ecosystem": "EVM",
+        "status": "active", "potential": 4, "effort": "medium",
+        "description": "L2 от Coinbase. Swap на Aerodrome/Uniswap, бридж ETH через official bridge.",
+        "tasks": ["Бридж ETH → Base", "Swap на Aerodrome или Uniswap", "Используй Basename"],
+        "deadline": None, "tge_estimate": "TBD",
+        "url": "https://base.org", "volume_usd": 8e9,
+    },
+    {
+        "id": "layerzero-s2", "name": "LayerZero Season 2", "ecosystem": "Multi",
+        "status": "active", "potential": 4, "effort": "medium",
+        "description": "Кросс-чейн протокол. Сделай транзакции через их бриджи между разными сетями.",
+        "tasks": ["Кросс-чейн бридж через LZ", "Используй Stargate Finance"],
+        "deadline": None, "tge_estimate": "Q2 2026",
+        "url": "https://layerzero.network", "volume_usd": 2e9,
+    },
+    {
+        "id": "tonkeeper-points", "name": "Tonkeeper Points", "ecosystem": "TON",
+        "status": "active", "potential": 3, "effort": "low",
+        "description": "Ежедневный check-in в приложении. Используй TON кошелёк активно.",
+        "tasks": ["Ежедневный check-in", "Своп в TON Space", "Стейкинг TON"],
+        "deadline": None, "tge_estimate": "TBD",
+        "url": "https://tonkeeper.com", "volume_usd": 5e8,
+    },
+    {
+        "id": "scroll-mainnet", "name": "Scroll", "ecosystem": "EVM",
+        "status": "active", "potential": 4, "effort": "medium",
+        "description": "ZK-rollup на Ethereum. Бридж ETH, используй dApps на Scroll.",
+        "tasks": ["Бридж ETH → Scroll", "Swap на Uniswap v3 на Scroll", "Минт NFT на Scroll"],
+        "deadline": None, "tge_estimate": "Q2 2026",
+        "url": "https://scroll.io", "volume_usd": 1.5e9,
+    },
+    {
+        "id": "hyperliquid-points", "name": "Hyperliquid Points", "ecosystem": "EVM",
+        "status": "active", "potential": 5, "effort": "medium",
+        "description": "DEX с перпами. Очки начисляются за объём торгов. Уже крупный airdrop был — ждут второй.",
+        "tasks": ["Торгуй перпами на HyperLiquid", "Обеспечь ликвидность в HLP"],
+        "deadline": None, "tge_estimate": "TBD",
+        "url": "https://hyperliquid.xyz", "volume_usd": 10e9,
+    },
+    {
+        "id": "zksync-s2", "name": "zkSync Era Season 2", "ecosystem": "EVM",
+        "status": "active", "potential": 3, "effort": "low",
+        "description": "ZK-rollup от Matter Labs. После первого airdrop ждут второй сезон.",
+        "tasks": ["Бридж ETH → zkSync Era", "Swap на SyncSwap", "Используй ZK native dApps"],
+        "deadline": None, "tge_estimate": "H2 2026",
+        "url": "https://zksync.io", "volume_usd": 3e9,
+    },
+]
+
+def _stars(n: int) -> str:
+    """Конвертирует 1-5 в строку звёзд."""
+    return "★" * n + "☆" * (5 - n)
+
+def _effort_ru(e: str) -> str:
+    return {"low": "низкие", "medium": "средние", "high": "высокие"}.get(e, e)
+
+async def _fetch_defillama_airdrops() -> List[dict]:
+    """Пробуем получить данные из DeFiLlama. Fallback → пустой список."""
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(
+                "https://api.llama.fi/airdrops",
+                timeout=aiohttp.ClientTimeout(total=6)
+            )
+            data = await r.json()
+            result = []
+            for item in (data if isinstance(data, list) else [])[:5]:
+                name = item.get("name") or item.get("project", "")
+                if not name:
+                    continue
+                result.append({
+                    "id": name.lower().replace(" ", "-"),
+                    "name": name,
+                    "ecosystem": "EVM",
+                    "status": "active",
+                    "potential": 3,
+                    "effort": "medium",
+                    "description": item.get("description", "Из DeFiLlama"),
+                    "tasks": ["Проверь официальный сайт"],
+                    "deadline": None,
+                    "tge_estimate": None,
+                    "url": item.get("url", "https://defillama.com/airdrops"),
+                    "volume_usd": float(item.get("totalLocked", 0) or 0),
+                })
+            return result
+    except Exception:
+        return []
+
+async def get_airdrops() -> List[dict]:
+    """Возвращает список airdrops (кеш 6ч + fallback)."""
+    global _airdrop_cache, _airdrop_cache_ts
+    if _airdrop_cache and time.time() - _airdrop_cache_ts < _AIRDROP_TTL:
+        return _airdrop_cache
+    # Пробуем DeFiLlama
+    live = await _fetch_defillama_airdrops()
+    # Мержим с fallback (fallback в конце, live в начале)
+    seen = {a["id"] for a in live}
+    merged = live + [a for a in _AIRDROP_FALLBACK if a["id"] not in seen]
+    # Сортировка: potential DESC, volume DESC
+    merged.sort(key=lambda x: (x["potential"], x["volume_usd"]), reverse=True)
+    _airdrop_cache = merged
+    _airdrop_cache_ts = time.time()
+    print(f"[airdrops] кеш обновлён: {len(merged)} проектов ({len(live)} из DeFiLlama)")
+    return _airdrop_cache
+
+async def send_airdrop_digest():
+    """Отправляет ежедневный дайджест в Telegram."""
+    if not BOT_TOKEN or not ALERT_CHAT_ID:
+        return
+    airdrops = await get_airdrops()
+    top5 = airdrops[:5]
+    today = datetime.utcnow().strftime("%d.%m.%Y")
+    lines = [f"⚛ *QuantumTrade · 🪂 Airdrop Digest {today}*", "━━━━━━━━━━━━━━━━━━━━━━"]
+    emoji_map = {"EVM": "🔷", "TON": "💎", "Solana": "🟣", "Multi": "🌐"}
+    for a in top5:
+        eco_emoji = emoji_map.get(a["ecosystem"], "🔹")
+        lines.append(
+            f"\n{eco_emoji} *{a['name']}* `[{a['ecosystem']}]`\n"
+            f"   {_stars(a['potential'])} · Усилия: {_effort_ru(a['effort'])}\n"
+            f"   {a['description'][:80]}\n"
+            f"   👉 {a['url']}"
+        )
+    # Дедлайны
+    deadlines = [a for a in airdrops if a.get("deadline")]
+    if deadlines:
+        lines.append("\n⏰ *Дедлайны:*")
+        for a in deadlines[:3]:
+            lines.append(f"   • {a['name']}: {a['deadline']}")
+    lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("_/airdrops — полный список_")
+    text = "\n".join(lines)
+    try:
+        async with aiohttp.ClientSession() as s:
+            await s.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={"chat_id": ALERT_CHAT_ID, "text": text,
+                      "parse_mode": "Markdown", "disable_web_page_preview": True},
+                timeout=aiohttp.ClientTimeout(total=5)
+            )
+        print("[airdrops] дайджест отправлен в Telegram")
+    except Exception as e:
+        print(f"[airdrops] ошибка отправки дайджеста: {e}")
+
+async def airdrop_digest_loop():
+    """Отправляет дайджест раз в 24ч (в 09:00 UTC)."""
+    while True:
+        now = datetime.utcnow()
+        # Считаем секунды до следующего 09:00 UTC
+        target_hour = 9
+        secs_until = ((target_hour - now.hour) % 24) * 3600 - now.minute * 60 - now.second
+        if secs_until <= 0:
+            secs_until += 86400
+        await asyncio.sleep(secs_until)
+        try:
+            await send_airdrop_digest()
+        except Exception as e:
+            print(f"[airdrops] digest loop error: {e}")
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
+
+@app.get("/api/airdrops")
+async def airdrops_list():
+    """Phase 4: список активных airdrop возможностей."""
+    data = await get_airdrops()
+    ecosystems = list(dict.fromkeys(a["ecosystem"] for a in data))
+    return {
+        "airdrops": data,
+        "total": len(data),
+        "last_updated": datetime.utcfromtimestamp(_airdrop_cache_ts).isoformat() if _airdrop_cache_ts else None,
+        "ecosystems": ecosystems,
+    }
+
+@app.get("/api/airdrops/digest")
+async def airdrops_digest():
+    """Топ-5 для дайджеста + дедлайны."""
+    data = await get_airdrops()
+    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+    tomorrow_str = datetime.utcnow().replace(day=datetime.utcnow().day + 1).strftime("%Y-%m-%d") if datetime.utcnow().day < 28 else None
+    return {
+        "top5": data[:5],
+        "deadlines_today": [a for a in data if a.get("deadline") == today_str],
+        "deadlines_tomorrow": [a for a in data if tomorrow_str and a.get("deadline") == tomorrow_str],
+    }
+
+@app.post("/api/airdrops/refresh")
+async def airdrops_refresh():
+    """Принудительный сброс кеша airdrops."""
+    global _airdrop_cache_ts
+    _airdrop_cache_ts = 0.0
+    data = await get_airdrops()
+    return {"status": "ok", "count": len(data)}
+
+@app.post("/api/airdrops/digest/send")
+async def airdrops_send_digest():
+    """Отправить дайджест в Telegram прямо сейчас (для тестирования)."""
+    await send_airdrop_digest()
+    return {"status": "sent"}
+
 @app.get("/api/quantum")
 async def quantum_status():
     """Phase 3: текущий QAOA quantum bias для всех пар."""
@@ -1240,7 +1469,7 @@ async def quantum_status():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "5.7.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "6.0.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
