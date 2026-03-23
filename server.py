@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v5.4
+QuantumTrade AI - FastAPI Backend v5.5
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
 """
 
@@ -17,7 +17,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="5.4.1")
+app = FastAPI(title="QuantumTrade AI", version="5.5.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -321,48 +321,57 @@ async def call_yandex_vision(img_b64: str) -> dict:
 
 def parse_vision_bonus(ocr_text: str, vision_dict: dict) -> float:
     """
-    Анализирует OCR-текст с графика и добавляет ±8 к Q-Score.
-    Логика: ищем числа HIGH/LOW/CLOSE/OPEN и сравниваем направление
-    с уже посчитанными индикаторами. Vision подтверждает или опровергает сигнал.
+    Анализирует OCR-текст с графика → ±8 к Q-Score.
+    Vision рисует: HIGH:2065 LOW:2048 CLOSE:2051 OPEN:2060
+    Но иногда OPEN не попадает в кадр — используем price_change из vision_dict.
     """
     if not ocr_text:
         return 0.0
     text = ocr_text.upper()
     bonus = 0.0
     try:
-        import re
+        import re as _re
         nums = {}
+        # Ищем все числа после меток (включая десятичные)
         for label in ["HIGH", "LOW", "CLOSE", "OPEN"]:
-            m = re.search(rf"{label}:(\d+)", text)
+            m = _re.search(rf"{label}[:\s]+(\d+\.?\d*)", text)
             if m:
                 nums[label] = float(m.group(1))
 
-        if "CLOSE" in nums and "OPEN" in nums:
-            close = nums["CLOSE"]; open_p = nums["OPEN"]
-            pct_move = (close - open_p) / open_p * 100
+        ema_bull     = vision_dict.get("ema_bullish", None)
+        price_change = vision_dict.get("price_change", 0.0)  # уже посчитан
 
-            ema_bull = vision_dict.get("ema_bullish", None)
-            pattern  = vision_dict.get("pattern", "")
+        # Используем price_change из технического анализа (надёжнее чем OCR OPEN)
+        pct_move = price_change
 
-            # Vision подтверждает нисходящий тренд
-            if pct_move < -1.0 and ema_bull is False:
-                bonus = -8.0
-            elif pct_move < -0.5:
-                bonus = -4.0
-            # Vision подтверждает восходящий тренд
-            elif pct_move > 1.0 and ema_bull is True:
-                bonus = +8.0
-            elif pct_move > 0.5:
-                bonus = +4.0
-            # HIGH/LOW паттерны
-            if "HIGH" in nums and "LOW" in nums:
-                price_pos = (close - nums["LOW"]) / (nums["HIGH"] - nums["LOW"] + 0.001) * 100
-                # Цена у минимума + нисходящий → усиливаем SELL
-                if price_pos < 25 and pct_move < 0:
-                    bonus -= 2.0
-                # Цена у максимума + восходящий → усиливаем BUY
-                elif price_pos > 75 and pct_move > 0:
-                    bonus += 2.0
+        # Если OCR всё же дал CLOSE и OPEN — используем их (точнее)
+        if "CLOSE" in nums and "OPEN" in nums and nums["OPEN"] > 0:
+            pct_move = (nums["CLOSE"] - nums["OPEN"]) / nums["OPEN"] * 100
+
+        # Vision подтверждает тренд → усиливаем сигнал
+        if pct_move < -1.5 and ema_bull is False:
+            bonus = -8.0   # сильный нисходящий + EMA медвежья
+        elif pct_move < -0.5 and ema_bull is False:
+            bonus = -5.0   # умеренный нисходящий
+        elif pct_move < -0.3:
+            bonus = -3.0   # слабый нисходящий
+        elif pct_move > 1.5 and ema_bull is True:
+            bonus = +8.0   # сильный восходящий + EMA бычья
+        elif pct_move > 0.5 and ema_bull is True:
+            bonus = +5.0   # умеренный восходящий
+        elif pct_move > 0.3:
+            bonus = +3.0   # слабый восходящий
+
+        # Позиция цены в диапазоне HIGH/LOW → дополнительный сигнал
+        if "HIGH" in nums and "LOW" in nums and "CLOSE" in nums:
+            rng = nums["HIGH"] - nums["LOW"]
+            if rng > 0:
+                price_pos = (nums["CLOSE"] - nums["LOW"]) / rng * 100
+                if price_pos < 20 and pct_move < 0:
+                    bonus -= 2.0  # цена у дна + падение → усиливаем SELL
+                elif price_pos > 80 and pct_move > 0:
+                    bonus += 2.0  # цена у вершины + рост → усиливаем BUY
+
     except Exception:
         pass
     return round(max(-8.0, min(8.0, bonus)), 1)
@@ -596,11 +605,15 @@ async def get_fear_greed() -> dict:
             data = await r.json()
             val = int(data["data"][0]["value"])
             cls = data["data"][0]["value_classification"]
-        if val <= 25:   bonus = +8
-        elif val <= 40: bonus = +4
+        # Контрарная логика: Extreme Fear → ждём разворота вверх (+)
+        # НО: слишком сильный бонус гасит SELL сигналы при медвежьем рынке
+        # Поэтому при Extreme Fear даём умеренный бонус +3 (не +8)
+        if val <= 15:   bonus = +3   # Extreme Fear — рынок явно перепродан
+        elif val <= 25: bonus = +6   # Fear — умеренный контрарный
+        elif val <= 40: bonus = +3
         elif val <= 60: bonus = 0
         elif val <= 75: bonus = -4
-        else:           bonus = -8
+        else:           bonus = -7   # Extreme Greed → сильный SELL сигнал
         result = {"value": val, "classification": cls, "bonus": bonus, "success": True}
         _cache_set("fear_greed", result)
         return result
@@ -1050,7 +1063,7 @@ async def startup():
     asyncio.create_task(position_monitor_loop())
     mode = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     await notify(
-        f"⚛ *QuantumTrade v5.4*\n"
+        f"⚛ *QuantumTrade v5.5*\n"
         f"✅ Спот + Фьючерсы + реальные TP/SL\n"
         f"✅ Fear&Greed + Polymarket + Whale → Q-Score\n"
         f"✅ Стратегии A/B/C (3 мин таймаут)\n"
@@ -1069,7 +1082,7 @@ async def trading_loop():
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "5.4.1", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "5.5.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
