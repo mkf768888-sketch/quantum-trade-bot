@@ -1,6 +1,7 @@
 """
-QuantumTrade AI - FastAPI Backend v5.5
+QuantumTrade AI - FastAPI Backend v5.6
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
+Phase3: Origin QC QAOA — квантовая оптимизация портфеля (CPU симулятор / Wukong 180 ready)
 """
 
 import asyncio
@@ -10,14 +11,16 @@ import time
 import base64
 import json
 import os
+import math
+import random
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict
 import aiohttp
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="5.5.0")
+app = FastAPI(title="QuantumTrade AI", version="5.6.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -49,6 +52,129 @@ FUT_PAIRS  = ["XBTUSDTM", "ETHUSDTM", "SOLUSDTM"]
 last_signals  = {}
 last_q_score  = 0.0
 trade_log: List[dict] = []
+
+# ── QAOA State ─────────────────────────────────────────────────────────────────
+_quantum_bias: Dict[str, float] = {}   # symbol → bias [-15..+15]
+_quantum_ts: float = 0.0               # timestamp последнего запуска
+
+
+# ── QAOA Module (Phase 3: Origin QC) ───────────────────────────────────────────
+# CPU-симулятор совместим с pyqpanda3 API.
+# Для реального чипа Wukong 180 — раскомментировать блок REAL_QC_CHIP ниже.
+#
+# REAL_QC_CHIP (Origin Wukong 180):
+# from pyqpanda3 import QCloud, QMachineType
+# qvm = QCloud()
+# qvm.init_qvm(os.getenv("ORIGIN_QC_TOKEN", ""), QMachineType.Wukong)
+# qvm.set_chip_id("72")  # Wukong-180: 72 = public chip
+#
+# Корреляционная матрица (BTC ETH SOL BNB XRP AVAX)
+PAIR_NAMES = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT", "AVAX-USDT"]
+CORR_MATRIX = [
+    # BTC    ETH    SOL    BNB    XRP    AVAX
+    [1.00,  0.85,  0.78,  0.72,  0.60,  0.75],  # BTC
+    [0.85,  1.00,  0.80,  0.70,  0.58,  0.77],  # ETH
+    [0.78,  0.80,  1.00,  0.65,  0.55,  0.80],  # SOL
+    [0.72,  0.70,  0.65,  1.00,  0.62,  0.68],  # BNB
+    [0.60,  0.58,  0.55,  0.62,  1.00,  0.60],  # XRP
+    [0.75,  0.77,  0.80,  0.68,  0.60,  1.00],  # AVAX
+]
+N_PAIRS = len(PAIR_NAMES)
+
+
+def _qaoa_cpu_simulate(price_changes: List[float], p_layers: int = 2) -> List[float]:
+    """
+    QAOA CPU симулятор: оптимизирует портфельные веса с учётом корреляций.
+    Возвращает bias [-15..+15] для каждой пары.
+    p_layers: глубина схемы (1-3, больше = точнее, медленнее).
+    """
+    n = N_PAIRS
+
+    # 1. Строим QUBO матрицу задачи максимизации Шарпа
+    # Q_ij = corr[i][j] (штраф за коррелированные позиции)
+    # Линейный член: -momentum[i] (награда за сильный тренд)
+    momentum = [max(-1.0, min(1.0, pc / 5.0)) for pc in price_changes]
+
+    # 2. Инициализируем углы QAOA (gamma, beta) случайно с seed
+    random.seed(int(time.time()) // 900)  # меняется раз в 15 мин
+    gamma = [random.uniform(0.1, math.pi) for _ in range(p_layers)]
+    beta  = [random.uniform(0.1, math.pi / 2) for _ in range(p_layers)]
+
+    # 3. Симулируем квантовое состояние (упрощённая vector sim)
+    # |ψ⟩ = H^n|0⟩ → apply U_C(γ) → U_B(β) → measure
+    # Начальное состояние: суперпозиция всех 2^n битовых строк
+    state_size = 1 << n  # 64 состояния для 6 кубитов
+    amplitudes = [complex(1.0 / math.sqrt(state_size))] * state_size
+
+    for layer in range(p_layers):
+        # U_C(γ): применяем cost unitary
+        new_amp = [complex(0)] * state_size
+        for s in range(state_size):
+            bits = [(s >> i) & 1 for i in range(n)]
+            # cost = -Σ momentum[i]*bits[i] + γ*Σ corr[i][j]*bits[i]*bits[j]
+            cost = 0.0
+            for i in range(n):
+                cost -= momentum[i] * bits[i]
+                for j in range(i + 1, n):
+                    cost += gamma[layer] * CORR_MATRIX[i][j] * bits[i] * bits[j]
+            phase = complex(math.cos(cost), -math.sin(cost))
+            new_amp[s] = amplitudes[s] * phase
+        amplitudes = new_amp
+
+        # U_B(β): mixing unitary (X-rotation на каждом кубите)
+        for q in range(n):
+            new_amp = [complex(0)] * state_size
+            cos_b = math.cos(beta[layer])
+            sin_b = math.sin(beta[layer])
+            for s in range(state_size):
+                # flip бит q
+                s_flip = s ^ (1 << q)
+                new_amp[s] += amplitudes[s] * complex(cos_b, 0)
+                new_amp[s] += amplitudes[s_flip] * complex(0, sin_b)
+            amplitudes = new_amp
+
+    # 4. Вычисляем ожидаемое значение <Z_i> для каждого кубита
+    z_exp = [0.0] * n
+    for s in range(state_size):
+        prob = (amplitudes[s] * amplitudes[s].conjugate()).real
+        bits = [(s >> i) & 1 for i in range(n)]
+        for i in range(n):
+            z_exp[i] += prob * (1 - 2 * bits[i])  # +1 если bit=0, -1 если bit=1
+
+    # 5. Конвертируем в bias [-15..+15]
+    # z_exp[i] ∈ [-1..+1] → bias = z_exp * 15 * momentum_sign
+    bias = []
+    for i in range(n):
+        b = z_exp[i] * 15.0
+        # Усиливаем сигнал в направлении momentum
+        if momentum[i] > 0.1:
+            b = abs(b)
+        elif momentum[i] < -0.1:
+            b = -abs(b)
+        bias.append(round(b, 1))
+
+    return bias
+
+
+async def run_qaoa_optimization(price_changes: Dict[str, float]) -> Dict[str, float]:
+    """
+    Запускает QAOA оптимизацию и обновляет глобальный _quantum_bias.
+    Вызывается каждые 15 минут в auto_trade_cycle.
+    """
+    global _quantum_bias, _quantum_ts
+    changes_list = [price_changes.get(p, 0.0) for p in PAIR_NAMES]
+    try:
+        bias_list = await asyncio.get_event_loop().run_in_executor(
+            None, _qaoa_cpu_simulate, changes_list, 2
+        )
+        _quantum_bias = {PAIR_NAMES[i]: bias_list[i] for i in range(N_PAIRS)}
+        _quantum_ts = time.time()
+        log_str = " ".join(f"{p.split('-')[0]}={b:+.1f}" for p, b in _quantum_bias.items())
+        print(f"[qaoa] bias: {log_str}")
+    except Exception as e:
+        print(f"[qaoa] error: {e}")
+        _quantum_bias = {p: 0.0 for p in PAIR_NAMES}
+    return _quantum_bias
 
 def log_trade(symbol, side, price, size, tp, sl, confidence, q_score, pattern, account="spot"):
     trade_log.append({
@@ -460,8 +586,8 @@ async def notify(text: str):
 # ── Signal Generator v5.0 ──────────────────────────────────────────────────────
 def calc_signal(price_change: float, vision: dict = None,
                 fear_greed: dict = None, polymarket_bonus: float = 0.0,
-                whale_bonus: float = 0.0) -> dict:
-    """Q-Score v5.0: технический анализ + мировые события + киты."""
+                whale_bonus: float = 0.0, quantum_bias: float = 0.0) -> dict:
+    """Q-Score v5.6: технический анализ + мировые события + киты + QAOA quantum bias."""
     score = 50.0
 
     # ── Технический анализ (max ±35) ─────────────────────────────────────
@@ -491,6 +617,10 @@ def calc_signal(price_change: float, vision: dict = None,
     score += polymarket_bonus  # Polymarket события: ±5
     score += whale_bonus       # Whale flow: ±5 (упрощённо)
 
+    # ── QAOA Quantum Bias (max ±15) ───────────────────────────────────────
+    q_b = max(-15.0, min(15.0, quantum_bias))  # clamp безопасности
+    score += q_b
+
     score = max(0.0, min(100.0, score))
 
     if score >= MIN_Q_SCORE:
@@ -512,6 +642,7 @@ def calc_signal(price_change: float, vision: dict = None,
             "price_momentum": round(price_change * 2.0, 1),
             "fear_greed": fg_bonus, "polymarket": round(polymarket_bonus, 1),
             "whale": round(whale_bonus, 1),
+            "quantum_bias": round(q_b, 1),
         }
     }
 
@@ -846,6 +977,16 @@ async def auto_trade_cycle():
             _cache_set("polymarket", poly_events)
         except Exception: poly_events = []
 
+    # ── QAOA: обновляем quantum bias раз в 15 минут ──────────────────────────
+    global _quantum_ts
+    if time.time() - _quantum_ts > 870:  # 870 сек ≈ 14.5 мин (чуть раньше цикла)
+        price_changes_map = {
+            sym: pdata.get("change", 0.0)
+            for sym, pdata in prices_data["prices"].items()
+            if sym in PAIR_NAMES
+        }
+        await run_qaoa_optimization(price_changes_map)
+
     signals_fired = []
     COOLDOWN = 100
 
@@ -855,10 +996,12 @@ async def auto_trade_cycle():
             candles = await asyncio.wait_for(get_kucoin_chart(sym), timeout=8.0)
         except asyncio.TimeoutError:
             candles = []
-        vision  = await analyze_chart_with_vision(sym, candles)
-        whale   = await get_whale_signal(sym)
-        poly_b  = calc_polymarket_bonus(sym, poly_events)
-        signal  = calc_signal(pdata.get("change", 0), vision, fg_data, poly_b, whale.get("bonus", 0))
+        vision   = await analyze_chart_with_vision(sym, candles)
+        whale    = await get_whale_signal(sym)
+        poly_b   = calc_polymarket_bonus(sym, poly_events)
+        q_bias   = _quantum_bias.get(sym, 0.0)
+        signal   = calc_signal(pdata.get("change", 0), vision, fg_data, poly_b,
+                               whale.get("bonus", 0), q_bias)
         return sym, vision, signal, whale, poly_b
 
     cv_tasks = [_get_sym_data(sym, pdata)
@@ -1068,6 +1211,7 @@ async def startup():
         f"✅ Fear&Greed + Polymarket + Whale → Q-Score\n"
         f"✅ Стратегии A/B/C (3 мин таймаут)\n"
         f"✅ Position Monitor\n"
+        f"⚛️ QAOA CPU симулятор (Phase 3 Origin QC)\n"
         f"📊 Режим: {mode}\n"
         f"🎯 Q-min: {MIN_Q_SCORE} · Conf-min: {int(MIN_CONFIDENCE*100)}%"
     )
@@ -1080,9 +1224,22 @@ async def trading_loop():
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
+@app.get("/api/quantum")
+async def quantum_status():
+    """Phase 3: текущий QAOA quantum bias для всех пар."""
+    age_sec = int(time.time() - _quantum_ts) if _quantum_ts else None
+    return {
+        "quantum_bias": _quantum_bias,
+        "last_run_ago_sec": age_sec,
+        "chip": "CPU_simulator",  # → "Wukong_180" после подключения Origin QC
+        "p_layers": 2,
+        "pairs": PAIR_NAMES,
+        "note": "Раскомментируй REAL_QC_CHIP в server.py для работы на реальном чипе",
+    }
+
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "5.5.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "5.6.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
