@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v5.2
+QuantumTrade AI - FastAPI Backend v5.3
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
 """
 
@@ -17,7 +17,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="5.2.0")
+app = FastAPI(title="QuantumTrade AI", version="5.3.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -487,7 +487,7 @@ STRATEGIES = {
     "C": {"name": "Бонусная",       "risk": 0.25, "leverage": 5, "tp": 0.05, "sl": 0.025, "emoji": "🚀",  "tag": "bonus"},
 }
 # DUAL: одновременно B (реальный) + C (бонусный агрессивный)
-STRATEGY_TIMEOUT = 180  # 3 минуты
+STRATEGY_TIMEOUT = 60   # 1 минута
 
 
 async def send_strategy_choice(trade_id, symbol, action, price, q, pattern, fg, poly_b, whale_b):
@@ -506,7 +506,7 @@ async def send_strategy_choice(trade_id, symbol, action, price, q, pattern, fg, 
         f"⚖️ *B* — Стандарт (10%, TP 3%, SL 1.5%)\n"
         f"🚀 *C* — Бонусная (25%, TP 5%, SL 2.5%)\n"
         f"💥 *DUAL* — B + C одновременно\n\n"
-        f"_Нет ответа 3 мин → авто стратегия B_"
+        f"_Нет ответа 1 мин → авто стратегия B_"
     )
     keyboard = {"inline_keyboard": [
         [
@@ -601,7 +601,7 @@ async def auto_execute_strategy_b(trade_id: str):
     pending = pending_strategies.pop(trade_id, None)
     if not pending: return
     log_activity(f"[strategy] timeout {trade_id} → авто B")
-    await notify("⏱ _Таймаут 3 мин — выполняю стратегию B_")
+    await notify("⏱ _Таймаут 1 мин — выполняю стратегию B_")
     await execute_with_strategy("B", pending["symbol"], pending["signal"],
                                  pending["vision"], pending["price"], pending["fut_usdt"])
 
@@ -868,7 +868,7 @@ async def startup():
     asyncio.create_task(position_monitor_loop())
     mode = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     await notify(
-        f"⚛ *QuantumTrade v5.2*\n"
+        f"⚛ *QuantumTrade v5.3*\n"
         f"✅ Спот + Фьючерсы + реальные TP/SL\n"
         f"✅ Fear&Greed + Polymarket + Whale → Q-Score\n"
         f"✅ Стратегии A/B/C (3 мин таймаут)\n"
@@ -887,7 +887,7 @@ async def trading_loop():
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "5.2.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "5.3.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
