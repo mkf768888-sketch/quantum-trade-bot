@@ -1732,7 +1732,7 @@ async def setup_webhook(request: Request):
     """Регистрирует Telegram Webhook. Вызови один раз после деплоя."""
     if not BOT_TOKEN:
         return {"ok": False, "error": "BOT_TOKEN не задан"}
-    base_url = str(request.base_url).rstrip("/")
+    base_url = str(request.base_url).rstrip("/").replace("http://", "https://")
     webhook_url = f"{base_url}/api/telegram/callback"
     try:
         async with aiohttp.ClientSession() as s:
