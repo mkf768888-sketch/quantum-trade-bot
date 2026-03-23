@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v5.6
+QuantumTrade AI - FastAPI Backend v5.7
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
 Phase3: Origin QC QAOA — квантовая оптимизация портфеля (CPU симулятор / Wukong 180 ready)
 """
@@ -20,7 +20,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="5.6.0")
+app = FastAPI(title="QuantumTrade AI", version="5.7.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -36,7 +36,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 RISK_PER_TRADE = 0.02
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
-MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "65"))
+MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "78"))  # v5.7: 65→78 (фильтр слабых сигналов)
 MAX_LEVERAGE   = int(os.getenv("MAX_LEVERAGE", "3"))
 # With $100 futures balance, risk 10% = $10/trade, leverage 3x = $30 position size
 TP_PCT         = 0.03
@@ -598,8 +598,8 @@ def calc_signal(price_change: float, vision: dict = None,
         is_reversal = pattern in ("oversold_bounce", "oversold_reversal", "overbought_drop", "overbought_reversal")
         score += (rsi - 50.0) * 0.2
         if not is_reversal:
-            if vision.get("ema_bullish") is True:  score += 8.0
-            elif vision.get("ema_bullish") is False: score -= 8.0
+            if vision.get("ema_bullish") is True:  score += 5.0   # v5.7: 8→5 (убираем перекос к BUY)
+            elif vision.get("ema_bullish") is False: score -= 5.0  # v5.7: -8→-5
         vol_ratio = vision.get("vol_ratio", 1.0)
         if vol_ratio > 1.2: score += 5.0 if price_change >= 0 else -5.0
         pattern_bonus_map = {
@@ -988,7 +988,7 @@ async def auto_trade_cycle():
         await run_qaoa_optimization(price_changes_map)
 
     signals_fired = []
-    COOLDOWN = 100
+    COOLDOWN = 300  # v5.7: 100→300s (5 мин между сделками по одной паре)
 
     # ── Параллельный fetch: chart + vision + whale ────────────────────────────
     async def _get_sym_data(sym, pdata):
@@ -1240,7 +1240,7 @@ async def quantum_status():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "5.6.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "5.7.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
