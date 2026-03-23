@@ -20,7 +20,7 @@ from fastapi import FastAPI, WebSocket, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="6.4.0")
+app = FastAPI(title="QuantumTrade AI", version="6.5.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -580,15 +580,104 @@ async def analyze_chart_with_vision(symbol: str, candles: list) -> dict:
                   "rsi": rsi_val, "ema_fast": round(ema_fast, 4), "ema_slow": round(ema_slow, 4),
                   "ema_bullish": ema_bull, "vol_ratio": round(vol_ratio, 2), "price_pos_pct": round(price_pos, 1),
                   "vision_bonus": 0.0, "vision_ocr": ""}
-        # ── Phase 5: Kimi K2.5 Vision (Yandex OCR отключён — circular dependency) ──
-        # Yandex читает наши же метки HIGH/LOW/CLOSE с нашего же графика → дублирует
-        # ema_bonus и pattern_bonus → искусственно завышает Q на +8 каждый цикл.
-        # Будет заменено на Kimi K2.5 native vision в Phase 5.
-        # img_b64 = _render_candles_png_b64(candles)  # ← раскомментировать для Kimi
+        # ── Phase 5: Claude Vision (нативный AI-анализ графика) ─────────────────
+        if ANTHROPIC_API_KEY:
+            img_b64 = _render_candles_png_b64(candles)
+            if img_b64:
+                cv = _cache_get(f"claude_vision_{symbol}", 180)
+                if not cv:
+                    cv = await _analyze_chart_claude_vision(img_b64, symbol, result)
+                    _cache_set(f"claude_vision_{symbol}", cv)
+                if cv and cv.get("success"):
+                    result["vision_bonus"] = cv.get("bonus", 0.0)
+                    result["vision_ocr"]   = cv.get("summary", "")
         return result
     except Exception as e:
         return {"pattern": "error", "signal": "HOLD", "confidence": 0.5,
                 "error": str(e), "vision_bonus": 0.0, "vision_ocr": ""}
+
+
+# ── Phase 5: Claude Vision — нативный AI-анализ свечного графика ──────────────
+async def _analyze_chart_claude_vision(img_b64: str, symbol: str, tech: dict) -> dict:
+    """
+    Отправляет PNG графика в Claude Haiku с просьбой проанализировать паттерн.
+    Возвращает bonus ∈ [-10, +10] и текстовое резюме.
+    Haiku выбран за скорость и низкую стоимость (~$0.0003/вызов).
+    """
+    if not ANTHROPIC_API_KEY or not img_b64:
+        return {"success": False, "bonus": 0.0, "summary": ""}
+    try:
+        tech_ctx = (
+            f"Технический контекст: RSI={tech.get('rsi', 50):.0f}, "
+            f"EMA_fast={'выше' if tech.get('ema_bullish') else 'ниже'} EMA_slow, "
+            f"price_change={tech.get('price_change', 0):+.2f}%, "
+            f"volatility={tech.get('volatility', 0):.2f}%, "
+            f"price_pos={tech.get('price_pos_pct', 50):.0f}% от диапазона"
+        )
+        prompt = (
+            f"Ты — торговый аналитик. Смотришь на свечной график {symbol} (последние 24 свечи).\n"
+            f"{tech_ctx}\n\n"
+            f"Проанализируй ВИЗУАЛЬНО:\n"
+            f"1. Какой паттерн видишь? (флаг, клин, голова-плечи, треугольник, пробой и т.д.)\n"
+            f"2. Направление: BULLISH / BEARISH / NEUTRAL\n"
+            f"3. Уверенность: 0–100%\n"
+            f"4. Ключевые уровни поддержки/сопротивления\n\n"
+            f"Ответь СТРОГО в формате JSON:\n"
+            f'{{ "pattern": "название", "direction": "BULLISH|BEARISH|NEUTRAL", '
+            f'"confidence": 0-100, "support": число, "resistance": число, '
+            f'"summary": "1 предложение по-русски" }}'
+        )
+        payload = {
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 256,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {
+                        "type": "base64", "media_type": "image/png", "data": img_b64
+                    }},
+                    {"type": "text", "text": prompt}
+                ]
+            }]
+        }
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                },
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=12)
+            )
+            data = await r.json()
+
+        raw = data.get("content", [{}])[0].get("text", "{}")
+        # Извлекаем JSON из ответа
+        import re as _re
+        m = _re.search(r'\{.*\}', raw, _re.DOTALL)
+        parsed = json.loads(m.group()) if m else {}
+
+        direction   = parsed.get("direction", "NEUTRAL").upper()
+        confidence  = min(100, max(0, int(parsed.get("confidence", 50)))) / 100.0
+        summary     = parsed.get("summary", parsed.get("pattern", ""))
+
+        # Рассчитываем bonus: BULLISH → +, BEARISH → -, масштаб по уверенности
+        if direction == "BULLISH":
+            bonus = round(confidence * 10, 1)    # max +10
+        elif direction == "BEARISH":
+            bonus = round(-confidence * 10, 1)   # min -10
+        else:
+            bonus = 0.0
+
+        print(f"[claude_vision] {symbol}: {direction} {confidence*100:.0f}% → bonus={bonus:+.1f} | {summary}")
+        return {"success": True, "bonus": bonus, "summary": summary,
+                "pattern": parsed.get("pattern", ""), "direction": direction}
+
+    except Exception as e:
+        print(f"[claude_vision] {symbol} error: {e}")
+        return {"success": False, "bonus": 0.0, "summary": ""}
 
 
 # ── Telegram ───────────────────────────────────────────────────────────────────
@@ -1463,11 +1552,11 @@ async def startup():
     await get_airdrops()  # прогреваем кеш при старте
     mode = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     await notify(
-        f"⚛ *QuantumTrade v6.4.0*\n"
+        f"⚛ *QuantumTrade v6.5.0*\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
         f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
-        f"✅ Vision зачищен (Phase 5 Kimi готов к подключению)\n"
+        f"⚛️ Phase 5: Claude Vision — нативный AI-анализ графиков\n"
         f"⚛️ QAOA CPU симулятор (Phase 3 Origin QC)\n"
         f"🪂 Airdrop Tracker активен (Phase 4)\n"
         f"📊 Режим: {mode} · История: {len(trade_log)} сделок\n"
@@ -1723,7 +1812,7 @@ async def quantum_status():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "6.4.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "6.5.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
