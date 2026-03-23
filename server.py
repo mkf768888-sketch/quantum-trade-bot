@@ -16,11 +16,11 @@ import random
 from datetime import datetime
 from typing import Optional, List, Dict
 import aiohttp
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="6.2.0")
+app = FastAPI(title="QuantumTrade AI", version="6.3.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -53,6 +53,29 @@ FUT_PAIRS  = ["XBTUSDTM", "ETHUSDTM", "SOLUSDTM"]
 last_signals  = {}
 last_q_score  = 0.0
 trade_log: List[dict] = []
+
+# ── Персистентное хранилище сделок ─────────────────────────────────────────────
+# Выживает при редеплое — пишем в /tmp/trades.json (Railway ephemeral storage)
+_TRADES_FILE = "/tmp/qt_trades.json"
+
+def _load_trades_from_disk():
+    """Загружаем историю сделок при старте."""
+    global trade_log
+    try:
+        if os.path.exists(_TRADES_FILE):
+            with open(_TRADES_FILE, "r") as f:
+                trade_log = json.load(f)
+            print(f"[trades] загружено {len(trade_log)} сделок из {_TRADES_FILE}")
+    except Exception as e:
+        print(f"[trades] ошибка загрузки: {e}")
+
+def _save_trades_to_disk():
+    """Сохраняем trade_log на диск после каждой новой сделки."""
+    try:
+        with open(_TRADES_FILE, "w") as f:
+            json.dump(trade_log[-500:], f)  # храним последние 500
+    except Exception as e:
+        print(f"[trades] ошибка записи: {e}")
 
 # ── QAOA State ─────────────────────────────────────────────────────────────────
 _quantum_bias: Dict[str, float] = {}   # symbol → bias [-15..+15]
@@ -184,8 +207,9 @@ def log_trade(symbol, side, price, size, tp, sl, confidence, q_score, pattern, a
         "tp": tp, "sl": sl, "confidence": confidence, "q_score": q_score,
         "pattern": pattern, "account": account, "status": "open", "pnl": None,
     })
-    if len(trade_log) > 200:
+    if len(trade_log) > 500:
         trade_log.pop(0)
+    _save_trades_to_disk()
 
 
 # ── KuCoin Auth ────────────────────────────────────────────────────────────────
@@ -1430,20 +1454,21 @@ async def telegram_callback(req: TelegramUpdate):
 
 @app.on_event("startup")
 async def startup():
+    _load_trades_from_disk()          # загружаем историю сделок при старте
     asyncio.create_task(trading_loop())
     asyncio.create_task(position_monitor_loop())
     asyncio.create_task(airdrop_digest_loop())
     await get_airdrops()  # прогреваем кеш при старте
     mode = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     await notify(
-        f"⚛ *QuantumTrade v6.2.0*\n"
+        f"⚛ *QuantumTrade v6.3.0*\n"
         f"✅ Спот + Фьючерсы + реальные TP/SL\n"
-        f"✅ Fear&Greed + Polymarket + Whale → Q-Score\n"
-        f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
         f"✅ Telegram меню: /menu /stats /airdrops /settings\n"
+        f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
+        f"✅ Персистентный лог сделок (выживает редеплой)\n"
         f"⚛️ QAOA CPU симулятор (Phase 3 Origin QC)\n"
         f"🪂 Airdrop Tracker активен (Phase 4)\n"
-        f"📊 Режим: {mode}\n"
+        f"📊 Режим: {mode} · История: {len(trade_log)} сделок\n"
         f"🎯 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s"
     )
 
@@ -1696,11 +1721,43 @@ async def quantum_status():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "6.0.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "6.3.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
             "ai_chat": bool(ANTHROPIC_API_KEY), "timestamp": datetime.utcnow().isoformat()}
+
+@app.post("/api/setup-webhook")
+async def setup_webhook(request: Request):
+    """Регистрирует Telegram Webhook. Вызови один раз после деплоя."""
+    if not BOT_TOKEN:
+        return {"ok": False, "error": "BOT_TOKEN не задан"}
+    base_url = str(request.base_url).rstrip("/")
+    webhook_url = f"{base_url}/api/telegram/callback"
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
+                json={"url": webhook_url, "allowed_updates": ["message", "callback_query"]},
+                timeout=aiohttp.ClientTimeout(total=10)
+            )
+            data = await r.json()
+        return {"ok": data.get("ok"), "webhook_url": webhook_url, "telegram_response": data}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get("/api/setup-webhook")
+async def get_webhook_info():
+    """Проверяет текущий статус Telegram Webhook."""
+    if not BOT_TOKEN:
+        return {"ok": False, "error": "BOT_TOKEN не задан"}
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo",
+                            timeout=aiohttp.ClientTimeout(total=5))
+            return await r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 @app.get("/api/balance")
 async def api_balance(): return await get_balance()
