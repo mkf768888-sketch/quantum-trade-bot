@@ -1025,7 +1025,8 @@ async def auto_trade_cycle():
         v_ocr   = vision.get("vision_ocr", "")[:20] if vision.get("vision_ocr") else ""
         log_activity(f"[cycle] {symbol}: {action} Q={q:.1f} "
                      f"fg={bd.get('fear_greed',0):+.0f} poly={bd.get('polymarket',0):+.0f} "
-                     f"whale={bd.get('whale',0):+.0f} vision={v_bonus:+.1f} pattern={vision.get('pattern','?')}")
+                     f"whale={bd.get('whale',0):+.0f} vision={v_bonus:+.1f} "
+                     f"qbias={bd.get('quantum_bias',0.0):+.1f} pattern={vision.get('pattern','?')}")
 
         if action == "HOLD": continue
         if conf < MIN_CONFIDENCE: continue
