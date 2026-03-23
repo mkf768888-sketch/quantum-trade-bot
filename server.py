@@ -20,7 +20,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="6.0.0")
+app = FastAPI(title="QuantumTrade AI", version="6.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -37,6 +37,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 RISK_PER_TRADE = 0.02
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
 MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "78"))  # v5.7: 65→78 (фильтр слабых сигналов)
+COOLDOWN       = int(os.getenv("COOLDOWN", "300"))   # v5.7: 100→300s (5 мин между сделками по одной паре)
 MAX_LEVERAGE   = int(os.getenv("MAX_LEVERAGE", "3"))
 # With $100 futures balance, risk 10% = $10/trade, leverage 3x = $30 position size
 TP_PCT         = 0.03
@@ -920,18 +921,36 @@ async def execute_dual_strategy(symbol: str, signal: dict, vision: dict,
         )
     return ok_b or ok_c
 
-async def auto_execute_strategy_b(trade_id: str):
+async def auto_execute_dynamic(trade_id: str):
+    """Динамический выбор стратегии по Q-Score при таймауте."""
     await asyncio.sleep(STRATEGY_TIMEOUT)
     pending = pending_strategies.pop(trade_id, None)
     if not pending: return
-    log_activity(f"[strategy] timeout {trade_id} → авто B")
-    await notify("⏱ _Таймаут 1 мин — выполняю стратегию B_")
-    await execute_with_strategy("B", pending["symbol"], pending["signal"],
-                                 pending["vision"], pending["price"], pending["fut_usdt"])
+    q = pending["signal"]["q_score"]
+    # Dynamic strategy: Q=78-88→B, Q=89-94→C, Q=95+→DUAL
+    if q >= 95:
+        auto_strategy = "D"
+        label = "DUAL (B+C)"
+    elif q >= 89:
+        auto_strategy = "C"
+        label = "C (агрессивная)"
+    else:
+        auto_strategy = "B"
+        label = "B (стандартная)"
+    log_activity(f"[strategy] timeout {trade_id} Q={q:.1f} → авто {label}")
+    await notify(f"⏱ _Таймаут — Q={q:.0f} → стратегия {label}_")
+    if auto_strategy == "D":
+        await execute_dual_strategy(
+            pending["symbol"], pending["signal"], pending["vision"],
+            pending["price"], pending["fut_usdt"])
+    else:
+        await execute_with_strategy(
+            auto_strategy, pending["symbol"], pending["signal"],
+            pending["vision"], pending["price"], pending["fut_usdt"])
 
 
 async def auto_trade_cycle():
-    global last_q_score
+    global last_q_score, MIN_Q_SCORE, COOLDOWN, AUTOPILOT
     log_activity(f"[cycle start] {datetime.utcnow().strftime('%H:%M:%S')}")
 
     # ── Все внешние данные параллельно ───────────────────────────────────────
@@ -988,7 +1007,7 @@ async def auto_trade_cycle():
         await run_qaoa_optimization(price_changes_map)
 
     signals_fired = []
-    COOLDOWN = 300  # v5.7: 100→300s (5 мин между сделками по одной паре)
+    # COOLDOWN теперь глобальная переменная (изменяется через Telegram настройки)
 
     # ── Параллельный fetch: chart + vision + whale ────────────────────────────
     async def _get_sym_data(sym, pdata):
@@ -1088,7 +1107,7 @@ async def auto_trade_cycle():
             trade_id, best["symbol"], best["action"], best["price"],
             best["q"], best["pattern"], best["fg"], best["poly"], best["whale"]
         )
-        asyncio.create_task(auto_execute_strategy_b(trade_id))
+        asyncio.create_task(auto_execute_dynamic(trade_id))
 
     # ── Уведомление спот ─────────────────────────────────────────────────────
     if signals_fired:
@@ -1150,54 +1169,262 @@ async def position_monitor_loop():
         await asyncio.sleep(30)
 
 
-# ── Telegram Webhook — callback для A/B/C ────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# TELEGRAM BOT — команды, меню, настройки, статистика, airdrops
+# ══════════════════════════════════════════════════════════════════════════════
 class TelegramUpdate(BaseModel):
     callback_query: Optional[dict] = None
     message:        Optional[dict] = None
 
+async def _tg_send(chat_id: int, text: str, keyboard: dict = None, parse_mode: str = "Markdown"):
+    """Универсальная отправка сообщения в Telegram."""
+    if not BOT_TOKEN: return
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
+    if keyboard: payload["reply_markup"] = keyboard
+    try:
+        async with aiohttp.ClientSession() as s:
+            await s.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                         json=payload, timeout=aiohttp.ClientTimeout(total=5))
+    except Exception as e:
+        print(f"[tg_send] error: {e}")
+
+async def _tg_answer(cb_id: str, text: str = ""):
+    """Ответ на callback query (убирает часики у кнопки)."""
+    if not BOT_TOKEN: return
+    try:
+        async with aiohttp.ClientSession() as s:
+            await s.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
+                         json={"callback_query_id": cb_id, "text": text},
+                         timeout=aiohttp.ClientTimeout(total=3))
+    except: pass
+
+async def _tg_main_menu(chat_id: int):
+    """Главное меню бота."""
+    ap = "🟢 ВКЛ" if AUTOPILOT else "🔴 ВЫКЛ"
+    kb = {"inline_keyboard": [
+        [{"text": "📊 Статистика", "callback_data": "menu_stats"},
+         {"text": "🪂 Airdrops",   "callback_data": "menu_airdrops"}],
+        [{"text": "⚙️ Настройки",  "callback_data": "menu_settings"},
+         {"text": f"🤖 Автопилот: {ap}", "callback_data": "menu_autopilot"}],
+        [{"text": "💰 Баланс",     "callback_data": "menu_balance"},
+         {"text": "📈 Позиции",    "callback_data": "menu_positions"}],
+    ]}
+    await _tg_send(chat_id,
+        "⚛ *QuantumTrade AI v6.1*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Выбери раздел:", kb)
+
+async def _tg_stats(chat_id: int):
+    """Отправляет карточку статистики трейдинга."""
+    total = len(trade_log)
+    wins  = sum(1 for t in trade_log if (t.get("pnl") or 0) > 0)
+    losses= sum(1 for t in trade_log if (t.get("pnl") or 0) <= 0 and t.get("pnl") is not None)
+    pnl   = round(sum(t.get("pnl") or 0 for t in trade_log), 4)
+    wr    = round(wins / total * 100, 1) if total else 0
+    open_ = sum(1 for t in trade_log if t["status"] == "open")
+    last_q = round(last_q_score, 1) if last_q_score else "—"
+    pnl_emoji = "✅" if pnl >= 0 else "❌"
+    kb = {"inline_keyboard": [[{"text": "◀️ Меню", "callback_data": "menu_main"}]]}
+    await _tg_send(chat_id,
+        f"📊 *Статистика трейдинга*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Всего сделок: `{total}` (открыто: `{open_}`)\n"
+        f"Побед: `{wins}` / Потерь: `{losses}`\n"
+        f"Win Rate: `{wr}%`\n"
+        f"Итог PnL: {pnl_emoji} `${pnl:+.4f}`\n"
+        f"Последний Q-Score: `{last_q}`\n"
+        f"Автопилот: `{'ВКЛ' if AUTOPILOT else 'ВЫКЛ'}`\n"
+        f"Min Q: `{MIN_Q_SCORE}` · Cooldown: `{COOLDOWN}s`", kb)
+
+async def _tg_airdrops(chat_id: int):
+    """Отправляет топ-5 airdrop возможностей."""
+    airdrops = await get_airdrops()
+    top = airdrops[:5]
+    lines = ["🪂 *Топ Airdrop возможности*", "━━━━━━━━━━━━━━━━━━━━━━"]
+    for a in top:
+        stars = _stars(a.get("potential", 3))
+        tge   = a.get("tge_estimate", "TBD")
+        lines.append(
+            f"\n*{a['name']}* {stars}\n"
+            f"📅 TGE: `{tge}` · {a.get('ecosystem','?')}\n"
+            f"_{a.get('description','')[:80]}_\n"
+            f"🔗 {a.get('url','')}"
+        )
+    kb = {"inline_keyboard": [
+        [{"text": "🔄 Обновить", "callback_data": "airdrops_refresh"},
+         {"text": "◀️ Меню",    "callback_data": "menu_main"}]
+    ]}
+    await _tg_send(chat_id, "\n".join(lines), kb)
+
+async def _tg_settings(chat_id: int):
+    """Карточка настроек с рабочими кнопками."""
+    kb = {"inline_keyboard": [
+        [{"text": "📉 Min Q: 78 (осторожно)", "callback_data": "set_minq_78"},
+         {"text": "📊 Min Q: 82 (стандарт)",  "callback_data": "set_minq_82"}],
+        [{"text": "📈 Min Q: 85 (агрессивно)", "callback_data": "set_minq_85"},
+         {"text": f"✅ Текущий: {MIN_Q_SCORE}", "callback_data": "set_minq_cur"}],
+        [{"text": "⏱ Cooldown: 180s", "callback_data": "set_cd_180"},
+         {"text": "⏱ Cooldown: 300s", "callback_data": "set_cd_300"}],
+        [{"text": "⏱ Cooldown: 600s", "callback_data": "set_cd_600"},
+         {"text": f"✅ Текущий: {COOLDOWN}s", "callback_data": "set_cd_cur"}],
+        [{"text": "💾 Сохранить (текущие)", "callback_data": "save_settings"}],
+        [{"text": "◀️ Меню", "callback_data": "menu_main"}],
+    ]}
+    await _tg_send(chat_id,
+        f"⚙️ *Настройки QuantumTrade*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 Min Q-Score: `{MIN_Q_SCORE}`\n"
+        f"⏱ Cooldown: `{COOLDOWN}s`\n"
+        f"🤖 Автопилот: `{'ВКЛ' if AUTOPILOT else 'ВЫКЛ'}`\n\n"
+        f"_Выбери параметр для изменения, затем нажми Сохранить_", kb)
+
+async def _tg_balance(chat_id: int):
+    """Текущие балансы спот + фьючерсы."""
+    try:
+        spot, fut = await asyncio.gather(get_balance(), get_futures_balance())
+        spot_usdt = spot.get("USDT", 0)
+        fut_eq    = fut.get("account_equity", 0)
+        fut_pnl   = fut.get("unrealised_pnl", 0)
+        kb = {"inline_keyboard": [[{"text": "◀️ Меню", "callback_data": "menu_main"}]]}
+        await _tg_send(chat_id,
+            f"💰 *Баланс*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Спот USDT: `${spot_usdt:.2f}`\n"
+            f"Фьюч. equity: `${fut_eq:.2f}`\n"
+            f"Нереализ. PnL: `${fut_pnl:+.4f}`", kb)
+    except Exception as e:
+        await _tg_send(chat_id, f"❌ Ошибка получения баланса: {e}")
+
+async def _tg_positions(chat_id: int):
+    """Открытые позиции."""
+    open_trades = [t for t in trade_log if t["status"] == "open"]
+    kb = {"inline_keyboard": [[{"text": "◀️ Меню", "callback_data": "menu_main"}]]}
+    if not open_trades:
+        await _tg_send(chat_id, "📈 *Позиции*\n\nОткрытых позиций нет.", kb)
+        return
+    lines = ["📈 *Открытые позиции*", "━━━━━━━━━━━━━━━━━━━━━━"]
+    for t in open_trades[:8]:
+        lines.append(
+            f"`{t['symbol']}` {t['side'].upper()} | "
+            f"entry: `${t.get('entry_price', 0):.2f}` | "
+            f"TP: `${t.get('tp', 0):.2f}` SL: `${t.get('sl', 0):.2f}`"
+        )
+    await _tg_send(chat_id, "\n".join(lines), kb)
+
 @app.post("/api/telegram/callback")
 async def telegram_callback(req: TelegramUpdate):
-    cb = req.callback_query
-    if not cb: return {"ok": True}
-    data = cb.get("data", "")
-    if not data.startswith("strat_"): return {"ok": True}
-    parts = data.split("_", 2)  # strat_A_BTC-USDT_1234567890
-    if len(parts) < 3: return {"ok": True}
-    strategy = parts[1]
-    trade_id = parts[2]
+    global MIN_Q_SCORE, COOLDOWN, AUTOPILOT
 
-    pending = pending_strategies.pop(trade_id, None)
-    if not pending:
-        if BOT_TOKEN:
-            async with aiohttp.ClientSession() as _s:
-                await _s.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
-                    json={"callback_query_id": cb["id"], "text": "Сигнал устарел или уже исполнен"},
-                    timeout=aiohttp.ClientTimeout(total=3)
-                )
+    # ── Обработка текстовых команд ─────────────────────────────────────────
+    if req.message:
+        msg  = req.message
+        text = msg.get("text", "").strip()
+        chat_id = msg.get("chat", {}).get("id")
+        if not chat_id: return {"ok": True}
+        if text in ["/start", "/menu"]:     await _tg_main_menu(chat_id)
+        elif text == "/stats":               await _tg_stats(chat_id)
+        elif text in ["/airdrops", "/air"]: await _tg_airdrops(chat_id)
+        elif text == "/settings":            await _tg_settings(chat_id)
+        elif text == "/balance":             await _tg_balance(chat_id)
+        elif text == "/positions":           await _tg_positions(chat_id)
         return {"ok": True}
 
-    s = STRATEGIES.get(strategy, STRATEGIES["B"])
-    if BOT_TOKEN:
-        try:
-            async with aiohttp.ClientSession() as _s:
-                await _s.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
-                    json={"callback_query_id": cb["id"], "text": f"{s['emoji']} Стратегия {strategy} принята!"},
-                    timeout=aiohttp.ClientTimeout(total=3)
-                )
-        except: pass
+    # ── Обработка callback (нажатия кнопок) ────────────────────────────────
+    cb = req.callback_query
+    if not cb: return {"ok": True}
+    data    = cb.get("data", "")
+    chat_id = cb.get("message", {}).get("chat", {}).get("id")
+    cb_id   = cb["id"]
 
-    if strategy == "D":
-        asyncio.create_task(execute_dual_strategy(
-            pending["symbol"], pending["signal"], pending["vision"],
-            pending["price"], pending["fut_usdt"]
-        ))
-    else:
-        asyncio.create_task(execute_with_strategy(
-            strategy, pending["symbol"], pending["signal"], pending["vision"],
-            pending["price"], pending["fut_usdt"]
-        ))
+    # ── Главное меню ───────────────────────────────────────────────────────
+    if data == "menu_main":
+        await _tg_answer(cb_id)
+        if chat_id: await _tg_main_menu(chat_id)
+
+    elif data == "menu_stats":
+        await _tg_answer(cb_id, "📊 Загружаю...")
+        if chat_id: await _tg_stats(chat_id)
+
+    elif data == "menu_airdrops":
+        await _tg_answer(cb_id, "🪂 Загружаю...")
+        if chat_id: await _tg_airdrops(chat_id)
+
+    elif data == "airdrops_refresh":
+        global _airdrop_cache_ts
+        _airdrop_cache_ts = 0.0
+        await _tg_answer(cb_id, "🔄 Обновляю...")
+        if chat_id: await _tg_airdrops(chat_id)
+
+    elif data == "menu_settings":
+        await _tg_answer(cb_id)
+        if chat_id: await _tg_settings(chat_id)
+
+    elif data == "menu_balance":
+        await _tg_answer(cb_id, "💰 Загружаю...")
+        if chat_id: await _tg_balance(chat_id)
+
+    elif data == "menu_positions":
+        await _tg_answer(cb_id, "📈 Загружаю...")
+        if chat_id: await _tg_positions(chat_id)
+
+    elif data == "menu_autopilot":
+        AUTOPILOT = not AUTOPILOT
+        state = "ВКЛ 🟢" if AUTOPILOT else "ВЫКЛ 🔴"
+        await _tg_answer(cb_id, f"Автопилот {state}")
+        log_activity(f"[settings] Автопилот → {state} (via Telegram)")
+        if chat_id: await _tg_main_menu(chat_id)
+
+    # ── Настройки Min Q ────────────────────────────────────────────────────
+    elif data in ("set_minq_78", "set_minq_82", "set_minq_85", "set_minq_cur"):
+        if data == "set_minq_78":   MIN_Q_SCORE = 78
+        elif data == "set_minq_82": MIN_Q_SCORE = 82
+        elif data == "set_minq_85": MIN_Q_SCORE = 85
+        await _tg_answer(cb_id, f"Min Q → {MIN_Q_SCORE}")
+        if chat_id: await _tg_settings(chat_id)
+
+    # ── Настройки Cooldown ─────────────────────────────────────────────────
+    elif data in ("set_cd_180", "set_cd_300", "set_cd_600", "set_cd_cur"):
+        if data == "set_cd_180":   COOLDOWN = 180
+        elif data == "set_cd_300": COOLDOWN = 300
+        elif data == "set_cd_600": COOLDOWN = 600
+        await _tg_answer(cb_id, f"Cooldown → {COOLDOWN}s")
+        if chat_id: await _tg_settings(chat_id)
+
+    # ── Сохранить настройки ────────────────────────────────────────────────
+    elif data == "save_settings":
+        await _tg_answer(cb_id, "✅ Настройки сохранены!")
+        log_activity(f"[settings] SAVED: MIN_Q={MIN_Q_SCORE} COOLDOWN={COOLDOWN}s AUTOPILOT={AUTOPILOT}")
+        await notify(
+            f"💾 *Настройки сохранены*\n"
+            f"Min Q-Score: `{MIN_Q_SCORE}`\n"
+            f"Cooldown: `{COOLDOWN}s`\n"
+            f"Автопилот: `{'ВКЛ' if AUTOPILOT else 'ВЫКЛ'}`"
+        )
+        if chat_id: await _tg_settings(chat_id)
+
+    # ── Стратегии A/B/C/D (торговые сигналы) ──────────────────────────────
+    elif data.startswith("strat_"):
+        parts = data.split("_", 2)
+        if len(parts) < 3: return {"ok": True}
+        strategy = parts[1]
+        trade_id = parts[2]
+        pending  = pending_strategies.pop(trade_id, None)
+        if not pending:
+            await _tg_answer(cb_id, "⏱ Сигнал устарел или уже исполнен")
+            return {"ok": True}
+        s = STRATEGIES.get(strategy, STRATEGIES["B"])
+        await _tg_answer(cb_id, f"{s['emoji']} Стратегия {strategy} принята!")
+        if strategy == "D":
+            asyncio.create_task(execute_dual_strategy(
+                pending["symbol"], pending["signal"], pending["vision"],
+                pending["price"], pending["fut_usdt"]
+            ))
+        else:
+            asyncio.create_task(execute_with_strategy(
+                strategy, pending["symbol"], pending["signal"], pending["vision"],
+                pending["price"], pending["fut_usdt"]
+            ))
+
     return {"ok": True}
 
 
@@ -1209,15 +1436,15 @@ async def startup():
     await get_airdrops()  # прогреваем кеш при старте
     mode = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     await notify(
-        f"⚛ *QuantumTrade v5.5*\n"
+        f"⚛ *QuantumTrade v6.2.0*\n"
         f"✅ Спот + Фьючерсы + реальные TP/SL\n"
         f"✅ Fear&Greed + Polymarket + Whale → Q-Score\n"
-        f"✅ Стратегии A/B/C (3 мин таймаут)\n"
-        f"✅ Position Monitor\n"
+        f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
+        f"✅ Telegram меню: /menu /stats /airdrops /settings\n"
         f"⚛️ QAOA CPU симулятор (Phase 3 Origin QC)\n"
         f"🪂 Airdrop Tracker активен (Phase 4)\n"
         f"📊 Режим: {mode}\n"
-        f"🎯 Q-min: {MIN_Q_SCORE} · Conf-min: {int(MIN_CONFIDENCE*100)}%"
+        f"🎯 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s"
     )
 
 async def trading_loop():
@@ -1649,7 +1876,7 @@ async def api_debug():
         "autopilot":     AUTOPILOT,
         "risk":          RISK_PER_TRADE,
         "min_confidence":MIN_CONFIDENCE,
-        "cooldown_sec":  100,
+        "cooldown_sec":  COOLDOWN,
         "activity_log":  list(reversed(activity_log))[:20],
         "timestamp":     datetime.utcnow().isoformat(),
     }
