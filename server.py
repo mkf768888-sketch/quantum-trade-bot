@@ -20,7 +20,7 @@ from fastapi import FastAPI, WebSocket, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="6.3.0")
+app = FastAPI(title="QuantumTrade AI", version="6.4.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -580,17 +580,11 @@ async def analyze_chart_with_vision(symbol: str, candles: list) -> dict:
                   "rsi": rsi_val, "ema_fast": round(ema_fast, 4), "ema_slow": round(ema_slow, 4),
                   "ema_bullish": ema_bull, "vol_ratio": round(vol_ratio, 2), "price_pos_pct": round(price_pos, 1),
                   "vision_bonus": 0.0, "vision_ocr": ""}
-        # ── Yandex Vision: OCR графика ────────────────────────────────────
-        img_b64 = _render_candles_png_b64(candles)
-        if img_b64:
-            ocr = _cache_get(f"vision_{symbol}", 300)
-            if not ocr:
-                ocr = await call_yandex_vision(img_b64)
-                _cache_set(f"vision_{symbol}", ocr)
-            if ocr and ocr.get("success"):
-                v_bonus = parse_vision_bonus(ocr["text"], result)
-                result["vision_bonus"] = v_bonus
-                result["vision_ocr"]   = ocr["text"][:80]
+        # ── Phase 5: Kimi K2.5 Vision (Yandex OCR отключён — circular dependency) ──
+        # Yandex читает наши же метки HIGH/LOW/CLOSE с нашего же графика → дублирует
+        # ema_bonus и pattern_bonus → искусственно завышает Q на +8 каждый цикл.
+        # Будет заменено на Kimi K2.5 native vision в Phase 5.
+        # img_b64 = _render_candles_png_b64(candles)  # ← раскомментировать для Kimi
         return result
     except Exception as e:
         return {"pattern": "error", "signal": "HOLD", "confidence": 0.5,
@@ -884,7 +878,13 @@ async def execute_with_strategy(strategy: str, symbol: str, signal: dict,
                                  vision: dict, price: float, fut_usdt: float) -> bool:
     s = STRATEGIES.get(strategy, STRATEGIES["B"])
     log_activity(f"[strategy] {s['emoji']} {strategy} риск={int(s['risk']*100)}% lev={s['leverage']}x TP={int(s['tp']*100)}% SL={int(s['sl']*100)}%")
-    FMAP = {"BTC-USDT": ("XBTUSDTM", 0.001), "ETH-USDT": ("ETHUSDTM", 0.01), "SOL-USDT": ("SOLUSDTM", 1.0)}
+    FMAP = {
+        "BTC-USDT":  ("XBTUSDTM",  0.001),  # 0.001 BTC/контракт  ~$85 → нужно $17+ маржи
+        "ETH-USDT":  ("ETHUSDTM",  0.01),   # 0.01  ETH/контракт  ~$22 → нужно ~$4.4 маржи
+        "SOL-USDT":  ("SOLUSDTM",  1.0),    # 1     SOL/контракт  ~$130 → нужно $26 маржи
+        "AVAX-USDT": ("AVAXUSDTM", 1.0),    # 1     AVAX/контракт ~$25  → нужно ~$5 маржи ✅
+        "XRP-USDT":  ("XRPUSDTM",  10.0),   # 10    XRP/контракт  ~$25  → нужно ~$5 маржи ✅
+    }
     if symbol not in FMAP: return False
     fut_symbol, contract_size = FMAP[symbol]
     side = "buy" if signal["action"] == "BUY" else "sell"
@@ -1342,15 +1342,17 @@ async def telegram_callback(req: TelegramUpdate):
     # ── Обработка текстовых команд ─────────────────────────────────────────
     if req.message:
         msg  = req.message
-        text = msg.get("text", "").strip()
+        raw  = msg.get("text", "").strip()
+        # Убираем @BotName суффикс: /menu@MyBot → /menu
+        cmd  = raw.split("@")[0].lower() if raw.startswith("/") else raw
         chat_id = msg.get("chat", {}).get("id")
         if not chat_id: return {"ok": True}
-        if text in ["/start", "/menu"]:     await _tg_main_menu(chat_id)
-        elif text == "/stats":               await _tg_stats(chat_id)
-        elif text in ["/airdrops", "/air"]: await _tg_airdrops(chat_id)
-        elif text == "/settings":            await _tg_settings(chat_id)
-        elif text == "/balance":             await _tg_balance(chat_id)
-        elif text == "/positions":           await _tg_positions(chat_id)
+        if cmd in ["/start", "/menu"]:     await _tg_main_menu(chat_id)
+        elif cmd == "/stats":               await _tg_stats(chat_id)
+        elif cmd in ["/airdrops", "/air"]: await _tg_airdrops(chat_id)
+        elif cmd == "/settings":            await _tg_settings(chat_id)
+        elif cmd == "/balance":             await _tg_balance(chat_id)
+        elif cmd == "/positions":           await _tg_positions(chat_id)
         return {"ok": True}
 
     # ── Обработка callback (нажатия кнопок) ────────────────────────────────
@@ -1461,11 +1463,11 @@ async def startup():
     await get_airdrops()  # прогреваем кеш при старте
     mode = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     await notify(
-        f"⚛ *QuantumTrade v6.3.0*\n"
-        f"✅ Спот + Фьючерсы + реальные TP/SL\n"
-        f"✅ Telegram меню: /menu /stats /airdrops /settings\n"
+        f"⚛ *QuantumTrade v6.4.0*\n"
+        f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
+        f"✅ Telegram: /menu /stats /airdrops /settings\n"
         f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
-        f"✅ Персистентный лог сделок (выживает редеплой)\n"
+        f"✅ Vision зачищен (Phase 5 Kimi готов к подключению)\n"
         f"⚛️ QAOA CPU симулятор (Phase 3 Origin QC)\n"
         f"🪂 Airdrop Tracker активен (Phase 4)\n"
         f"📊 Режим: {mode} · История: {len(trade_log)} сделок\n"
@@ -1721,7 +1723,7 @@ async def quantum_status():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "6.3.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "6.4.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
@@ -1729,20 +1731,38 @@ async def health():
 
 @app.post("/api/setup-webhook")
 async def setup_webhook(request: Request):
-    """Регистрирует Telegram Webhook. Вызови один раз после деплоя."""
+    """Регистрирует Telegram Webhook + команды в меню бота."""
     if not BOT_TOKEN:
         return {"ok": False, "error": "BOT_TOKEN не задан"}
     base_url = str(request.base_url).rstrip("/").replace("http://", "https://")
     webhook_url = f"{base_url}/api/telegram/callback"
+    results = {}
     try:
         async with aiohttp.ClientSession() as s:
+            # 1. Регистрируем webhook
             r = await s.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
                 json={"url": webhook_url, "allowed_updates": ["message", "callback_query"]},
                 timeout=aiohttp.ClientTimeout(total=10)
             )
-            data = await r.json()
-        return {"ok": data.get("ok"), "webhook_url": webhook_url, "telegram_response": data}
+            results["webhook"] = await r.json()
+
+            # 2. Регистрируем команды — появятся в меню "/" у пользователя
+            r2 = await s.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/setMyCommands",
+                json={"commands": [
+                    {"command": "menu",      "description": "🏠 Главное меню"},
+                    {"command": "stats",     "description": "📊 Статистика торговли"},
+                    {"command": "airdrops",  "description": "🪂 Топ Airdrop возможности"},
+                    {"command": "settings",  "description": "⚙️ Настройки (Q-Score, Cooldown)"},
+                    {"command": "balance",   "description": "💰 Баланс счёта"},
+                    {"command": "positions", "description": "📈 Открытые позиции"},
+                ]},
+                timeout=aiohttp.ClientTimeout(total=10)
+            )
+            results["commands"] = await r2.json()
+
+        return {"ok": True, "webhook_url": webhook_url, "results": results}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
