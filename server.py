@@ -1,7 +1,9 @@
 """
-QuantumTrade AI - FastAPI Backend v6.0
+QuantumTrade AI - FastAPI Backend v6.6.0
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
-Phase3: Origin QC QAOA — квантовая оптимизация портфеля (CPU симулятор / Wukong 180 ready)
+Phase3: Origin QC QAOA — квантовая оптимизация портфеля (CPU симулятор + Wukong 180 реальный чип)
+Phase5: Claude Vision — AI-анализ графиков
+Phase6: Origin QC Wukong 180 — реальный квантовый чип (авто-переключение по ORIGIN_QC_TOKEN)
 """
 
 import asyncio
@@ -20,7 +22,7 @@ from fastapi import FastAPI, WebSocket, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="6.5.0")
+app = FastAPI(title="QuantumTrade AI", version="6.6.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -33,6 +35,7 @@ ALERT_CHAT_ID     = os.getenv("ALERT_CHAT_ID", "")
 YANDEX_VISION_KEY = os.getenv("YANDEX_VISION_KEY", "")
 YANDEX_FOLDER_ID  = os.getenv("YANDEX_FOLDER_ID", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ORIGIN_QC_TOKEN   = os.getenv("ORIGIN_QC_TOKEN", "")     # Phase 6: Origin QC Wukong 180
 
 RISK_PER_TRADE = 0.02
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
@@ -81,16 +84,41 @@ def _save_trades_to_disk():
 _quantum_bias: Dict[str, float] = {}   # symbol → bias [-15..+15]
 _quantum_ts: float = 0.0               # timestamp последнего запуска
 
+# ── Phase 6: Origin QC Wukong 180 ──────────────────────────────────────────────
+_qcloud_ready: bool = False            # True после успешной инициализации чипа
+_qvm_instance = None                   # глобальный инстанс QCloud (ленивая init)
 
-# ── QAOA Module (Phase 3: Origin QC) ───────────────────────────────────────────
-# CPU-симулятор совместим с pyqpanda3 API.
-# Для реального чипа Wukong 180 — раскомментировать блок REAL_QC_CHIP ниже.
-#
-# REAL_QC_CHIP (Origin Wukong 180):
-# from pyqpanda3 import QCloud, QMachineType
-# qvm = QCloud()
-# qvm.init_qvm(os.getenv("ORIGIN_QC_TOKEN", ""), QMachineType.Wukong)
-# qvm.set_chip_id("72")  # Wukong-180: 72 = public chip
+
+def _init_qcloud() -> bool:
+    """
+    Пытается подключиться к Origin QC Wukong 180 через pyqpanda3.
+    Вызывается при старте, если ORIGIN_QC_TOKEN задан.
+    Возвращает True при успехе, False → CPU fallback.
+    """
+    global _qcloud_ready, _qvm_instance
+    if not ORIGIN_QC_TOKEN:
+        print("[qaoa] ORIGIN_QC_TOKEN не задан → CPU симулятор")
+        return False
+    try:
+        from pyqpanda3 import QCloud, QMachineType  # type: ignore
+        qvm = QCloud()
+        qvm.init_qvm(ORIGIN_QC_TOKEN, QMachineType.Wukong)
+        qvm.set_chip_id("72")  # Wukong-180: публичный чип #72
+        _qvm_instance = qvm
+        _qcloud_ready = True
+        print("[qaoa] ✅ Origin QC Wukong 180 подключён (chip_id=72)")
+        return True
+    except ImportError:
+        print("[qaoa] pyqpanda3 не установлен → CPU fallback")
+    except Exception as e:
+        print(f"[qaoa] Origin QC ошибка инициализации: {e} → CPU fallback")
+    _qcloud_ready = False
+    return False
+
+
+# ── QAOA Module (Phase 3 + Phase 6: Origin QC) ─────────────────────────────────
+# CPU-симулятор активен по умолчанию.
+# При наличии ORIGIN_QC_TOKEN и pyqpanda3 — авто-переключение на Wukong 180.
 #
 # Корреляционная матрица (BTC ETH SOL BNB XRP AVAX)
 PAIR_NAMES = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT", "AVAX-USDT"]
@@ -180,23 +208,110 @@ def _qaoa_cpu_simulate(price_changes: List[float], p_layers: int = 2) -> List[fl
     return bias
 
 
+def _qaoa_wukong_run(price_changes: List[float], p_layers: int = 1) -> List[float]:
+    """
+    Phase 6: QAOA на реальном чипе Origin Wukong 180.
+    Строит 6-кубитную QAOA схему, отправляет на аппаратный чип, парсит гистограмму.
+    p_layers=1 (на реальном железе шум растёт с глубиной — используем p=1).
+    Возвращает bias [-15..+15] для каждой пары.
+    Требует: _qcloud_ready=True и _qvm_instance инициализирован.
+    """
+    from pyqpanda3 import QProg, H, Rz, Rx, CNOT, measure_all  # type: ignore
+
+    n = N_PAIRS  # 6 кубитов
+    momentum = [max(-1.0, min(1.0, pc / 5.0)) for pc in price_changes]
+
+    # Оптимальные углы QAOA p=1 (предварительно откалиброваны на CPU)
+    gamma = 0.8   # cost unitary angle
+    beta  = 0.4   # mixing unitary angle
+
+    # ── Строим квантовую схему QAOA ──────────────────────────────────────────
+    qv  = _qvm_instance.allocate_qubit(n)    # 6 кубитов
+    cv  = _qvm_instance.allocate_cbit(n)     # 6 классических бит для измерений
+    prog = QProg()
+
+    # Инициализация: суперпозиция H^⊗6|0⟩
+    for i in range(n):
+        prog << H(qv[i])
+
+    # Cost unitary U_C(γ):
+    # ZZ-взаимодействие для коррелированных пар (только сильные связи corr > 0.5)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if CORR_MATRIX[i][j] > 0.5:
+                angle = 2.0 * gamma * CORR_MATRIX[i][j]
+                prog << CNOT(qv[i], qv[j])
+                prog << Rz(qv[j], angle)
+                prog << CNOT(qv[i], qv[j])
+    # Линейные члены: momentum bias
+    for i in range(n):
+        prog << Rz(qv[i], -2.0 * gamma * momentum[i])
+
+    # Mixing unitary U_B(β): X-ротации
+    for i in range(n):
+        prog << Rx(qv[i], 2.0 * beta)
+
+    # Измерения
+    prog << measure_all(qv, cv)
+
+    # ── Запуск на реальном чипе (1024 выборки) ───────────────────────────────
+    result = _qvm_instance.run_with_configuration(prog, cv, 1024)
+    # result: dict[str, int], ключ = битовая строка "010110", значение = кол-во
+
+    # Вычисляем <Z_i> из гистограммы
+    z_exp = [0.0] * n
+    total_shots = sum(result.values()) if result else 0
+    if total_shots > 0:
+        for bitstring, count in result.items():
+            # Wukong возвращает строку MSB-first: bitstring[0] = кубит 0
+            for i in range(min(n, len(bitstring))):
+                bit = int(bitstring[i])
+                z_exp[i] += (count / total_shots) * (1 - 2 * bit)  # +1→0, -1→1
+    else:
+        print("[qaoa_wukong] пустой результат — возвращаем нули")
+        return [0.0] * n
+
+    # Конвертируем в bias [-15..+15], усиливаем в направлении momentum
+    bias = []
+    for i in range(n):
+        b = z_exp[i] * 15.0
+        if momentum[i] > 0.1:
+            b = abs(b)
+        elif momentum[i] < -0.1:
+            b = -abs(b)
+        bias.append(round(b, 1))
+
+    return bias
+
+
 async def run_qaoa_optimization(price_changes: Dict[str, float]) -> Dict[str, float]:
     """
-    Запускает QAOA оптимизацию и обновляет глобальный _quantum_bias.
-    Вызывается каждые 15 минут в auto_trade_cycle.
+    Phase 3 + Phase 6: QAOA оптимизация с авто-выбором бэкенда.
+    - Если ORIGIN_QC_TOKEN задан и pyqpanda3 доступен → реальный чип Wukong 180
+    - Иначе → CPU симулятор (6 кубитов, p=2)
+    Обновляет глобальный _quantum_bias. Вызывается каждые 15 минут.
     """
     global _quantum_bias, _quantum_ts
     changes_list = [price_changes.get(p, 0.0) for p in PAIR_NAMES]
+    chip_used = "CPU_simulator"
     try:
-        bias_list = await asyncio.get_event_loop().run_in_executor(
-            None, _qaoa_cpu_simulate, changes_list, 2
-        )
+        if _qcloud_ready and _qvm_instance is not None:
+            # ── Phase 6: реальный квантовый чип ──────────────────────────────
+            bias_list = await asyncio.get_event_loop().run_in_executor(
+                None, _qaoa_wukong_run, changes_list, 1  # p=1 на железе
+            )
+            chip_used = "Wukong_180"
+        else:
+            # ── Phase 3: CPU симулятор ────────────────────────────────────────
+            bias_list = await asyncio.get_event_loop().run_in_executor(
+                None, _qaoa_cpu_simulate, changes_list, 2  # p=2 на CPU
+            )
         _quantum_bias = {PAIR_NAMES[i]: bias_list[i] for i in range(N_PAIRS)}
         _quantum_ts = time.time()
         log_str = " ".join(f"{p.split('-')[0]}={b:+.1f}" for p, b in _quantum_bias.items())
-        print(f"[qaoa] bias: {log_str}")
+        print(f"[qaoa/{chip_used}] bias: {log_str}")
     except Exception as e:
-        print(f"[qaoa] error: {e}")
+        print(f"[qaoa] error ({chip_used}): {e}")
         _quantum_bias = {p: 0.0 for p in PAIR_NAMES}
     return _quantum_bias
 
@@ -685,10 +800,15 @@ async def notify(text: str):
     if not BOT_TOKEN or not ALERT_CHAT_ID: return
     try:
         async with aiohttp.ClientSession() as s:
-            await s.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": ALERT_CHAT_ID, "text": text, "parse_mode": "Markdown"},
+            r = await s.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={"chat_id": ALERT_CHAT_ID, "text": text, "parse_mode": "Markdown",
+                      "disable_web_page_preview": True},
                 timeout=aiohttp.ClientTimeout(total=5))
-    except: pass
+            resp = await r.json()
+            if not resp.get("ok"):
+                print(f"[notify] Telegram error: {resp.get('description','?')} | text[:60]={text[:60]!r}")
+    except Exception as e:
+        print(f"[notify] network error: {e}")
 
 
 # ── Signal Generator v5.0 ──────────────────────────────────────────────────────
@@ -1289,17 +1409,23 @@ class TelegramUpdate(BaseModel):
     callback_query: Optional[dict] = None
     message:        Optional[dict] = None
 
-async def _tg_send(chat_id: int, text: str, keyboard: dict = None, parse_mode: str = "Markdown"):
-    """Универсальная отправка сообщения в Telegram."""
+async def _tg_send(chat_id: int, text: str, keyboard: dict = None, parse_mode: str = "HTML"):
+    """Универсальная отправка сообщения в Telegram (parse_mode=HTML для надёжности)."""
     if not BOT_TOKEN: return
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode,
+               "disable_web_page_preview": True}
     if keyboard: payload["reply_markup"] = keyboard
     try:
         async with aiohttp.ClientSession() as s:
-            await s.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                         json=payload, timeout=aiohttp.ClientTimeout(total=5))
+            r = await s.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                             json=payload, timeout=aiohttp.ClientTimeout(total=8))
+            resp = await r.json()
+            if not resp.get("ok"):
+                # Логируем реальную ошибку от Telegram API
+                print(f"[tg_send] Telegram error: {resp.get('description','?')} | "
+                      f"chat={chat_id} | text[:60]={text[:60]!r}")
     except Exception as e:
-        print(f"[tg_send] error: {e}")
+        print(f"[tg_send] network error: {e}")
 
 async def _tg_answer(cb_id: str, text: str = ""):
     """Ответ на callback query (убирает часики у кнопки)."""
@@ -1323,7 +1449,7 @@ async def _tg_main_menu(chat_id: int):
          {"text": "📈 Позиции",    "callback_data": "menu_positions"}],
     ]}
     await _tg_send(chat_id,
-        "⚛ *QuantumTrade AI v6.1*\n"
+        "⚛ <b>QuantumTrade AI v6.6.0</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "Выбери раздел:", kb)
 
@@ -1337,31 +1463,43 @@ async def _tg_stats(chat_id: int):
     open_ = sum(1 for t in trade_log if t["status"] == "open")
     last_q = round(last_q_score, 1) if last_q_score else "—"
     pnl_emoji = "✅" if pnl >= 0 else "❌"
+    chip  = "Wukong 180 ⚛️" if _qcloud_ready else "CPU симулятор"
     kb = {"inline_keyboard": [[{"text": "◀️ Меню", "callback_data": "menu_main"}]]}
     await _tg_send(chat_id,
-        f"📊 *Статистика трейдинга*\n"
+        f"📊 <b>Статистика трейдинга</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Всего сделок: `{total}` (открыто: `{open_}`)\n"
-        f"Побед: `{wins}` / Потерь: `{losses}`\n"
-        f"Win Rate: `{wr}%`\n"
-        f"Итог PnL: {pnl_emoji} `${pnl:+.4f}`\n"
-        f"Последний Q-Score: `{last_q}`\n"
-        f"Автопилот: `{'ВКЛ' if AUTOPILOT else 'ВЫКЛ'}`\n"
-        f"Min Q: `{MIN_Q_SCORE}` · Cooldown: `{COOLDOWN}s`", kb)
+        f"Всего сделок: <code>{total}</code> (открыто: <code>{open_}</code>)\n"
+        f"Побед: <code>{wins}</code> / Потерь: <code>{losses}</code>\n"
+        f"Win Rate: <code>{wr}%</code>\n"
+        f"Итог PnL: {pnl_emoji} <code>${pnl:+.4f}</code>\n"
+        f"Последний Q-Score: <code>{last_q}</code>\n"
+        f"Автопилот: <code>{'ВКЛ' if AUTOPILOT else 'ВЫКЛ'}</code>\n"
+        f"Min Q: <code>{MIN_Q_SCORE}</code> · Cooldown: <code>{COOLDOWN}s</code>\n"
+        f"Квантовый чип: {chip}", kb)
+
+def _html_esc(s: str) -> str:
+    """Экранирует спецсимволы HTML для Telegram (& < >)."""
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 async def _tg_airdrops(chat_id: int):
-    """Отправляет топ-5 airdrop возможностей."""
+    """Отправляет топ-5 airdrop возможностей (HTML-форматирование, без Markdown-крашей)."""
     airdrops = await get_airdrops()
     top = airdrops[:5]
-    lines = ["🪂 *Топ Airdrop возможности*", "━━━━━━━━━━━━━━━━━━━━━━"]
+    lines = ["🪂 <b>Топ Airdrop возможности</b>", "━━━━━━━━━━━━━━━━━━━━━━"]
     for a in top:
         stars = _stars(a.get("potential", 3))
-        tge   = a.get("tge_estimate", "TBD")
+        tge   = _html_esc(str(a.get("tge_estimate") or "TBD"))
+        name  = _html_esc(a.get("name", "?"))
+        eco   = _html_esc(a.get("ecosystem", "?"))
+        desc  = _html_esc((a.get("description") or "")[:90])
+        url   = a.get("url", "")
+        # Ссылка через HTML-тег — не ломает парсер
+        link  = f'<a href="{url}">{url[:45]}...</a>' if len(url) > 45 else f'<a href="{url}">{url}</a>'
         lines.append(
-            f"\n*{a['name']}* {stars}\n"
-            f"📅 TGE: `{tge}` · {a.get('ecosystem','?')}\n"
-            f"_{a.get('description','')[:80]}_\n"
-            f"🔗 {a.get('url','')}"
+            f"\n<b>{name}</b> {stars}\n"
+            f"📅 TGE: <code>{tge}</code> · {eco}\n"
+            f"<i>{desc}</i>\n"
+            f"🔗 {link}"
         )
     kb = {"inline_keyboard": [
         [{"text": "🔄 Обновить", "callback_data": "airdrops_refresh"},
@@ -1384,12 +1522,12 @@ async def _tg_settings(chat_id: int):
         [{"text": "◀️ Меню", "callback_data": "menu_main"}],
     ]}
     await _tg_send(chat_id,
-        f"⚙️ *Настройки QuantumTrade*\n"
+        f"⚙️ <b>Настройки QuantumTrade</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 Min Q-Score: `{MIN_Q_SCORE}`\n"
-        f"⏱ Cooldown: `{COOLDOWN}s`\n"
-        f"🤖 Автопилот: `{'ВКЛ' if AUTOPILOT else 'ВЫКЛ'}`\n\n"
-        f"_Выбери параметр для изменения, затем нажми Сохранить_", kb)
+        f"🎯 Min Q-Score: <code>{MIN_Q_SCORE}</code>\n"
+        f"⏱ Cooldown: <code>{COOLDOWN}s</code>\n"
+        f"🤖 Автопилот: <code>{'ВКЛ' if AUTOPILOT else 'ВЫКЛ'}</code>\n\n"
+        f"<i>Выбери параметр для изменения, затем нажми Сохранить</i>", kb)
 
 async def _tg_balance(chat_id: int):
     """Текущие балансы спот + фьючерсы."""
@@ -1400,11 +1538,11 @@ async def _tg_balance(chat_id: int):
         fut_pnl   = fut.get("unrealised_pnl", 0)
         kb = {"inline_keyboard": [[{"text": "◀️ Меню", "callback_data": "menu_main"}]]}
         await _tg_send(chat_id,
-            f"💰 *Баланс*\n"
+            f"💰 <b>Баланс</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"Спот USDT: `${spot_usdt:.2f}`\n"
-            f"Фьюч. equity: `${fut_eq:.2f}`\n"
-            f"Нереализ. PnL: `${fut_pnl:+.4f}`", kb)
+            f"Спот USDT: <code>${spot_usdt:.2f}</code>\n"
+            f"Фьюч. equity: <code>${fut_eq:.2f}</code>\n"
+            f"Нереализ. PnL: <code>${fut_pnl:+.4f}</code>", kb)
     except Exception as e:
         await _tg_send(chat_id, f"❌ Ошибка получения баланса: {e}")
 
@@ -1413,9 +1551,9 @@ async def _tg_positions(chat_id: int):
     open_trades = [t for t in trade_log if t["status"] == "open"]
     kb = {"inline_keyboard": [[{"text": "◀️ Меню", "callback_data": "menu_main"}]]}
     if not open_trades:
-        await _tg_send(chat_id, "📈 *Позиции*\n\nОткрытых позиций нет.", kb)
+        await _tg_send(chat_id, "📈 <b>Позиции</b>\n\nОткрытых позиций нет.", kb)
         return
-    lines = ["📈 *Открытые позиции*", "━━━━━━━━━━━━━━━━━━━━━━"]
+    lines = ["📈 <b>Открытые позиции</b>", "━━━━━━━━━━━━━━━━━━━━━━"]
     for t in open_trades[:8]:
         lines.append(
             f"`{t['symbol']}` {t['side'].upper()} | "
@@ -1546,18 +1684,23 @@ async def telegram_callback(req: TelegramUpdate):
 @app.on_event("startup")
 async def startup():
     _load_trades_from_disk()          # загружаем историю сделок при старте
+
+    # Phase 6: пробуем подключить Origin QC Wukong 180
+    qc_ok = await asyncio.get_event_loop().run_in_executor(None, _init_qcloud)
+
     asyncio.create_task(trading_loop())
     asyncio.create_task(position_monitor_loop())
     asyncio.create_task(airdrop_digest_loop())
     await get_airdrops()  # прогреваем кеш при старте
-    mode = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
+    mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
+    qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
     await notify(
-        f"⚛ *QuantumTrade v6.5.0*\n"
+        f"⚛ *QuantumTrade v6.6.0*\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
         f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
         f"⚛️ Phase 5: Claude Vision — нативный AI-анализ графиков\n"
-        f"⚛️ QAOA CPU симулятор (Phase 3 Origin QC)\n"
+        f"{qc_label} (Phase 3+6)\n"
         f"🪂 Airdrop Tracker активен (Phase 4)\n"
         f"📊 Режим: {mode} · История: {len(trade_log)} сделок\n"
         f"🎯 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s"
@@ -1799,24 +1942,38 @@ async def airdrops_send_digest():
 
 @app.get("/api/quantum")
 async def quantum_status():
-    """Phase 3: текущий QAOA quantum bias для всех пар."""
+    """Phase 3+6: текущий QAOA quantum bias, режим чипа и статус Origin QC."""
     age_sec = int(time.time() - _quantum_ts) if _quantum_ts else None
+    if _qcloud_ready:
+        chip      = "Wukong_180"
+        p_layers  = 1
+        note      = "⚛️ Реальный квантовый чип Origin Wukong 180 активен (chip_id=72)"
+    else:
+        chip      = "CPU_simulator"
+        p_layers  = 2
+        note      = ("Установи ORIGIN_QC_TOKEN в Railway для активации Wukong 180"
+                     if not ORIGIN_QC_TOKEN else
+                     "ORIGIN_QC_TOKEN задан, но pyqpanda3 недоступен → CPU fallback")
     return {
-        "quantum_bias": _quantum_bias,
+        "quantum_bias":    _quantum_bias,
         "last_run_ago_sec": age_sec,
-        "chip": "CPU_simulator",  # → "Wukong_180" после подключения Origin QC
-        "p_layers": 2,
-        "pairs": PAIR_NAMES,
-        "note": "Раскомментируй REAL_QC_CHIP в server.py для работы на реальном чипе",
+        "chip":            chip,
+        "chip_ready":      _qcloud_ready,
+        "p_layers":        p_layers,
+        "pairs":           PAIR_NAMES,
+        "note":            note,
     }
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "6.5.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "6.6.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
-            "ai_chat": bool(ANTHROPIC_API_KEY), "timestamp": datetime.utcnow().isoformat()}
+            "claude_vision": bool(ANTHROPIC_API_KEY), "ai_chat": bool(ANTHROPIC_API_KEY),
+            "quantum_chip": "Wukong_180" if _qcloud_ready else "CPU_simulator",
+            "origin_qc_token": bool(ORIGIN_QC_TOKEN),
+            "timestamp": datetime.utcnow().isoformat()}
 
 @app.post("/api/setup-webhook")
 async def setup_webhook(request: Request):
