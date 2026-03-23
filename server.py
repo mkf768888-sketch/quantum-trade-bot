@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v5.3
+QuantumTrade AI - FastAPI Backend v5.4
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
 """
 
@@ -17,7 +17,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="5.3.0")
+app = FastAPI(title="QuantumTrade AI", version="5.4.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -204,6 +204,170 @@ def _rsi(data: list, period: int = 14) -> float:
     if avg_loss == 0: return 100.0
     return round(100.0 - 100.0 / (1.0 + avg_gain / avg_loss), 1)
 
+
+# ── Yandex Vision — свечной график + OCR паттернов ────────────────────────────
+def _render_candles_png_b64(candles: list, width: int = 400, height: int = 280) -> str:
+    """Рисует свечной график через PIL и возвращает base64 PNG."""
+    try:
+        from PIL import Image, ImageDraw
+        import io, base64 as _b64
+
+        if not candles or len(candles) < 5:
+            return ""
+
+        chron  = list(reversed(candles[:24]))  # oldest first
+        opens  = [float(c[1]) for c in chron]
+        closes = [float(c[2]) for c in chron]
+        highs  = [float(c[3]) for c in chron]
+        lows   = [float(c[4]) for c in chron]
+
+        p_min  = min(lows);  p_max = max(highs)
+        p_rng  = p_max - p_min or 1
+        pad    = 24
+        cw     = width - pad * 2
+        ch     = height - pad * 2
+        cand_w = max(3, cw // len(chron) - 2)
+
+        img  = Image.new("RGB", (width, height), (15, 15, 25))
+        draw = ImageDraw.Draw(img)
+
+        def p2y(p):
+            return int(pad + ch - (p - p_min) / p_rng * ch)
+
+        # Сетка
+        for pct in [0.25, 0.5, 0.75]:
+            y = p2y(p_min + p_rng * pct)
+            draw.line([(pad, y), (width - pad, y)], fill=(40, 40, 60), width=1)
+
+        # Свечи
+        for i, (o, c, h, l) in enumerate(zip(opens, closes, highs, lows)):
+            xc   = pad + i * (cw // len(chron)) + cand_w // 2
+            bull = c >= o
+            col  = (0, 200, 100) if bull else (220, 50, 50)
+            draw.line([(xc, p2y(h)), (xc, p2y(l))], fill=col, width=1)
+            yt, yb = min(p2y(o), p2y(c)), max(p2y(o), p2y(c))
+            yb = max(yb, yt + 2)
+            draw.rectangle([(xc - cand_w//2, yt), (xc + cand_w//2, yb)], fill=col)
+
+        # Ценовые метки для OCR
+        for price, label in [
+            (p_min,      f"LOW:{p_min:.0f}"),
+            (p_max,      f"HIGH:{p_max:.0f}"),
+            (closes[-1], f"CLOSE:{closes[-1]:.0f}"),
+            (opens[0],   f"OPEN:{opens[0]:.0f}"),
+        ]:
+            y = p2y(price)
+            draw.text((2, max(0, y - 7)), label, fill=(200, 200, 200))
+
+        # Тренд-линия
+        n = len(closes)
+        x1 = pad + cand_w // 2
+        x2 = pad + (n - 1) * (cw // n) + cand_w // 2
+        draw.line([(x1, p2y(closes[0])), (x2, p2y(closes[-1]))],
+                  fill=(100, 150, 255), width=1)
+
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        buf.seek(0)
+        return _b64.b64encode(buf.read()).decode("utf-8")
+
+    except Exception as e:
+        print(f"[vision render] {e}")
+        return ""
+
+
+async def call_yandex_vision(img_b64: str) -> dict:
+    """Отправляет PNG в Yandex Vision OCR и возвращает распознанный текст."""
+    if not YANDEX_VISION_KEY or not YANDEX_FOLDER_ID or not img_b64:
+        return {"text": "", "success": False}
+    try:
+        payload = {
+            "folderId": YANDEX_FOLDER_ID,
+            "analyzeSpecs": [{
+                "content":  img_b64,
+                "mimeType": "image/png",
+                "features": [{
+                    "type": "TEXT_DETECTION",
+                    "textDetectionConfig": {"languageCodes": ["en"]}
+                }]
+            }]
+        }
+        headers = {
+            "Authorization": f"Api-Key {YANDEX_VISION_KEY}",
+            "Content-Type":  "application/json",
+        }
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(
+                "https://vision.api.cloud.yandex.net/vision/v1/batchAnalyze",
+                json=payload, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=8)
+            )
+            data = await r.json()
+
+        # Собираем весь текст из результата
+        words = []
+        for res in data.get("results", []):
+            for inner in res.get("results", []):
+                for page in inner.get("textDetection", {}).get("pages", []):
+                    for block in page.get("blocks", []):
+                        for line in block.get("lines", []):
+                            for word in line.get("words", []):
+                                words.append(word.get("text", ""))
+        text = " ".join(words)
+        return {"text": text, "words": words, "success": True}
+    except Exception as e:
+        return {"text": "", "success": False, "error": str(e)}
+
+
+def parse_vision_bonus(ocr_text: str, vision_dict: dict) -> float:
+    """
+    Анализирует OCR-текст с графика и добавляет ±8 к Q-Score.
+    Логика: ищем числа HIGH/LOW/CLOSE/OPEN и сравниваем направление
+    с уже посчитанными индикаторами. Vision подтверждает или опровергает сигнал.
+    """
+    if not ocr_text:
+        return 0.0
+    text = ocr_text.upper()
+    bonus = 0.0
+    try:
+        import re
+        nums = {}
+        for label in ["HIGH", "LOW", "CLOSE", "OPEN"]:
+            m = re.search(rf"{label}:(\d+)", text)
+            if m:
+                nums[label] = float(m.group(1))
+
+        if "CLOSE" in nums and "OPEN" in nums:
+            close = nums["CLOSE"]; open_p = nums["OPEN"]
+            pct_move = (close - open_p) / open_p * 100
+
+            ema_bull = vision_dict.get("ema_bullish", None)
+            pattern  = vision_dict.get("pattern", "")
+
+            # Vision подтверждает нисходящий тренд
+            if pct_move < -1.0 and ema_bull is False:
+                bonus = -8.0
+            elif pct_move < -0.5:
+                bonus = -4.0
+            # Vision подтверждает восходящий тренд
+            elif pct_move > 1.0 and ema_bull is True:
+                bonus = +8.0
+            elif pct_move > 0.5:
+                bonus = +4.0
+            # HIGH/LOW паттерны
+            if "HIGH" in nums and "LOW" in nums:
+                price_pos = (close - nums["LOW"]) / (nums["HIGH"] - nums["LOW"] + 0.001) * 100
+                # Цена у минимума + нисходящий → усиливаем SELL
+                if price_pos < 25 and pct_move < 0:
+                    bonus -= 2.0
+                # Цена у максимума + восходящий → усиливаем BUY
+                elif price_pos > 75 and pct_move > 0:
+                    bonus += 2.0
+    except Exception:
+        pass
+    return round(max(-8.0, min(8.0, bonus)), 1)
+
+
 async def analyze_chart_with_vision(symbol: str, candles: list) -> dict:
     if not candles or len(candles) < 5:
         return {"pattern": "insufficient_data", "signal": "HOLD", "confidence": 0.5}
@@ -254,9 +418,23 @@ async def analyze_chart_with_vision(symbol: str, candles: list) -> dict:
         return {"pattern": pattern, "signal": signal, "confidence": round(min(confidence, 0.95), 2),
                 "price_change": round(price_change, 2), "volatility": round(volatility, 2),
                 "rsi": rsi_val, "ema_fast": round(ema_fast, 4), "ema_slow": round(ema_slow, 4),
-                "ema_bullish": ema_bull, "vol_ratio": round(vol_ratio, 2), "price_pos_pct": round(price_pos, 1)}
+                "ema_bullish": ema_bull, "vol_ratio": round(vol_ratio, 2), "price_pos_pct": round(price_pos, 1),
+                "vision_bonus": 0.0, "vision_ocr": ""}
+        # ── Yandex Vision: OCR графика ────────────────────────────────────
+        img_b64 = _render_candles_png_b64(candles)
+        if img_b64:
+            ocr = _cache_get(f"vision_{symbol}", 300)
+            if not ocr:
+                ocr = await call_yandex_vision(img_b64)
+                _cache_set(f"vision_{symbol}", ocr)
+            if ocr and ocr.get("success"):
+                v_bonus = parse_vision_bonus(ocr["text"], result)
+                result["vision_bonus"] = v_bonus
+                result["vision_ocr"]   = ocr["text"][:80]
+        return result
     except Exception as e:
-        return {"pattern": "error", "signal": "HOLD", "confidence": 0.5, "error": str(e)}
+        return {"pattern": "error", "signal": "HOLD", "confidence": 0.5,
+                "error": str(e), "vision_bonus": 0.0, "vision_ocr": ""}
 
 
 # ── Telegram ───────────────────────────────────────────────────────────────────
@@ -295,6 +473,8 @@ def calc_signal(price_change: float, vision: dict = None,
             "downtrend": -4, "downtrend_breakdown": -7, "overbought_reversal": -10, "overbought_drop": -10
         }
         score += pattern_bonus_map.get(pattern, 0)
+        # ── Yandex Vision OCR бонус (max ±8) ─────────────────────────────
+        score += vision.get("vision_bonus", 0.0)
 
     # ── Внешние сигналы (max ±23) ─────────────────────────────────────────
     fg_bonus = fear_greed.get("bonus", 0) if fear_greed else 0
@@ -685,9 +865,11 @@ async def auto_trade_cycle():
         conf   = signal["confidence"]
         q      = signal["q_score"]
         bd     = signal.get("breakdown", {})
+        v_bonus = vision.get("vision_bonus", 0.0)
+        v_ocr   = vision.get("vision_ocr", "")[:20] if vision.get("vision_ocr") else ""
         log_activity(f"[cycle] {symbol}: {action} Q={q:.1f} "
                      f"fg={bd.get('fear_greed',0):+.0f} poly={bd.get('polymarket',0):+.0f} "
-                     f"whale={bd.get('whale',0):+.0f} pattern={vision.get('pattern','?')}")
+                     f"whale={bd.get('whale',0):+.0f} vision={v_bonus:+.1f} pattern={vision.get('pattern','?')}")
 
         if action == "HOLD": continue
         if conf < MIN_CONFIDENCE: continue
@@ -868,7 +1050,7 @@ async def startup():
     asyncio.create_task(position_monitor_loop())
     mode = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     await notify(
-        f"⚛ *QuantumTrade v5.3*\n"
+        f"⚛ *QuantumTrade v5.4*\n"
         f"✅ Спот + Фьючерсы + реальные TP/SL\n"
         f"✅ Fear&Greed + Polymarket + Whale → Q-Score\n"
         f"✅ Стратегии A/B/C (3 мин таймаут)\n"
@@ -887,7 +1069,7 @@ async def trading_loop():
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "5.3.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "5.4.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
