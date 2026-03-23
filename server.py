@@ -17,7 +17,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="5.4.0")
+app = FastAPI(title="QuantumTrade AI", version="5.4.1")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -415,11 +415,11 @@ async def analyze_chart_with_vision(symbol: str, candles: list) -> dict:
         else:
             pattern, signal = "consolidation", "HOLD"; confidence = 0.55
 
-        return {"pattern": pattern, "signal": signal, "confidence": round(min(confidence, 0.95), 2),
-                "price_change": round(price_change, 2), "volatility": round(volatility, 2),
-                "rsi": rsi_val, "ema_fast": round(ema_fast, 4), "ema_slow": round(ema_slow, 4),
-                "ema_bullish": ema_bull, "vol_ratio": round(vol_ratio, 2), "price_pos_pct": round(price_pos, 1),
-                "vision_bonus": 0.0, "vision_ocr": ""}
+        result = {"pattern": pattern, "signal": signal, "confidence": round(min(confidence, 0.95), 2),
+                  "price_change": round(price_change, 2), "volatility": round(volatility, 2),
+                  "rsi": rsi_val, "ema_fast": round(ema_fast, 4), "ema_slow": round(ema_slow, 4),
+                  "ema_bullish": ema_bull, "vol_ratio": round(vol_ratio, 2), "price_pos_pct": round(price_pos, 1),
+                  "vision_bonus": 0.0, "vision_ocr": ""}
         # ── Yandex Vision: OCR графика ────────────────────────────────────
         img_b64 = _render_candles_png_b64(candles)
         if img_b64:
@@ -1069,7 +1069,7 @@ async def trading_loop():
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "5.4.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "5.4.1", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
