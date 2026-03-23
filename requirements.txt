@@ -4,3 +4,4 @@ aiohttp
 python-telegram-bot
 pydantic
 Pillow
+pyqpanda3
