@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v5.0
+QuantumTrade AI - FastAPI Backend v5.1
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
 """
 
@@ -17,7 +17,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="5.0.0")
+app = FastAPI(title="QuantumTrade AI", version="5.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -629,7 +629,7 @@ async def auto_trade_cycle():
         except Exception: poly_events = []
 
     signals_fired = []
-    COOLDOWN = 300
+    COOLDOWN = 100
 
     # ── Параллельный fetch: chart + vision + whale ────────────────────────────
     async def _get_sym_data(sym, pdata):
@@ -713,6 +713,10 @@ async def auto_trade_cycle():
             "price": best["price"], "fut_usdt": fut_usdt,
             "expires_at": time.time() + STRATEGY_TIMEOUT + 60
         }
+        # ВАЖНО: блокируем эту пару сразу, не ждём исполнения
+        # иначе следующий цикл создаст новый pending для той же пары
+        last_signals[f"FUT_{best['symbol']}"] = {"action": best["action"], "ts": time.time()}
+        log_activity(f"[cycle] {best['symbol']}: reserved — cooldown {COOLDOWN}s")
         for k in [k for k, v in list(pending_strategies.items()) if time.time() > v["expires_at"]]:
             del pending_strategies[k]
 
@@ -833,7 +837,7 @@ async def startup():
     asyncio.create_task(position_monitor_loop())
     mode = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     await notify(
-        f"⚛ *QuantumTrade v5.0*\n"
+        f"⚛ *QuantumTrade v5.1*\n"
         f"✅ Спот + Фьючерсы + реальные TP/SL\n"
         f"✅ Fear&Greed + Polymarket + Whale → Q-Score\n"
         f"✅ Стратегии A/B/C (3 мин таймаут)\n"
@@ -852,7 +856,7 @@ async def trading_loop():
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "5.0.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "5.1.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
@@ -1014,7 +1018,7 @@ async def api_debug():
         "autopilot":     AUTOPILOT,
         "risk":          RISK_PER_TRADE,
         "min_confidence":MIN_CONFIDENCE,
-        "cooldown_sec":  300,
+        "cooldown_sec":  100,
         "activity_log":  list(reversed(activity_log))[:20],
         "timestamp":     datetime.utcnow().isoformat(),
     }
