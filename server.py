@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v6.7.0
+QuantumTrade AI - FastAPI Backend v6.8.0
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
 Phase3: Origin QC QAOA — квантовая оптимизация портфеля (CPU симулятор + Wukong 180 реальный чип)
 Phase5: Claude Vision — AI-анализ графиков
@@ -22,7 +22,7 @@ from fastapi import FastAPI, WebSocket, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="6.6.0")
+app = FastAPI(title="QuantumTrade AI", version="6.8.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -40,7 +40,7 @@ ORIGIN_QC_TOKEN   = os.getenv("ORIGIN_QC_TOKEN", "")     # Phase 6: Origin QC Wu
 RISK_PER_TRADE = 0.02
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
 MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "65"))  # v6.7: 78→65 (extreme fear market, F&G≈11)
-COOLDOWN       = int(os.getenv("COOLDOWN", "300"))   # v5.7: 100→300s (5 мин между сделками по одной паре)
+COOLDOWN       = int(os.getenv("COOLDOWN", "600"))   # v6.8: 300→600s (10 мин — меньше шума, лучше сигналы)
 MAX_LEVERAGE   = int(os.getenv("MAX_LEVERAGE", "3"))
 # With $100 futures balance, risk 10% = $10/trade, leverage 3x = $30 position size
 TP_PCT         = 0.03
@@ -317,7 +317,7 @@ async def run_qaoa_optimization(price_changes: Dict[str, float]) -> Dict[str, fl
 
 def log_trade(symbol, side, price, size, tp, sl, confidence, q_score, pattern, account="spot"):
     trade_log.append({
-        "id": len(trade_log) + 1, "ts": datetime.utcnow().isoformat(),
+        "id": len(trade_log) + 1, "ts": datetime.utcnow().isoformat(), "open_ts": time.time(),
         "symbol": symbol, "side": side, "price": price, "size": size,
         "tp": tp, "sl": sl, "confidence": confidence, "q_score": q_score,
         "pattern": pattern, "account": account, "status": "open", "pnl": None,
@@ -1370,6 +1370,9 @@ async def position_monitor_loop():
     """Каждые 30 сек проверяет открытые позиции — закрылись ли по TP/SL."""
     await asyncio.sleep(30)
     SYM_REV = {"XBTUSDTM": "BTC-USDT", "ETHUSDTM": "ETH-USDT", "SOLUSDTM": "SOL-USDT"}
+    # v6.8: правильные размеры контрактов для расчёта PnL
+    CONTRACT_SIZES = {"XBTUSDTM": 0.001, "ETHUSDTM": 0.01, "SOLUSDTM": 1.0,
+                      "AVAXUSDTM": 1.0, "XRPUSDTM": 10.0}
     while True:
         try:
             open_trades = [t for t in trade_log if t.get("status") == "open"]
@@ -1378,24 +1381,37 @@ async def position_monitor_loop():
                 open_syms  = {p.get("symbol") for p in pos_data.get("positions", [])}
                 for trade in open_trades:
                     if trade["symbol"] not in open_syms:
-                        base_sym  = SYM_REV.get(trade["symbol"], "BTC-USDT")
-                        price_now = await get_ticker(base_sym)
-                        entry     = trade["price"]
+                        base_sym      = SYM_REV.get(trade["symbol"], "BTC-USDT")
+                        price_now     = await get_ticker(base_sym)
+                        entry         = trade["price"]
+                        contract_size = CONTRACT_SIZES.get(trade["symbol"], 0.01)
                         if trade["side"] == "sell":
                             pnl_pct = (entry - price_now) / entry
                         else:
                             pnl_pct = (price_now - entry) / entry
-                        pnl_usdt = round(pnl_pct * entry * trade["size"] * MAX_LEVERAGE, 4)
+                        # v6.8 fix: PnL = price_change * n_contracts * contract_size_in_eth * entry
+                        pnl_usdt = round(pnl_pct * entry * trade["size"] * contract_size, 4)
+                        duration_min = round((time.time() - trade.get("open_ts", time.time())) / 60, 1)
+                        # Определяем причину закрытия
+                        tp  = trade.get("tp", entry * 1.03)
+                        sl  = trade.get("sl", entry * 0.985)
+                        if trade["side"] == "buy":
+                            reason = "🎯 TP" if price_now >= tp * 0.995 else ("🛑 SL" if price_now <= sl * 1.005 else "📊 Монитор")
+                        else:
+                            reason = "🎯 TP" if price_now <= tp * 1.005 else ("🛑 SL" if price_now >= sl * 0.995 else "📊 Монитор")
                         trade["status"]      = "closed"
                         trade["pnl"]         = pnl_usdt
                         trade["close_price"] = price_now
                         emoji = "✅" if pnl_usdt >= 0 else "❌"
-                        log_activity(f"[monitor] {trade['symbol']} closed PnL=${pnl_usdt:+.3f}")
+                        strat = trade.get("account", "B").replace("futures_", "")
+                        log_activity(f"[monitor] {trade['symbol']} {reason} closed PnL=${pnl_usdt:+.4f}")
+                        _save_trades_to_disk()
                         await notify(
-                            f"{emoji} *Позиция закрыта*\n"
-                            f"`{trade['symbol']}` {trade['side'].upper()}\n"
-                            f"Вход: `${entry:,.2f}` · Выход: `${price_now:,.2f}`\n"
-                            f"PnL: `${pnl_usdt:+.3f}` ({pnl_pct*100:+.2f}%)"
+                            f"{emoji} <b>Сделка закрыта — Стратегия {strat}</b>\n"
+                            f"<code>{trade['symbol']}</code> {trade['side'].upper()} | {reason}\n"
+                            f"Вход:  <code>${entry:,.2f}</code> → Выход: <code>${price_now:,.2f}</code>\n"
+                            f"PnL:   <code>${pnl_usdt:+.4f}</code> ({pnl_pct*100:+.3f}%)\n"
+                            f"Q={trade.get('q_score',0):.1f} | Длительность: {duration_min}м"
                         )
         except Exception as e:
             print(f"[monitor] {e}")
@@ -1449,7 +1465,7 @@ async def _tg_main_menu(chat_id: int):
          {"text": "📈 Позиции",    "callback_data": "menu_positions"}],
     ]}
     await _tg_send(chat_id,
-        "⚛ <b>QuantumTrade AI v6.7.0</b>\n"
+        "⚛ <b>QuantumTrade AI v6.8.0</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "Выбери раздел:", kb)
 
@@ -1699,7 +1715,7 @@ async def startup():
     mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
     await notify(
-        f"⚛ *QuantumTrade v6.7.0*\n"
+        f"⚛ *QuantumTrade v6.8.0*\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
         f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
