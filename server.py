@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v6.6.0
+QuantumTrade AI - FastAPI Backend v6.7.0
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
 Phase3: Origin QC QAOA — квантовая оптимизация портфеля (CPU симулятор + Wukong 180 реальный чип)
 Phase5: Claude Vision — AI-анализ графиков
@@ -39,13 +39,13 @@ ORIGIN_QC_TOKEN   = os.getenv("ORIGIN_QC_TOKEN", "")     # Phase 6: Origin QC Wu
 
 RISK_PER_TRADE = 0.02
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
-MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "78"))  # v5.7: 65→78 (фильтр слабых сигналов)
+MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "65"))  # v6.7: 78→65 (extreme fear market, F&G≈11)
 COOLDOWN       = int(os.getenv("COOLDOWN", "300"))   # v5.7: 100→300s (5 мин между сделками по одной паре)
 MAX_LEVERAGE   = int(os.getenv("MAX_LEVERAGE", "3"))
 # With $100 futures balance, risk 10% = $10/trade, leverage 3x = $30 position size
 TP_PCT         = 0.03
 SL_PCT         = 0.015
-TEST_MODE      = os.getenv("TEST_MODE", "true").lower() == "true"
+TEST_MODE      = os.getenv("TEST_MODE", "false").lower() == "true"  # v6.7: default LIVE mode
 if TEST_MODE:
     RISK_PER_TRADE = 0.10
 
@@ -1449,7 +1449,7 @@ async def _tg_main_menu(chat_id: int):
          {"text": "📈 Позиции",    "callback_data": "menu_positions"}],
     ]}
     await _tg_send(chat_id,
-        "⚛ <b>QuantumTrade AI v6.6.0</b>\n"
+        "⚛ <b>QuantumTrade AI v6.7.0</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "Выбери раздел:", kb)
 
@@ -1510,9 +1510,11 @@ async def _tg_airdrops(chat_id: int):
 async def _tg_settings(chat_id: int):
     """Карточка настроек с рабочими кнопками."""
     kb = {"inline_keyboard": [
-        [{"text": "📉 Min Q: 78 (осторожно)", "callback_data": "set_minq_78"},
-         {"text": "📊 Min Q: 82 (стандарт)",  "callback_data": "set_minq_82"}],
-        [{"text": "📈 Min Q: 85 (агрессивно)", "callback_data": "set_minq_85"},
+        [{"text": "🟢 Min Q: 62 (страх рынка)", "callback_data": "set_minq_62"},
+         {"text": "📉 Min Q: 65 (мягкий)",      "callback_data": "set_minq_65"}],
+        [{"text": "📊 Min Q: 70 (умеренный)",   "callback_data": "set_minq_70"},
+         {"text": "📊 Min Q: 78 (стандарт)",    "callback_data": "set_minq_78"}],
+        [{"text": "📈 Min Q: 82 (строгий)",     "callback_data": "set_minq_82"},
          {"text": f"✅ Текущий: {MIN_Q_SCORE}", "callback_data": "set_minq_cur"}],
         [{"text": "⏱ Cooldown: 180s", "callback_data": "set_cd_180"},
          {"text": "⏱ Cooldown: 300s", "callback_data": "set_cd_300"}],
@@ -1628,10 +1630,12 @@ async def telegram_callback(req: TelegramUpdate):
         if chat_id: await _tg_main_menu(chat_id)
 
     # ── Настройки Min Q ────────────────────────────────────────────────────
-    elif data in ("set_minq_78", "set_minq_82", "set_minq_85", "set_minq_cur"):
-        if data == "set_minq_78":   MIN_Q_SCORE = 78
+    elif data in ("set_minq_62", "set_minq_65", "set_minq_70", "set_minq_78", "set_minq_82", "set_minq_cur"):
+        if data == "set_minq_62":   MIN_Q_SCORE = 62
+        elif data == "set_minq_65": MIN_Q_SCORE = 65
+        elif data == "set_minq_70": MIN_Q_SCORE = 70
+        elif data == "set_minq_78": MIN_Q_SCORE = 78
         elif data == "set_minq_82": MIN_Q_SCORE = 82
-        elif data == "set_minq_85": MIN_Q_SCORE = 85
         await _tg_answer(cb_id, f"Min Q → {MIN_Q_SCORE}")
         if chat_id: await _tg_settings(chat_id)
 
@@ -1695,7 +1699,7 @@ async def startup():
     mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
     await notify(
-        f"⚛ *QuantumTrade v6.6.0*\n"
+        f"⚛ *QuantumTrade v6.7.0*\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
         f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
@@ -1964,9 +1968,37 @@ async def quantum_status():
         "note":            note,
     }
 
+@app.post("/api/settings")
+async def update_settings(body: dict):
+    """v6.7: runtime settings update without restart."""
+    global MIN_Q_SCORE, COOLDOWN, AUTOPILOT, TEST_MODE, RISK_PER_TRADE, MAX_LEVERAGE
+    changed = {}
+    if "min_q_score" in body:
+        MIN_Q_SCORE = int(body["min_q_score"])
+        changed["min_q_score"] = MIN_Q_SCORE
+    if "cooldown" in body:
+        COOLDOWN = int(body["cooldown"])
+        changed["cooldown"] = COOLDOWN
+    if "autopilot" in body:
+        AUTOPILOT = bool(body["autopilot"])
+        changed["autopilot"] = AUTOPILOT
+    if "test_mode" in body:
+        TEST_MODE = bool(body["test_mode"])
+        RISK_PER_TRADE = 0.10 if TEST_MODE else 0.02
+        changed["test_mode"] = TEST_MODE
+        changed["risk_per_trade"] = RISK_PER_TRADE
+    if "max_leverage" in body:
+        MAX_LEVERAGE = int(body["max_leverage"])
+        changed["max_leverage"] = MAX_LEVERAGE
+    log_activity(f"[settings/api] changed: {changed}")
+    return {"ok": True, "changed": changed,
+            "current": {"min_q_score": MIN_Q_SCORE, "cooldown": COOLDOWN,
+                        "autopilot": AUTOPILOT, "test_mode": TEST_MODE,
+                        "risk_per_trade": RISK_PER_TRADE, "max_leverage": MAX_LEVERAGE}}
+
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "6.6.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "6.7.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
