@@ -22,7 +22,7 @@ from fastapi import FastAPI, WebSocket, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="7.0.0")
+app = FastAPI(title="QuantumTrade AI", version="7.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -1232,6 +1232,8 @@ async def auto_trade_cycle():
     fut_usdt        = fut_bal.get("available_balance", 0)
     spot_trade_usdt = spot_usdt * RISK_PER_TRADE
     fg_val = fg_data.get("value", 50)
+    # Cache prices for arb monitor
+    _cache_set("all_prices", prices_data)
     log_activity(f"[cycle] F&G={fg_val}({fg_data.get('bonus',0):+d}) spot=${spot_usdt:.1f} fut=${fut_usdt:.1f} poly={len(poly_events)}mkts")
 
     # ── Polymarket v7.0 (кеш 15 мин, multi-query) ──────────────────────────────
@@ -1413,6 +1415,136 @@ async def auto_trade_cycle():
 
 # ── Startup ────────────────────────────────────────────────────────────────────
 # ── Position Monitor ────────────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TRIANGULAR ARBITRAGE MONITOR v7.1
+# Схема: USDT → A → B → USDT
+# Проверяем отклонение реального кросс-курса A-B от имплицитного
+# Если спред > 0.4% (>0.3% комиссий KuCoin) → алерт в Telegram
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Треугольные пары: (coin_a, coin_b, cross_pair, description)
+ARB_TRIANGLES = [
+    ("ETH-USDT",  "BTC-USDT",  "ETH-BTC",  "USDT→ETH→BTC→USDT"),
+    ("SOL-USDT",  "BTC-USDT",  "SOL-BTC",  "USDT→SOL→BTC→USDT"),
+    ("XRP-USDT",  "BTC-USDT",  "XRP-BTC",  "USDT→XRP→BTC→USDT"),
+    ("SOL-USDT",  "ETH-USDT",  "SOL-ETH",  "USDT→SOL→ETH→USDT"),
+    ("XRP-USDT",  "ETH-USDT",  "XRP-ETH",  "USDT→XRP→ETH→USDT"),
+    ("ADA-USDT",  "BTC-USDT",  "ADA-BTC",  "USDT→ADA→BTC→USDT"),
+]
+ARB_FEE       = 0.001   # 0.1% per trade, 0.3% for 3 trades
+ARB_MIN_SPREAD = 0.004  # минимальный спред 0.4% после комиссий
+ARB_COOLDOWNS: dict = {}  # path → last_alert_ts (cooldown 5 мин)
+ARB_COOLDOWN_SEC = 300
+
+async def get_cross_ticker(symbol: str) -> float:
+    """Получить цену кросс-пары из KuCoin (напр. ETH-BTC)."""
+    cached = _cache_get(f"ticker_{symbol}", 60)
+    if cached: return cached
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(
+                f"https://api.kucoin.com/api/v1/market/orderbook/level1?symbol={symbol}",
+                timeout=aiohttp.ClientTimeout(total=5)
+            )
+            d = await r.json()
+        price = float(d["data"]["price"])
+        _cache_set(f"ticker_{symbol}", price)
+        return price
+    except Exception as e:
+        log_activity(f"[arb] cross ticker {symbol} error: {e}")
+        return 0.0
+
+async def check_triangular_arb(prices: dict) -> list:
+    """
+    Проверяет все треугольные связки.
+    Возвращает список найденных возможностей [{path, spread_pct, direction, ...}].
+    """
+    opportunities = []
+    now = time.time()
+
+    for a_sym, b_sym, cross_sym, path in ARB_TRIANGLES:
+        # Cooldown check
+        if now - ARB_COOLDOWNS.get(path, 0) < ARB_COOLDOWN_SEC:
+            continue
+
+        price_a = prices.get(a_sym, {}).get("price", 0)
+        price_b = prices.get(b_sym, {}).get("price", 0)
+        if not price_a or not price_b:
+            continue
+
+        # Имплицитный кросс-курс (из USDT пар)
+        implied_cross = price_a / price_b  # напр. ETH/BTC = ETH_USDT / BTC_USDT
+
+        # Реальный кросс-курс с биржи
+        actual_cross = await get_cross_ticker(cross_sym)
+        if not actual_cross:
+            continue
+
+        # Спред: насколько реальный отличается от имплицитного
+        spread = (actual_cross - implied_cross) / implied_cross
+
+        # Проверяем оба направления
+        fee3 = ARB_FEE * 3  # 0.3% суммарные комиссии
+
+        # Направление 1: USDT → A → B → USDT (используем actual_cross для продажи A за B)
+        # Прибыль = (1/price_a) * actual_cross * price_b * (1-fee)^3 - 1
+        profit1 = (1 / price_a) * actual_cross * price_b * (1 - ARB_FEE)**3 - 1
+
+        # Направление 2: USDT → B → A → USDT (обратный путь)
+        # Прибыль = (1/price_b) * (1/actual_cross) * price_a * (1-fee)^3 - 1
+        profit2 = (1 / price_b) * (1 / actual_cross) * price_a * (1 - ARB_FEE)**3 - 1
+
+        best_profit = max(profit1, profit2)
+        direction   = 1 if profit1 >= profit2 else 2
+
+        if best_profit >= ARB_MIN_SPREAD:
+            path_str = path if direction == 1 else path.replace("→", "←").split("←")[0] + "←".join(path.split("→")[1:])
+            opp = {
+                "path":        path,
+                "cross_sym":   cross_sym,
+                "implied":     round(implied_cross, 8),
+                "actual":      round(actual_cross, 8),
+                "spread_pct":  round(spread * 100, 3),
+                "profit_pct":  round(best_profit * 100, 3),
+                "direction":   direction,
+                "price_a":     price_a,
+                "price_b":     price_b,
+                "a_sym":       a_sym,
+                "b_sym":       b_sym,
+            }
+            opportunities.append(opp)
+            ARB_COOLDOWNS[path] = now
+            log_activity(f"[arb] ⚡ {path} profit={best_profit*100:.3f}% spread={spread*100:.3f}%")
+
+    return opportunities
+
+async def _notify_arb(opp: dict):
+    """Telegram alert for triangular arbitrage opportunity."""
+    d = opp["direction"]
+    steps = opp["path"].split("→")
+    arrow = "➡️"
+    if d == 1:
+        route = f"{steps[0]} {arrow} {steps[1]} {arrow} {steps[2]} {arrow} {steps[3]}"
+    else:
+        route = f"{steps[0]} {arrow} {steps[2]} {arrow} {steps[1]} {arrow} {steps[3]}"
+    profit_100  = round(opp["profit_pct"] / 100 * 100, 3)
+    profit_1000 = round(opp["profit_pct"] / 100 * 1000, 2)
+    msg = (
+        f"\u26a1 <b>\u0410\u0440\u0431\u0438\u0442\u0440\u0430\u0436 KuCoin!</b>\n"
+        f"<code>{route}</code>\n\n"
+        f"\U0001f4ca \u041a\u0440\u043e\u0441\u0441-\u043f\u0430\u0440\u0430: <code>{opp['cross_sym']}</code>\n"
+        f"\u0418\u043c\u043f\u043b\u0438\u0446\u0438\u0442\u043d\u044b\u0439:  <code>{opp['implied']:.6f}</code>\n"
+        f"\u0420\u044b\u043d\u043e\u0447\u043d\u044b\u0439:     <code>{opp['actual']:.6f}</code>\n"
+        f"\u0421\u043f\u0440\u0435\u0434:        <code>{opp['spread_pct']:+.3f}%</code>\n\n"
+        f"\U0001f4b0 \u041f\u0440\u0438\u0431\u044b\u043b\u044c (\u043f\u043e\u0441\u043b\u0435 \u043a\u043e\u043c\u0438\u0441\u0441\u0438\u0439 0.3%):\n"
+        f"  $100  \u2192 <code>${profit_100:+.3f}</code>\n"
+        f"  $1000 \u2192 <code>${profit_1000:+.2f}</code>\n\n"
+        f"\u23f0 <i>\u0414\u0435\u0439\u0441\u0442\u0432\u0443\u0439 \u0431\u044b\u0441\u0442\u0440\u043e \u2014 \u0430\u0440\u0431\u0438\u0442\u0440\u0430\u0436 \u0436\u0438\u0432\u0451\u0442 \u0441\u0435\u043a\u0443\u043d\u0434\u044b!</i>"
+    )
+    await notify(msg)
+
+
 async def position_monitor_loop():
     """Каждые 30 сек проверяет открытые позиции — закрылись ли по TP/SL."""
     await asyncio.sleep(30)
@@ -1462,6 +1594,18 @@ async def position_monitor_loop():
                         )
         except Exception as e:
             print(f"[monitor] {e}")
+
+        # ── Арбитраж: проверяем каждые 2 цикла (60 сек) ──────────────────────
+        try:
+            if int(time.time()) % 60 < 32:  # примерно каждую минуту
+                prices_snap = _cache_get("all_prices", 120) or {}
+                if prices_snap:
+                    arb_opps = await check_triangular_arb(prices_snap.get("prices", {}))
+                    for opp in arb_opps:
+                        await _notify_arb(opp)
+        except Exception as e:
+            log_activity(f"[arb] monitor error: {e}")
+
         await asyncio.sleep(30)
 
 
@@ -1510,6 +1654,7 @@ async def _tg_main_menu(chat_id: int):
          {"text": f"🤖 Автопилот: {ap}", "callback_data": "menu_autopilot"}],
         [{"text": "💰 Баланс",     "callback_data": "menu_balance"},
          {"text": "📈 Позиции",    "callback_data": "menu_positions"}],
+        [{"text": "⚡ Арбитраж",   "callback_data": "menu_arb"}],
     ]}
     await _tg_send(chat_id,
         "⚛ <b>QuantumTrade AI v6.8.0</b>\n"
@@ -1594,6 +1739,30 @@ async def _tg_settings(chat_id: int):
         f"🤖 Автопилот: <code>{'ВКЛ' if AUTOPILOT else 'ВЫКЛ'}</code>\n\n"
         f"<i>Выбери параметр для изменения, затем нажми Сохранить</i>", kb)
 
+
+async def _tg_arb(chat_id: int):
+    """Telegram: arbitrage monitor status."""
+    now = time.time()
+    lines = []
+    for _, _, _, path in ARB_TRIANGLES:
+        last    = ARB_COOLDOWNS.get(path, 0)
+        elapsed = now - last
+        status  = "\U0001f50d \u041c\u043e\u043d\u0438\u0442\u043e\u0440\u0438\u043d\u0433" if elapsed > ARB_COOLDOWN_SEC else f"\u23f3 CD {int(ARB_COOLDOWN_SEC - elapsed)}s"
+        lines.append(f"  {path}: {status}")
+    ap_status = "\u0412\u041a\u041b" if AUTOPILOT else "\u0412\u042b\u041a\u041b (\u0432\u043a\u043b\u044e\u0447\u0438 \u0430\u0432\u0442\u043e\u043f\u0438\u043b\u043e\u0442)"
+    body = "\n".join(lines)
+    text = (
+        f"\u26a1 <b>\u0410\u0440\u0431\u0438\u0442\u0440\u0430\u0436 KuCoin \u2014 \u0421\u0442\u0430\u0442\u0443\u0441</b>\n\n"
+        f"\U0001f504 \u041c\u043e\u043d\u0438\u0442\u043e\u0440\u0438\u043d\u0433: <b>{ap_status}</b>\n"
+        f"\U0001f4d0 \u041c\u0438\u043d. \u0441\u043f\u0440\u0435\u0434: <code>{ARB_MIN_SPREAD*100:.1f}%</code> (\u043f\u043e\u0441\u043b\u0435 0.3% \u043a\u043e\u043c\u0438\u0441\u0441\u0438\u0439)\n"
+        f"\u23f1 Cooldown: <code>{ARB_COOLDOWN_SEC}s</code>\n\n"
+        f"<b>\u0410\u043a\u0442\u0438\u0432\u043d\u044b\u0435 \u0441\u0432\u044f\u0437\u043a\u0438:</b>\n{body}\n\n"
+        f"\U0001f4a1 \u0410\u043b\u0435\u0440\u0442 \u043f\u0440\u0438\u0445\u043e\u0434\u0438\u0442 \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438 \u043f\u0440\u0438 \u043e\u0431\u043d\u0430\u0440\u0443\u0436\u0435\u043d\u0438\u0438 \u0432\u043e\u0437\u043c\u043e\u0436\u043d\u043e\u0441\u0442\u0438."
+    )
+    kb = {"inline_keyboard": [[{"text": "\u25c0\ufe0f \u041c\u0435\u043d\u044e", "callback_data": "menu_main"}]]}
+    await _tg_send(chat_id, text, kb)
+
+
 async def _tg_balance(chat_id: int):
     """Текущие балансы спот + фьючерсы."""
     try:
@@ -1645,6 +1814,7 @@ async def telegram_callback(req: TelegramUpdate):
         elif cmd == "/settings":            await _tg_settings(chat_id)
         elif cmd == "/balance":             await _tg_balance(chat_id)
         elif cmd == "/positions":           await _tg_positions(chat_id)
+        elif cmd == "/arb":                 await _tg_arb(chat_id)
         return {"ok": True}
 
     # ── Обработка callback (нажатия кнопок) ────────────────────────────────
@@ -1684,6 +1854,10 @@ async def telegram_callback(req: TelegramUpdate):
     elif data == "menu_positions":
         await _tg_answer(cb_id, "📈 Загружаю...")
         if chat_id: await _tg_positions(chat_id)
+
+    elif data == "menu_arb":
+        await _tg_answer(cb_id, "⚡ Загружаю арбитраж...")
+        if chat_id: await _tg_arb(chat_id)
 
     elif data == "menu_autopilot":
         AUTOPILOT = not AUTOPILOT
@@ -2061,7 +2235,7 @@ async def update_settings(body: dict):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "7.0.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "7.1.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
