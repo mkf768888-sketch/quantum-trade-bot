@@ -22,7 +22,7 @@ from fastapi import FastAPI, WebSocket, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="6.9.0")
+app = FastAPI(title="QuantumTrade AI", version="7.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -842,7 +842,7 @@ def calc_signal(price_change: float, vision: dict = None,
     # ── Внешние сигналы (max ±23) ─────────────────────────────────────────
     fg_bonus = fear_greed.get("bonus", 0) if fear_greed else 0
     score += fg_bonus          # Fear&Greed контрарный: ±8
-    score += polymarket_bonus  # Polymarket события: ±5
+    score += polymarket_bonus  # Polymarket events v7.0: ±8 (multi-query smart scoring)
     score += whale_bonus       # Whale flow: ±5 (упрощённо)
 
     # ── QAOA Quantum Bias (max ±15) ───────────────────────────────────────
@@ -1010,23 +1010,54 @@ async def get_whale_signal(symbol: str) -> dict:
         return {"bonus": 0, "success": False, "error": str(e)}
 
 
-# ── Polymarket bonus ───────────────────────────────────────────────────────────
+# ── Polymarket bonus v7.0 ─────────────────────────────────────────────────────
+# Маркеры: ключевые слова → (направление, вес)
+# direction: +1 = bullish если YES prob высок, -1 = bearish если YES prob высок
+_PM_SIGNALS = [
+    # Крипто-специфичные bullish
+    ("bitcoin etf",            +1, 3.0), ("btc etf",              +1, 3.0),
+    ("eth etf",                +1, 2.5), ("ethereum etf",         +1, 2.5),
+    ("crypto etf",             +1, 2.0), ("bitcoin above",        +1, 2.0),
+    ("btc above",              +1, 2.0), ("eth above",            +1, 1.5),
+    ("bitcoin $",              +1, 1.5), ("crypto regulation",    +1, 1.5),
+    ("sec approve",            +1, 2.0), ("bitcoin strategic",    +1, 2.0),
+    ("us bitcoin reserve",     +1, 3.0), ("bitcoin reserve",      +1, 2.5),
+    # Крипто-специфичные bearish
+    ("bitcoin below",          -1, 2.0), ("btc below",            -1, 2.0),
+    ("bitcoin crash",          -1, 2.5), ("crypto ban",           -1, 2.0),
+    ("sec reject",             -1, 2.0), ("exchange hack",        -1, 1.5),
+    ("exchange collapse",      -1, 2.5), ("bitcoin bankrupt",     -1, 2.0),
+    # Макро-события (влияют на весь крипто)
+    ("recession",              -1, 2.0), ("financial crisis",     -1, 2.5),
+    ("fed rate hike",          -1, 1.5), ("fed hike",             -1, 1.5),
+    ("interest rate hike",     -1, 1.5), ("us debt",              -1, 1.0),
+    ("fed cut",                +1, 1.5), ("rate cut",             +1, 1.5),
+    ("ceasefire",              +1, 1.0), ("peace deal",           +1, 1.0),
+    ("war escalation",         -1, 1.5), ("nuclear",              -1, 2.0),
+]
+
 def calc_polymarket_bonus(symbol: str, events: list) -> float:
-    sym_keywords = {
-        "BTC-USDT": ["bitcoin", "btc"], "ETH-USDT": ["ethereum", "eth"],
-        "SOL-USDT": ["solana", "sol"],  "BNB-USDT": ["binance", "bnb"],
-        "XRP-USDT": ["xrp", "ripple"],  "AVAX-USDT": ["avalanche", "avax"],
-    }
-    keywords = sym_keywords.get(symbol, [])
-    if not keywords or not events: return 0.0
-    relevant = [e for e in events if any(k in e.get("title","").lower() for k in keywords)]
-    if not relevant: return 0.0
-    avg_yes = sum(e.get("yes_prob", 50) for e in relevant) / len(relevant)
-    if avg_yes >= 65:   return +5.0
-    elif avg_yes >= 55: return +2.0
-    elif avg_yes <= 35: return -5.0
-    elif avg_yes <= 45: return -2.0
-    return 0.0
+    """v7.0: умная классификация рынков Polymarket → бонус Q-Score ±8."""
+    if not events: return 0.0
+    total_score = 0.0
+    total_weight = 0.0
+    for ev in events:
+        title = ev.get("title", "").lower()
+        yes_p = ev.get("yes_prob", 50.0) / 100.0  # 0..1
+        vol   = ev.get("volume", 0)
+        # Вес события пропорционален объёму торгов
+        vol_weight = min(1.0 + (vol / 100_000), 3.0)
+        for keyword, direction, base_weight in _PM_SIGNALS:
+            if keyword in title:
+                # YES > 0.5 → сигнал direction, сила = |yes_p - 0.5| * 2
+                signal_strength = (yes_p - 0.5) * 2  # -1..+1
+                contribution = direction * signal_strength * base_weight * vol_weight
+                total_score  += contribution
+                total_weight += base_weight * vol_weight
+    if total_weight == 0: return 0.0
+    # Нормализуем и ограничиваем до ±8
+    raw = total_score / max(total_weight, 1.0) * 8.0
+    return round(max(-8.0, min(8.0, raw)), 2)
 
 
 # ── Pending strategy choices ───────────────────────────────────────────────────
@@ -1201,33 +1232,49 @@ async def auto_trade_cycle():
     fut_usdt        = fut_bal.get("available_balance", 0)
     spot_trade_usdt = spot_usdt * RISK_PER_TRADE
     fg_val = fg_data.get("value", 50)
-    log_activity(f"[cycle] F&G={fg_val}({fg_data.get('bonus',0):+d}) spot=${spot_usdt:.1f} fut=${fut_usdt:.1f}")
+    log_activity(f"[cycle] F&G={fg_val}({fg_data.get('bonus',0):+d}) spot=${spot_usdt:.1f} fut=${fut_usdt:.1f} poly={len(poly_events)}mkts")
 
-    # ── Polymarket (кеш 15 мин) ───────────────────────────────────────────────
+    # ── Polymarket v7.0 (кеш 15 мин, multi-query) ──────────────────────────────
     poly_events = _cache_get("polymarket", 900) or []
     if not poly_events:
         try:
+            # Запросы по ключевым темам: крипто + макро
+            PM_QUERIES = [
+                "bitcoin", "ethereum", "crypto ETF", "crypto regulation",
+                "recession", "fed rate", "ceasefire",
+            ]
+            result = {}  # slug → event (дедупликация)
             async with aiohttp.ClientSession() as _s:
-                _r = await _s.get("https://gamma-api.polymarket.com/events?limit=30&active=true&tag=crypto",
-                                  timeout=aiohttp.ClientTimeout(total=6))
-                _data = await _r.json()
-            result = []
-            for e in (_data if isinstance(_data, list) else []):
-                markets = e.get("markets", [])
-                if not markets: continue
-                pr = markets[0].get("outcomePrices", "[]")
-                if isinstance(pr, str):
-                    try: pr = json.loads(pr)
-                    except: continue
-                if not pr: continue
-                try: yp = round(float(pr[0]) * 100, 1)
-                except: continue
-                if yp in (0.0, 100.0): continue
-                if float(e.get("volume", 0)) < 1000: continue
-                result.append({"title": e.get("title",""), "yes_prob": yp})
-            poly_events = result[:10]
+                for q in PM_QUERIES:
+                    try:
+                        url = (f"https://gamma-api.polymarket.com/markets"
+                               f"?q={q}&active=true&closed=false&limit=8")
+                        _r = await _s.get(url, timeout=aiohttp.ClientTimeout(total=5))
+                        _data = await _r.json()
+                        for m in (_data if isinstance(_data, list) else []):
+                            slug = m.get("slug", "")
+                            if slug in result: continue
+                            pr = m.get("outcomePrices", "[]")
+                            if isinstance(pr, str):
+                                try: pr = json.loads(pr)
+                                except: continue
+                            if not pr: continue
+                            try: yp = round(float(pr[0]) * 100, 1)
+                            except: continue
+                            if yp in (0.0, 100.0): continue  # resolved/degenerate
+                            vol = float(m.get("volume", 0))
+                            if vol < 1000: continue
+                            result[slug] = {
+                                "title": m.get("question", ""),
+                                "yes_prob": yp, "volume": vol,
+                            }
+                    except Exception: continue
+            poly_events = list(result.values())[:20]
             _cache_set("polymarket", poly_events)
-        except Exception: poly_events = []
+            log_activity(f"[polymarket] v7.0 fetched {len(poly_events)} markets")
+        except Exception as e:
+            log_activity(f"[polymarket] fetch error: {e}")
+            poly_events = []
 
     # ── QAOA: обновляем quantum bias раз в 15 минут ──────────────────────────
     global _quantum_ts
@@ -2014,7 +2061,7 @@ async def update_settings(body: dict):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "6.9.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "7.0.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
