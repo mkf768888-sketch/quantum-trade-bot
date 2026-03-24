@@ -22,7 +22,7 @@ from fastapi import FastAPI, WebSocket, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="6.8.0")
+app = FastAPI(title="QuantumTrade AI", version="6.9.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -37,14 +37,14 @@ YANDEX_FOLDER_ID  = os.getenv("YANDEX_FOLDER_ID", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ORIGIN_QC_TOKEN   = os.getenv("ORIGIN_QC_TOKEN", "")     # Phase 6: Origin QC Wukong 180
 
-RISK_PER_TRADE = 0.02
+RISK_PER_TRADE = 0.25  # v6.9: Strategy C (25% of balance)
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
 MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "65"))  # v6.7: 78→65 (extreme fear market, F&G≈11)
 COOLDOWN       = int(os.getenv("COOLDOWN", "600"))   # v6.8: 300→600s (10 мин — меньше шума, лучше сигналы)
-MAX_LEVERAGE   = int(os.getenv("MAX_LEVERAGE", "3"))
-# With $100 futures balance, risk 10% = $10/trade, leverage 3x = $30 position size
-TP_PCT         = 0.03
-SL_PCT         = 0.015
+MAX_LEVERAGE   = int(os.getenv("MAX_LEVERAGE", "5"))   # v6.9: Strategy C default
+# v6.9: Strategy C — risk 25%, leverage 5x, TP=5%, SL=2.5% (backtested optimal for bear market)
+TP_PCT         = 0.05   # v6.9: Strategy C (5%)
+SL_PCT         = 0.025  # v6.9: Strategy C (2.5%)
 TEST_MODE      = os.getenv("TEST_MODE", "false").lower() == "true"  # v6.7: default LIVE mode
 if TEST_MODE:
     RISK_PER_TRADE = 0.10
@@ -1160,13 +1160,13 @@ async def auto_execute_dynamic(trade_id: str):
     pending = pending_strategies.pop(trade_id, None)
     if not pending: return
     q = pending["signal"]["q_score"]
-    # Dynamic strategy: Q=78-88→B, Q=89-94→C, Q=95+→DUAL
-    if q >= 95:
+    # v6.9 Dynamic strategy: Q≥85→DUAL(B+C), Q≥65→C (оптимально для медвежьего рынка), else→B
+    if q >= 85:
         auto_strategy = "D"
         label = "DUAL (B+C)"
-    elif q >= 89:
+    elif q >= 65:
         auto_strategy = "C"
-        label = "C (агрессивная)"
+        label = "C (агрессивная 🚀)"
     else:
         auto_strategy = "B"
         label = "B (стандартная)"
@@ -2000,7 +2000,7 @@ async def update_settings(body: dict):
         changed["autopilot"] = AUTOPILOT
     if "test_mode" in body:
         TEST_MODE = bool(body["test_mode"])
-        RISK_PER_TRADE = 0.10 if TEST_MODE else 0.02
+        RISK_PER_TRADE = 0.10 if TEST_MODE else 0.25  # v6.9: Strategy C default in live mode
         changed["test_mode"] = TEST_MODE
         changed["risk_per_trade"] = RISK_PER_TRADE
     if "max_leverage" in body:
@@ -2014,7 +2014,7 @@ async def update_settings(body: dict):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "6.8.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "6.9.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
