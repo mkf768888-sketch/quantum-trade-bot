@@ -22,7 +22,7 @@ from fastapi import FastAPI, WebSocket, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="7.1.0")
+app = FastAPI(title="QuantumTrade AI", version="7.1.1")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -839,7 +839,7 @@ def calc_signal(price_change: float, vision: dict = None,
         # ── Yandex Vision OCR бонус (max ±8) ─────────────────────────────
         score += vision.get("vision_bonus", 0.0)
 
-    # ── Внешние сигналы (max ±23) ─────────────────────────────────────────
+    # ── Внешние сигналы (max ²23) ─────────────────────────────────────────
     fg_bonus = fear_greed.get("bonus", 0) if fear_greed else 0
     score += fg_bonus          # Fear&Greed контрарный: ±8
     score += polymarket_bonus  # Polymarket events v7.0: ±8 (multi-query smart scoring)
@@ -1234,6 +1234,8 @@ async def auto_trade_cycle():
     fg_val = fg_data.get("value", 50)
     # Cache prices for arb monitor
     _cache_set("all_prices", prices_data)
+    # Pre-initialize poly_events from cache so log line below is always safe
+    poly_events = _cache_get("polymarket", 900) or []
     log_activity(f"[cycle] F&G={fg_val}({fg_data.get('bonus',0):+d}) spot=${spot_usdt:.1f} fut=${fut_usdt:.1f} poly={len(poly_events)}mkts")
 
     # ── Polymarket v7.0 (кеш 15 мин, multi-query) ──────────────────────────────
@@ -1426,11 +1428,12 @@ async def auto_trade_cycle():
 # Треугольные пары: (coin_a, coin_b, cross_pair, description)
 ARB_TRIANGLES = [
     ("ETH-USDT",  "BTC-USDT",  "ETH-BTC",  "USDT→ETH→BTC→USDT"),
-    ("SOL-USDT",  "BTC-USDT",  "SOL-BTC",  "USDT→SOL→BTC→USDT"),
+    # SOL-BTC and SOL-ETH pairs don't exist on KuCoin spot — removed
     ("XRP-USDT",  "BTC-USDT",  "XRP-BTC",  "USDT→XRP→BTC→USDT"),
-    ("SOL-USDT",  "ETH-USDT",  "SOL-ETH",  "USDT→SOL→ETH→USDT"),
-    ("XRP-USDT",  "ETH-USDT",  "XRP-ETH",  "USDT→XRP→ETH→USDT"),
+    # XRP-ETH doesn't exist on KuCoin spot — removed
     ("ADA-USDT",  "BTC-USDT",  "ADA-BTC",  "USDT→ADA→BTC→USDT"),
+    ("LINK-USDT", "BTC-USDT",  "LINK-BTC", "USDT→LINK→BTC→USDT"),
+    ("LTC-USDT",  "BTC-USDT",  "LTC-BTC",  "USDT→LTC→BTC→USDT"),
 ]
 ARB_FEE       = 0.001   # 0.1% per trade, 0.3% for 3 trades
 ARB_MIN_SPREAD = 0.004  # минимальный спред 0.4% после комиссий
@@ -1448,7 +1451,11 @@ async def get_cross_ticker(symbol: str) -> float:
                 timeout=aiohttp.ClientTimeout(total=5)
             )
             d = await r.json()
-        price = float(d["data"]["price"])
+        data = d.get("data") if isinstance(d, dict) else None
+        if not data or not data.get("price"):
+            log_activity(f"[arb] cross ticker {symbol}: no data (pair may not exist)")
+            return 0.0
+        price = float(data["price"])
         _cache_set(f"ticker_{symbol}", price)
         return price
     except Exception as e:
@@ -1595,7 +1602,7 @@ async def position_monitor_loop():
         except Exception as e:
             print(f"[monitor] {e}")
 
-        # ── Арбитраж: проверяем каждые 2 цикла (60 сек) ──────────────────────
+        # ── Арбитраж: проверяем каждый 2 цикла (60 сек) ──────────────────────
         try:
             if int(time.time()) % 60 < 32:  # примерно каждую минуту
                 prices_snap = _cache_get("all_prices", 120) or {}
@@ -1690,7 +1697,7 @@ def _html_esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 async def _tg_airdrops(chat_id: int):
-    """Отправляет топ-5 airdrop возможностей (HTML-форматирование, без Markdown-крашей)."""
+    """Отправляет топ-5 airdrop возможностей (HTML-сорматирование, без Markdown-крашей)."""
     airdrops = await get_airdrops()
     top = airdrops[:5]
     lines = ["🪂 <b>Топ Airdrop возможности</b>", "━━━━━━━━━━━━━━━━━━━━━━"]
@@ -2016,7 +2023,7 @@ _AIRDROP_FALLBACK = [
     {
         "id": "hyperliquid-points", "name": "Hyperliquid Points", "ecosystem": "EVM",
         "status": "active", "potential": 5, "effort": "medium",
-        "description": "DEX с перпами. Очки начисляются за объём торгов. Уже крупный airdrop был — ждут второй.",
+        "description": "DEX с перпами. Очки начисляются за объём торгов. Уже крупный airdrop был — ждут ћторой.",
         "tasks": ["Торгуй перпами на HyperLiquid", "Обеспечь ликвидность в HLP"],
         "deadline": None, "tge_estimate": "TBD",
         "url": "https://hyperliquid.xyz", "volume_usd": 10e9,
@@ -2235,7 +2242,7 @@ async def update_settings(body: dict):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "7.1.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "7.1.1", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
