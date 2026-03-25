@@ -22,7 +22,7 @@ from fastapi import FastAPI, WebSocket, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="7.1.1")
+app = FastAPI(title="QuantumTrade AI", version="7.1.2")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -40,6 +40,9 @@ ORIGIN_QC_TOKEN   = os.getenv("ORIGIN_QC_TOKEN", "")     # Phase 6: Origin QC Wu
 RISK_PER_TRADE = 0.25  # v6.9: Strategy C (25% of balance)
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
 MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "65"))  # v6.7: 78→65 (extreme fear market, F&G≈11)
+# v7.1.2: per-pair Q thresholds (tune per volatility profile)
+PAIR_Q_THRESHOLDS: dict = {"BTC-USDT": 64, "ETH-USDT": 66, "SOL-USDT": 65,
+                            "BNB-USDT": 65, "XRP-USDT": 65, "AVAX-USDT": 65}
 COOLDOWN       = int(os.getenv("COOLDOWN", "600"))   # v6.8: 300→600s (10 мин — меньше шума, лучше сигналы)
 MAX_LEVERAGE   = int(os.getenv("MAX_LEVERAGE", "5"))   # v6.9: Strategy C default
 # v6.9: Strategy C — risk 25%, leverage 5x, TP=5%, SL=2.5% (backtested optimal for bear market)
@@ -839,7 +842,7 @@ def calc_signal(price_change: float, vision: dict = None,
         # ── Yandex Vision OCR бонус (max ±8) ─────────────────────────────
         score += vision.get("vision_bonus", 0.0)
 
-    # ── Внешние сигналы (max ²23) ─────────────────────────────────────────
+    # ── Внешние сигналы (max ±23) ─────────────────────────────────────────
     fg_bonus = fear_greed.get("bonus", 0) if fear_greed else 0
     score += fg_bonus          # Fear&Greed контрарный: ±8
     score += polymarket_bonus  # Polymarket events v7.0: ±8 (multi-query smart scoring)
@@ -982,9 +985,16 @@ async def get_fear_greed() -> dict:
 
 # ── Whale Tracker ──────────────────────────────────────────────────────────────
 async def get_whale_signal(symbol: str) -> dict:
-    coin_map = {"BTC-USDT": "bitcoin", "ETH-USDT": "ethereum"}
+    # v7.1.2: expanded to SOL, XRP, BNB via Blockchair (AVAX not supported → skip)
+    coin_map = {
+        "BTC-USDT": "bitcoin",
+        "ETH-USDT": "ethereum",
+        "SOL-USDT": "solana",
+        "XRP-USDT": "ripple",
+        "BNB-USDT": "binance-smart-chain",
+    }
     coin = coin_map.get(symbol)
-    if not coin: return {"bonus": 0, "success": False}
+    if not coin: return {"bonus": 0, "success": False, "note": "unsupported"}
     cache_key = f"whale_{coin}"
     cached = _cache_get(cache_key, 300)
     if cached: return cached
@@ -1312,6 +1322,15 @@ async def auto_trade_cycle():
                 if pdata.get("price", 0) > 0]
     cv_results = await asyncio.gather(*cv_tasks, return_exceptions=True)
 
+    # v7.1.2: re-fetch live futures balance so margin check uses current available funds
+    try:
+        _fresh_fut = await get_futures_balance()
+        if _fresh_fut.get("success"):
+            fut_usdt = _fresh_fut.get("available_balance", fut_usdt)
+            log_activity(f"[cycle] live fut=${fut_usdt:.2f} (refreshed before margin checks)")
+    except Exception:
+        pass  # keep stale value on error
+
     futures_candidates = []
 
     for res in cv_results:
@@ -1324,6 +1343,14 @@ async def auto_trade_cycle():
         conf   = signal["confidence"]
         q      = signal["q_score"]
         bd     = signal.get("breakdown", {})
+        # v7.1.2: per-pair Q threshold (overrides global MIN_Q_SCORE per symbol)
+        _pair_min_q = PAIR_Q_THRESHOLDS.get(symbol, MIN_Q_SCORE)
+        if action == "BUY" and q < _pair_min_q:
+            log_activity(f"[cycle] {symbol}: Q={q:.1f}<{_pair_min_q} (pair threshold) → SKIP")
+            continue
+        if action == "SELL" and (100.0 - q) < _pair_min_q:
+            log_activity(f"[cycle] {symbol}: sellQ={(100.0-q):.1f}<{_pair_min_q} (pair threshold) → SKIP")
+            continue
         v_bonus = vision.get("vision_bonus", 0.0)
         v_ocr   = vision.get("vision_ocr", "")[:20] if vision.get("vision_ocr") else ""
         log_activity(f"[cycle] {symbol}: {action} Q={q:.1f} "
@@ -1602,7 +1629,7 @@ async def position_monitor_loop():
         except Exception as e:
             print(f"[monitor] {e}")
 
-        # ── Арбитраж: проверяем каждый 2 цикла (60 сек) ──────────────────────
+        # ── Арбитраж: проверяем каждые 2 цикла (60 сек) ──────────────────────
         try:
             if int(time.time()) % 60 < 32:  # примерно каждую минуту
                 prices_snap = _cache_get("all_prices", 120) or {}
@@ -1697,7 +1724,7 @@ def _html_esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 async def _tg_airdrops(chat_id: int):
-    """Отправляет топ-5 airdrop возможностей (HTML-сорматирование, без Markdown-крашей)."""
+    """Отправляет топ-5 airdrop возможностей (HTML-форматирование, без Markdown-крашей)."""
     airdrops = await get_airdrops()
     top = airdrops[:5]
     lines = ["🪂 <b>Топ Airdrop возможности</b>", "━━━━━━━━━━━━━━━━━━━━━━"]
@@ -2023,7 +2050,7 @@ _AIRDROP_FALLBACK = [
     {
         "id": "hyperliquid-points", "name": "Hyperliquid Points", "ecosystem": "EVM",
         "status": "active", "potential": 5, "effort": "medium",
-        "description": "DEX с перпами. Очки начисляются за объём торгов. Уже крупный airdrop был — ждут ћторой.",
+        "description": "DEX с перпами. Очки начисляются за объём торгов. Уже крупный airdrop был — ждут второй.",
         "tasks": ["Торгуй перпами на HyperLiquid", "Обеспечь ликвидность в HLP"],
         "deadline": None, "tge_estimate": "TBD",
         "url": "https://hyperliquid.xyz", "volume_usd": 10e9,
@@ -2242,7 +2269,7 @@ async def update_settings(body: dict):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "7.1.1", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "7.1.2", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
