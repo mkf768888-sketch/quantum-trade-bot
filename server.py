@@ -36,6 +36,7 @@ YANDEX_VISION_KEY = os.getenv("YANDEX_VISION_KEY", "")
 YANDEX_FOLDER_ID  = os.getenv("YANDEX_FOLDER_ID", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ORIGIN_QC_TOKEN   = os.getenv("ORIGIN_QC_TOKEN", "")     # Phase 6: Origin QC Wukong 180
+RAILWAY_TOKEN     = os.getenv("RAILWAY_TOKEN", "")       # v7.2.1: Railway API — persist variable changes
 
 RISK_PER_TRADE = 0.25  # v6.9: Strategy C (25% of balance)
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
@@ -1865,6 +1866,54 @@ async def _tg_positions(chat_id: int):
     await _tg_send(chat_id, "\n".join(lines), kb)
 
 
+# ── v7.2.1: Railway Variables API ───────────────────────────────────────────
+async def _update_railway_var(name: str, value: str) -> bool:
+    """Persist a variable change to Railway environment via GraphQL API.
+    Requires RAILWAY_TOKEN. Project/Environment/Service IDs are auto-injected by Railway."""
+    if not RAILWAY_TOKEN:
+        return False
+    project_id  = os.getenv("RAILWAY_PROJECT_ID", "")
+    env_id      = os.getenv("RAILWAY_ENVIRONMENT_ID", "")
+    service_id  = os.getenv("RAILWAY_SERVICE_ID", "")
+    if not (project_id and env_id and service_id):
+        log_activity(f"[railway] Missing IDs — variable {name} changed only in memory")
+        return False
+    query = """
+    mutation variableUpsert($input: VariableUpsertInput!) {
+      variableUpsert(input: $input)
+    }
+    """
+    payload = {
+        "query": query,
+        "variables": {
+            "input": {
+                "projectId":     project_id,
+                "environmentId": env_id,
+                "serviceId":     service_id,
+                "name":          name,
+                "value":         value,
+            }
+        }
+    }
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(
+                "https://backboard.railway.app/graphql/v2",
+                json=payload,
+                headers={"Authorization": f"Bearer {RAILWAY_TOKEN}", "Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=10)
+            )
+            data = await r.json()
+            if "errors" in data:
+                log_activity(f"[railway] API error for {name}: {data['errors']}")
+                return False
+            log_activity(f"[railway] Variable {name}={value} persisted to Railway ✅")
+            return True
+    except Exception as e:
+        log_activity(f"[railway] Exception updating {name}: {e}")
+        return False
+
+
 # ── v7.2.0: AI Консультант ──────────────────────────────────────────────────
 _ai_pending: dict = {}      # chat_id → {"param": ..., "value": ...}
 _ai_history: dict = {}      # chat_id → list of messages
@@ -1881,22 +1930,30 @@ async def _tg_ai_ask(chat_id: int, question: str):
     global MIN_Q_SCORE, COOLDOWN, RISK_PER_TRADE, MAX_LEVERAGE
 
     # Обработка подтверждения/отмены
+    # v7.2.1: ловим "да" как первое слово (на случай "да, и ещё...")
     q_lower = question.lower().strip()
-    if q_lower in ("да", "yes", "подтвердить", "применить", "ок", "ok", "+"):
+    first_word = q_lower.split()[0] if q_lower else ""
+    is_confirm = first_word in ("да", "yes", "подтвердить", "применить", "ок", "ok", "+")
+    is_cancel  = first_word in ("нет", "no", "отмена", "cancel", "-")
+
+    if is_confirm:
         pending = _ai_pending.pop(chat_id, None)
         if not pending:
             await _tg_send(chat_id, "ℹ️ Нет ожидающих изменений.")
             return
         param, val = pending["param"], pending["value"]
-        if param == "MIN_Q_SCORE":  MIN_Q_SCORE = int(val)
-        elif param == "COOLDOWN":   COOLDOWN = int(val)
+        if param == "MIN_Q_SCORE":    MIN_Q_SCORE = int(val)
+        elif param == "COOLDOWN":     COOLDOWN = int(val)
         elif param == "RISK_PER_TRADE": globals()["RISK_PER_TRADE"] = float(val)
         elif param == "MAX_LEVERAGE": globals()["MAX_LEVERAGE"] = int(val)
         log_activity(f"[ai_consultant] Applied {param}={val} (via Telegram /ask)")
-        await _tg_send(chat_id, f"✅ <b>{param}</b> изменён на <b>{val}</b>\nПерезапуск не нужен — применено сразу.")
+        # v7.2.1: также сохраняем в Railway Variables для персистентности
+        persisted = await _update_railway_var(param, str(int(val) if isinstance(val, float) and val == int(val) else val))
+        persist_note = " • сохранено в Railway ♾️" if persisted else " • только в памяти (добавь RAILWAY_TOKEN для персистентности)"
+        await _tg_send(chat_id, f"✅ <b>{param}</b> изменён на <b>{val}</b>\nПерезапуск не нужен — применено сразу.{persist_note}")
         return
 
-    if q_lower in ("нет", "no", "отмена", "cancel", "-"):
+    if is_cancel:
         _ai_pending.pop(chat_id, None)
         await _tg_send(chat_id, "↩️ Изменение отменено.")
         return
