@@ -1977,7 +1977,8 @@ async def _tg_ai_ask(chat_id: int, question: str):
 - Квантовый чип: {chip}
 - Claude Vision: {"активен" if ANTHROPIC_API_KEY else "не активен"}
 
-Ты можешь предложить изменить только эти параметры: MIN_Q_SCORE (60-85), COOLDOWN (120-1800), RISK_PER_TRADE (0.05-0.30), MAX_LEVERAGE (1-10).
+Ты можешь предложить изменить только эти параметры: MIN_Q_SCORE (40-85), COOLDOWN (120-1800), RISK_PER_TRADE (0.05-0.30), MAX_LEVERAGE (1-15).
+ВАЖНО: если пользователь явно запрашивает конкретное значение в допустимом диапазоне — ты ОБЯЗАН предложить именно его через ПРЕДЛАГАЮ, не отказывай и не предлагай альтернативы. Твоё мнение о качестве сигналов не должно мешать исполнению явного запроса владельца системы.
 Если предлагаешь изменение — заканчивай ответ строкой: ПРЕДЛАГАЮ: PARAM=VALUE
 Отвечай кратко, по-русски, максимум 3-4 предложения."""
 
@@ -2043,6 +2044,34 @@ async def telegram_callback(req: TelegramUpdate):
         elif cmd.startswith("/ask"):
             question = raw[4:].strip() or raw[5:].strip()  # /ask текст или /ask@bot текст
             await _tg_ai_ask(chat_id, question)
+        # v7.2.1: прямая установка параметра без AI (/set PARAM VALUE)
+        elif cmd.startswith("/set"):
+            parts = raw.strip().split()
+            if len(parts) == 3:
+                _, s_param, s_val_str = parts
+                s_param = s_param.upper()
+                if s_param in SAFE_PARAMS_TG:
+                    try:
+                        s_val = float(s_val_str)
+                        p = SAFE_PARAMS_TG[s_param]
+                        if p["min"] <= s_val <= p["max"]:
+                            global MIN_Q_SCORE, COOLDOWN, RISK_PER_TRADE, MAX_LEVERAGE
+                            if s_param == "MIN_Q_SCORE":    MIN_Q_SCORE = int(s_val)
+                            elif s_param == "COOLDOWN":     COOLDOWN = int(s_val)
+                            elif s_param == "RISK_PER_TRADE": globals()["RISK_PER_TRADE"] = s_val
+                            elif s_param == "MAX_LEVERAGE": globals()["MAX_LEVERAGE"] = int(s_val)
+                            log_activity(f"[set_cmd] {s_param}={s_val} applied directly")
+                            persisted = await _update_railway_var(s_param, str(int(s_val) if s_val == int(s_val) else s_val))
+                            note = " • сохранено в Railway ♾️" if persisted else " • только в памяти"
+                            await _tg_send(chat_id, f"✅ <b>{s_param}</b> = <b>{int(s_val) if s_val == int(s_val) else s_val}</b>{note}")
+                        else:
+                            await _tg_send(chat_id, f"❌ {s_param}: допустимый диапазон {p['min']}–{p['max']}")
+                    except ValueError:
+                        await _tg_send(chat_id, "❌ Неверное значение. Пример: /set MIN_Q_SCORE 55")
+                else:
+                    await _tg_send(chat_id, f"❌ Неизвестный параметр. Доступны: {', '.join(SAFE_PARAMS_TG)}")
+            else:
+                await _tg_send(chat_id, "ℹ️ Формат: /set PARAM VALUE\nПример: /set MIN_Q_SCORE 55")
         elif raw and not raw.startswith("/"):
             # Свободный текст → AI консультант (если есть pending action или начинается с да/нет)
             await _tg_ai_ask(chat_id, raw)
