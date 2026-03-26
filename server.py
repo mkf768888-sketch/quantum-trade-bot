@@ -835,7 +835,7 @@ async def notify(text: str):
     try:
         async with aiohttp.ClientSession() as s:
             r = await s.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": ALERT_CHAT_ID, "text": text, "parse_mode": "Markdown",
+                json={"chat_id": ALERT_CHAT_ID, "text": text, "parse_mode": "HTML",
                       "disable_web_page_preview": True},
                 timeout=aiohttp.ClientTimeout(total=5))
             resp = await r.json()
@@ -1200,7 +1200,7 @@ async def execute_with_strategy(strategy: str, symbol: str, signal: dict,
               signal["confidence"], signal["q_score"], vision.get("pattern","?"), f"futures_{strategy}")
     last_signals[f"FUT_{symbol}"] = {"action": signal["action"], "ts": time.time()}
     log_activity(f"[strategy] {strategy} {fut_symbol} {side.upper()} OK TP={tp} SL={sl}")
-    await notify(f"{s['emoji']} *Стратегия {strategy} — {s['name']}*\n{fut_symbol} {side.upper()} Q={signal['q_score']}")
+    await notify(f"{s['emoji']} <b>Стратегия {strategy} — {s['name']}</b>\n<code>{fut_symbol}</code> {side.upper()} Q={signal['q_score']}")
     return True
 
 
@@ -1243,7 +1243,7 @@ async def auto_execute_dynamic(trade_id: str):
         auto_strategy = "B"
         label = "B (стандартная)"
     log_activity(f"[strategy] timeout {trade_id} Q={q:.1f} → авто {label}")
-    await notify(f"⏱ _Таймаут — Q={q:.0f} → стратегия {label}_")
+    await notify(f"⏱ <i>Таймаут — Q={q:.0f} → стратегия {label}</i>")
     if auto_strategy == "D":
         await execute_dual_strategy(
             pending["symbol"], pending["signal"], pending["vision"],
@@ -1467,9 +1467,9 @@ async def auto_trade_cycle():
         q = btc_signal["q_score"]; conf = btc_signal["confidence"]
         btc_price = prices_data["prices"].get("BTC-USDT", {}).get("price", 0)
         if q >= MIN_Q_SCORE and last_q_score < MIN_Q_SCORE:
-            await notify(f"🚀 *Q-Score {q}!* BTC `${btc_price:,.0f}` · {btc_signal['action']} `{int(conf*100)}%` · F&G={fg_val}")
+            await notify(f"🚀 <b>Q-Score {q}!</b> BTC <code>${btc_price:,.0f}</code> · {btc_signal['action']} <code>{int(conf*100)}%</code> · F&G={fg_val}")
         elif q <= 35 and last_q_score > 35:
-            await notify(f"⚠️ *Q-Score упал до {q}!* BTC `${btc_price:,.0f}`")
+            await notify(f"⚠️ <b>Q-Score упал до {q}!</b> BTC <code>${btc_price:,.0f}</code>")
         last_q_score = q
 
 
@@ -1624,6 +1624,9 @@ async def position_monitor_loop():
                 pos_data   = await get_futures_positions()
                 open_syms  = {p.get("symbol") for p in pos_data.get("positions", [])}
                 for trade in open_trades:
+                    # v7.2.0: мин 5 мин до закрытия — защита от race condition
+                    if (time.time() - trade.get("open_ts", time.time())) < 300:
+                        continue
                     if trade["symbol"] not in open_syms:
                         base_sym      = SYM_REV.get(trade["symbol"], "BTC-USDT")
                         price_now     = await get_ticker(base_sym)
@@ -2107,7 +2110,7 @@ async def startup():
     mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
     await notify(
-        f"⚛ *QuantumTrade v6.8.0*\n"
+        f"⚛ <b>QuantumTrade v7.2.0</b>\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
         f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
@@ -2650,7 +2653,7 @@ async def manual_trade(req: ManualTrade):
     success = result.get("code") == "200000"
     if success:
         emoji = "🟢" if req.side == "buy" else "🔴"
-        await notify(f"{emoji} *Ручная сделка*\n`{req.symbol}` {req.side.upper()} · `{req.size}`")
+        await notify(f"{emoji} <b>Ручная сделка</b>\n<code>{req.symbol}</code> {req.side.upper()} · <code>{req.size}</code>")
     return {"success": success, "data": result}
 
 @app.post("/api/autopilot/{state}")
