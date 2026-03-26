@@ -22,7 +22,7 @@ from fastapi import FastAPI, WebSocket, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="7.1.2")
+app = FastAPI(title="QuantumTrade AI", version="7.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
@@ -86,6 +86,18 @@ def _save_trades_to_disk():
 # ── QAOA State ─────────────────────────────────────────────────────────────────
 _quantum_bias: Dict[str, float] = {}   # symbol → bias [-15..+15]
 _quantum_ts: float = 0.0               # timestamp последнего запуска
+
+# v7.2.0: QAOA rolling average smoother (окно=3, clamp=±5 на CPU, ±15 на чипе)
+_qaoa_history: Dict[str, list] = {}    # symbol → последние N значений
+_QAOA_WINDOW = 3
+
+def _smooth_qaoa_bias(symbol: str, raw_bias: float, clamp: float = 15.0) -> float:
+    """Rolling average + clamp для QAOA bias. Убирает шум CPU симулятора."""
+    hist = _qaoa_history.setdefault(symbol, [])
+    hist.append(max(-clamp, min(clamp, raw_bias)))
+    if len(hist) > _QAOA_WINDOW:
+        hist.pop(0)
+    return round(sum(hist) / len(hist), 2)
 
 # ── Phase 6: Origin QC Wukong 180 ──────────────────────────────────────────────
 _qcloud_ready: bool = False            # True после успешной инициализации чипа
@@ -309,10 +321,13 @@ async def run_qaoa_optimization(price_changes: Dict[str, float]) -> Dict[str, fl
             bias_list = await asyncio.get_event_loop().run_in_executor(
                 None, _qaoa_cpu_simulate, changes_list, 2  # p=2 на CPU
             )
-        _quantum_bias = {PAIR_NAMES[i]: bias_list[i] for i in range(N_PAIRS)}
+        raw_bias = {PAIR_NAMES[i]: bias_list[i] for i in range(N_PAIRS)}
+        # v7.2.0: применяем rolling average для снижения шума
+        clamp_val = 15.0 if chip_used == "Wukong_180" else 5.0  # CPU шумнее
+        _quantum_bias = {sym: _smooth_qaoa_bias(sym, b, clamp_val) for sym, b in raw_bias.items()}
         _quantum_ts = time.time()
         log_str = " ".join(f"{p.split('-')[0]}={b:+.1f}" for p, b in _quantum_bias.items())
-        print(f"[qaoa/{chip_used}] bias: {log_str}")
+        print(f"[qaoa/{chip_used}] bias(smoothed): {log_str}")
     except Exception as e:
         print(f"[qaoa] error ({chip_used}): {e}")
         _quantum_bias = {p: 0.0 for p in PAIR_NAMES}
@@ -771,6 +786,14 @@ async def _analyze_chart_claude_vision(img_b64: str, symbol: str, tech: dict) ->
             )
             data = await r.json()
 
+        # v7.2.0: логируем HTTP статус для диагностики
+        if r.status != 200:
+            err_body = await r.text()
+            print(f"[claude_vision] {symbol}: HTTP {r.status} — {err_body[:120]}")
+            if r.status == 401:
+                print(f"[claude_vision] ❌ AUTHENTICATION ERROR — проверь ANTHROPIC_API_KEY в Railway Variables")
+            return {"success": False, "bonus": 0.0, "summary": ""}
+
         raw = data.get("content", [{}])[0].get("text", "{}")
         # Извлекаем JSON из ответа
         import re as _re
@@ -778,23 +801,31 @@ async def _analyze_chart_claude_vision(img_b64: str, symbol: str, tech: dict) ->
         parsed = json.loads(m.group()) if m else {}
 
         direction   = parsed.get("direction", "NEUTRAL").upper()
-        confidence  = min(100, max(0, int(parsed.get("confidence", 50)))) / 100.0
+        confidence_pct = min(100, max(0, int(parsed.get("confidence", 50))))
+        confidence  = confidence_pct / 100.0
         summary     = parsed.get("summary", parsed.get("pattern", ""))
+
+        # v7.2.0: уверенность < 60% → принудительно NEUTRAL (слабый сигнал)
+        if confidence_pct < 60:
+            print(f"[claude_vision] {symbol}: ➖ NEUTRAL (confidence {confidence_pct}% < 60%) → bonus=+0.0")
+            return {"success": True, "bonus": 0.0, "summary": summary,
+                    "pattern": parsed.get("pattern", ""), "direction": "NEUTRAL"}
 
         # Рассчитываем bonus: BULLISH → +, BEARISH → -, масштаб по уверенности
         if direction == "BULLISH":
-            bonus = round(confidence * 10, 1)    # max +10
+            bonus = round((confidence_pct - 50) / 50 * 10, 1)   # 60%→+2, 80%→+6, 100%→+10
         elif direction == "BEARISH":
-            bonus = round(-confidence * 10, 1)   # min -10
+            bonus = round(-(confidence_pct - 50) / 50 * 10, 1)  # 60%→-2, 80%→-6, 100%→-10
         else:
             bonus = 0.0
 
-        print(f"[claude_vision] {symbol}: {direction} {confidence*100:.0f}% → bonus={bonus:+.1f} | {summary}")
+        icon = "📈" if direction == "BULLISH" else "📉" if direction == "BEARISH" else "➖"
+        print(f"[claude_vision] {symbol}: {icon} {direction} {confidence_pct}% → bonus={bonus:+.1f} | {summary}")
         return {"success": True, "bonus": bonus, "summary": summary,
                 "pattern": parsed.get("pattern", ""), "direction": direction}
 
     except Exception as e:
-        print(f"[claude_vision] {symbol} error: {e}")
+        print(f"[claude_vision] {symbol} error: {type(e).__name__}: {e}")
         return {"success": False, "bonus": 0.0, "summary": ""}
 
 
@@ -1830,6 +1861,105 @@ async def _tg_positions(chat_id: int):
         )
     await _tg_send(chat_id, "\n".join(lines), kb)
 
+
+# ── v7.2.0: AI Консультант ──────────────────────────────────────────────────
+_ai_pending: dict = {}      # chat_id → {"param": ..., "value": ...}
+_ai_history: dict = {}      # chat_id → list of messages
+
+SAFE_PARAMS_TG = {
+    "MIN_Q_SCORE":   {"min": 60,  "max": 85,  "desc": "Минимальный Q-Score для входа"},
+    "COOLDOWN":      {"min": 120, "max": 1800, "desc": "Кулдаун между сделками (сек)"},
+    "RISK_PER_TRADE":{"min": 0.05,"max": 0.30, "desc": "Риск на сделку (доля)"},
+    "MAX_LEVERAGE":  {"min": 1,   "max": 10,   "desc": "Максимальное плечо"},
+}
+
+async def _tg_ai_ask(chat_id: int, question: str):
+    """v7.2.0: AI консультант — отвечает на вопросы и предлагает настройки."""
+    global MIN_Q_SCORE, COOLDOWN, RISK_PER_TRADE, MAX_LEVERAGE
+
+    # Обработка подтверждения/отмены
+    q_lower = question.lower().strip()
+    if q_lower in ("да", "yes", "подтвердить", "применить", "ок", "ok", "+"):
+        pending = _ai_pending.pop(chat_id, None)
+        if not pending:
+            await _tg_send(chat_id, "ℹ️ Нет ожидающих изменений.")
+            return
+        param, val = pending["param"], pending["value"]
+        if param == "MIN_Q_SCORE":  MIN_Q_SCORE = int(val)
+        elif param == "COOLDOWN":   COOLDOWN = int(val)
+        elif param == "RISK_PER_TRADE": globals()["RISK_PER_TRADE"] = float(val)
+        elif param == "MAX_LEVERAGE": globals()["MAX_LEVERAGE"] = int(val)
+        log_activity(f"[ai_consultant] Applied {param}={val} (via Telegram /ask)")
+        await _tg_send(chat_id, f"✅ <b>{param}</b> изменён на <b>{val}</b>\nПерезапуск не нужен — применено сразу.")
+        return
+
+    if q_lower in ("нет", "no", "отмена", "cancel", "-"):
+        _ai_pending.pop(chat_id, None)
+        await _tg_send(chat_id, "↩️ Изменение отменено.")
+        return
+
+    if not ANTHROPIC_API_KEY:
+        await _tg_send(chat_id, "❌ ANTHROPIC_API_KEY не задан — AI консультант недоступен.")
+        return
+
+    # Формируем контекст бота
+    wins = sum(1 for t in trade_log if t.get("pnl", 0) > 0)
+    total = len(trade_log)
+    win_rate = (wins / total * 100) if total else 0
+    total_pnl = sum(t.get("pnl", 0) for t in trade_log)
+    chip = "Wukong_180" if _qcloud_ready else "CPU_simulator"
+
+    system = f"""Ты — AI-консультант торгового бота QuantumTrade v7.2.0.
+Текущие показатели:
+- Всего сделок: {total}, Win Rate: {win_rate:.1f}%, PnL: ${total_pnl:.2f}
+- Q-Score последний: {last_q_score:.1f}, MIN_Q: {MIN_Q_SCORE}
+- COOLDOWN: {COOLDOWN}s, RISK_PER_TRADE: {RISK_PER_TRADE:.0%}, MAX_LEVERAGE: {MAX_LEVERAGE}x
+- Квантовый чип: {chip}
+- Claude Vision: {"активен" if ANTHROPIC_API_KEY else "не активен"}
+
+Ты можешь предложить изменить только эти параметры: MIN_Q_SCORE (60-85), COOLDOWN (120-1800), RISK_PER_TRADE (0.05-0.30), MAX_LEVERAGE (1-10).
+Если предлагаешь изменение — заканчивай ответ строкой: ПРЕДЛАГАЮ: PARAM=VALUE
+Отвечай кратко, по-русски, максимум 3-4 предложения."""
+
+    hist = _ai_history.setdefault(chat_id, [])
+    hist.append({"role": "user", "content": question})
+    if len(hist) > 10: hist.pop(0)
+
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                json={"model": "claude-haiku-4-5-20251001", "max_tokens": 300,
+                      "system": system, "messages": hist[-6:]},
+                timeout=aiohttp.ClientTimeout(total=15)
+            )
+            data = await r.json()
+        reply = data.get("content", [{}])[0].get("text", "Не удалось получить ответ.")
+        hist.append({"role": "assistant", "content": reply})
+
+        # Проверяем предложение изменения
+        import re as _re2
+        m = _re2.search(r"ПРЕДЛАГАЮ:\s*(\w+)\s*=\s*([\d.]+)", reply)
+        if m:
+            param, val_str = m.group(1), m.group(2)
+            if param in SAFE_PARAMS_TG:
+                val = float(val_str)
+                p_info = SAFE_PARAMS_TG[param]
+                if p_info["min"] <= val <= p_info["max"]:
+                    _ai_pending[chat_id] = {"param": param, "value": val}
+                    clean_reply = reply.replace(f"ПРЕДЛАГАЮ: {param}={val_str}", "").strip()
+                    await _tg_send(chat_id,
+                        f"🤖 {clean_reply}\n\n"
+                        f"💡 Предлагаю: <b>{param}</b> = <b>{val}</b> (сейчас: {globals().get(param, '?')})\n"
+                        f"Напиши <b>да</b> для применения или <b>нет</b> для отмены."
+                    )
+                    return
+
+        await _tg_send(chat_id, f"🤖 {reply}")
+    except Exception as e:
+        await _tg_send(chat_id, f"❌ Ошибка AI консультанта: {e}")
+
 @app.post("/api/telegram/callback")
 async def telegram_callback(req: TelegramUpdate):
     global MIN_Q_SCORE, COOLDOWN, AUTOPILOT
@@ -1849,6 +1979,13 @@ async def telegram_callback(req: TelegramUpdate):
         elif cmd == "/balance":             await _tg_balance(chat_id)
         elif cmd == "/positions":           await _tg_positions(chat_id)
         elif cmd == "/arb":                 await _tg_arb(chat_id)
+        # v7.2.0: AI консультант
+        elif cmd.startswith("/ask"):
+            question = raw[4:].strip() or raw[5:].strip()  # /ask текст или /ask@bot текст
+            await _tg_ai_ask(chat_id, question)
+        elif raw and not raw.startswith("/"):
+            # Свободный текст → AI консультант (если есть pending action или начинается с да/нет)
+            await _tg_ai_ask(chat_id, raw)
         return {"ok": True}
 
     # ── Обработка callback (нажатия кнопок) ────────────────────────────────
@@ -1985,7 +2122,7 @@ async def trading_loop():
     while True:
         try: await auto_trade_cycle()
         except Exception as e: log_activity(f"[loop] error: {e}")
-        await asyncio.sleep(60)
+        await asyncio.sleep(15)  # v7.2.0: 60→15s (4x faster signal response)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
