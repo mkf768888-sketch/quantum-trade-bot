@@ -1919,10 +1919,10 @@ _ai_pending: dict = {}      # chat_id → {"param": ..., "value": ...}
 _ai_history: dict = {}      # chat_id → list of messages
 
 SAFE_PARAMS_TG = {
-    "MIN_Q_SCORE":   {"min": 60,  "max": 85,  "desc": "Минимальный Q-Score для входа"},
+    "MIN_Q_SCORE":   {"min": 40,  "max": 85,  "desc": "Минимальный Q-Score для входа"},
     "COOLDOWN":      {"min": 120, "max": 1800, "desc": "Кулдаун между сделками (сек)"},
     "RISK_PER_TRADE":{"min": 0.05,"max": 0.30, "desc": "Риск на сделку (доля)"},
-    "MAX_LEVERAGE":  {"min": 1,   "max": 10,   "desc": "Максимальное плечо"},
+    "MAX_LEVERAGE":  {"min": 1,   "max": 15,   "desc": "Максимальное плечо"},
 }
 
 async def _tg_ai_ask(chat_id: int, question: str):
