@@ -37,6 +37,7 @@ YANDEX_FOLDER_ID  = os.getenv("YANDEX_FOLDER_ID", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ORIGIN_QC_TOKEN   = os.getenv("ORIGIN_QC_TOKEN", "")     # Phase 6: Origin QC Wukong 180
 RAILWAY_TOKEN     = os.getenv("RAILWAY_TOKEN", "")       # v7.2.1: Railway API — persist variable changes
+WEBAPP_URL        = os.getenv("WEBAPP_URL", "https://mkf768888-sketch.github.io/quantum-trade-ui/")  # v7.2.2: GitHub Pages frontend
 
 RISK_PER_TRADE = 0.25  # v6.9: Strategy C (25% of balance)
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
@@ -1726,6 +1727,7 @@ async def _tg_main_menu(chat_id: int):
     """Главное меню бота."""
     ap = "🟢 ВКЛ" if AUTOPILOT else "🔴 ВЫКЛ"
     kb = {"inline_keyboard": [
+        [{"text": "🖥️ Открыть дашборд", "web_app": {"url": WEBAPP_URL}}],
         [{"text": "📊 Статистика", "callback_data": "menu_stats"},
          {"text": "🪂 Airdrops",   "callback_data": "menu_airdrops"}],
         [{"text": "⚙️ Настройки",  "callback_data": "menu_settings"},
@@ -2546,7 +2548,15 @@ async def setup_webhook(request: Request):
             )
             results["commands"] = await r2.json()
 
-        return {"ok": True, "webhook_url": webhook_url, "results": results}
+            # 3. Устанавливаем кнопку меню с web_app (дашборд)
+            r3 = await s.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
+                json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": WEBAPP_URL}}},
+                timeout=aiohttp.ClientTimeout(total=10)
+            )
+            results["menu_button"] = await r3.json()
+
+        return {"ok": True, "webhook_url": webhook_url, "webapp_url": WEBAPP_URL, "results": results}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
