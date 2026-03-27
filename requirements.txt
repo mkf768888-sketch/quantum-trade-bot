@@ -5,3 +5,5 @@ python-telegram-bot
 pydantic
 Pillow
 pyqpanda3
+amazon-braket-sdk
+boto3
