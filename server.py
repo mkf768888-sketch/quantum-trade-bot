@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v7.2.3
+QuantumTrade AI - FastAPI Backend v7.3.0
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
 Phase3: Origin QC QAOA — квантовая оптимизация портфеля (CPU симулятор + Wukong 180 реальный чип)
 Phase5: Claude Vision — AI-анализ графиков
@@ -92,6 +92,9 @@ def _save_trades_to_disk():
 # ── QAOA State ─────────────────────────────────────────────────────────────────
 _quantum_bias: Dict[str, float] = {}   # symbol → bias [-15..+15]
 _quantum_ts: float = 0.0               # timestamp последнего запуска
+_qaoa_best_angles: dict  = {"gamma": [], "beta": [], "score": -999.0}  # v7.3.0: память лучших углов
+_corr_cache: dict        = {}   # v7.3.0: кэш живых корреляций
+_corr_cache_ts: float    = 0.0  # v7.3.0: время последнего обновления
 
 # v7.2.0: QAOA rolling average smoother (окно=3, clamp=±5 на CPU, ±15 на чипе)
 _qaoa_history: Dict[str, list] = {}    # symbol → последние N значений
@@ -155,7 +158,7 @@ CORR_MATRIX = [
 N_PAIRS = len(PAIR_NAMES)
 
 
-def _qaoa_cpu_simulate(price_changes: List[float], p_layers: int = 2) -> List[float]:
+def _qaoa_cpu_simulate(price_changes: List[float], p_layers: int = 2, corr_matrix: list = None) -> List[float]:
     """
     QAOA CPU симулятор: оптимизирует портфельные веса с учётом корреляций.
     Возвращает bias [-15..+15] для каждой пары.
@@ -169,9 +172,14 @@ def _qaoa_cpu_simulate(price_changes: List[float], p_layers: int = 2) -> List[fl
     momentum = [max(-1.0, min(1.0, pc / 5.0)) for pc in price_changes]
 
     # 2. Инициализируем углы QAOA (gamma, beta) случайно с seed
-    random.seed(int(time.time()) // 900)  # меняется раз в 15 мин
-    gamma = [random.uniform(0.1, math.pi) for _ in range(p_layers)]
-    beta  = [random.uniform(0.1, math.pi / 2) for _ in range(p_layers)]
+    # v7.3.0: Angle Memory — стартуем от лучших известных углов, а не случайных
+    random.seed(int(time.time()) // 300)
+    if len(_qaoa_best_angles.get("gamma", [])) == p_layers:
+        gamma = [max(0.05, min(math.pi,    _qaoa_best_angles["gamma"][j] + random.uniform(-0.2, 0.2))) for j in range(p_layers)]
+        beta  = [max(0.05, min(math.pi/2,  _qaoa_best_angles["beta"][j]  + random.uniform(-0.1, 0.1))) for j in range(p_layers)]
+    else:
+        gamma = [random.uniform(0.1, math.pi) for _ in range(p_layers)]
+        beta  = [random.uniform(0.1, math.pi / 2) for _ in range(p_layers)]
 
     # 3. Симулируем квантовое состояние (упрощённая vector sim)
     # |ψ⟩ = H^n|0⟩ → apply U_C(γ) → U_B(β) → measure
@@ -189,7 +197,8 @@ def _qaoa_cpu_simulate(price_changes: List[float], p_layers: int = 2) -> List[fl
             for i in range(n):
                 cost -= momentum[i] * bits[i]
                 for j in range(i + 1, n):
-                    cost += gamma[layer] * CORR_MATRIX[i][j] * bits[i] * bits[j]
+                    _cm = corr_matrix if corr_matrix else CORR_MATRIX  # v7.3.0: live corr
+                    cost += gamma[layer] * _cm[i][j] * bits[i] * bits[j]
             phase = complex(math.cos(cost), -math.sin(cost))
             new_amp[s] = amplitudes[s] * phase
         amplitudes = new_amp
@@ -226,6 +235,12 @@ def _qaoa_cpu_simulate(price_changes: List[float], p_layers: int = 2) -> List[fl
             b = -abs(b)
         bias.append(round(b, 1))
 
+    # v7.3.0: Сохраняем лучшие углы если сигнал сильнее предыдущего
+    _total_signal = sum(abs(b) for b in bias)
+    if _total_signal > _qaoa_best_angles.get("score", -999.0):
+        _qaoa_best_angles["gamma"] = list(gamma)
+        _qaoa_best_angles["beta"]  = list(beta)
+        _qaoa_best_angles["score"] = _total_signal
     return bias
 
 
@@ -312,8 +327,34 @@ async def run_qaoa_optimization(price_changes: Dict[str, float]) -> Dict[str, fl
     - Иначе → CPU симулятор (6 кубитов, p=2)
     Обновляет глобальный _quantum_bias. Вызывается каждые 15 минут.
     """
-    global _quantum_bias, _quantum_ts
-    changes_list = [price_changes.get(p, 0.0) for p in PAIR_NAMES]
+    global _quantum_bias, _quantum_ts, _corr_cache, _corr_cache_ts
+    # v7.3.0: Мультитаймфреймовый вход QAOA — 50%×1h + 30%×4h + 20%×24h
+    prices_snap = _cache_get("all_prices", 300) or {}
+    all_p = prices_snap.get("prices", {})
+    changes_list = []
+    for _p in PAIR_NAMES:
+        ch_1h  = price_changes.get(_p, 0.0)
+        _pd    = all_p.get(_p, {})
+        ch_4h  = _pd.get("change_4h",  ch_1h * 0.5)
+        ch_24h = _pd.get("change_24h", ch_1h * 0.25)
+        changes_list.append(round(ch_1h * 0.5 + ch_4h * 0.3 + ch_24h * 0.2, 4))
+    # v7.3.0: Живая матрица корреляций из реальных данных
+    _now_c = time.time()
+    if _now_c - _corr_cache_ts > 3600 and len(all_p) >= len(PAIR_NAMES):
+        try:
+            _vecs = [[all_p.get(_p2,{}).get("change_1h",0), all_p.get(_p2,{}).get("change_4h",0), all_p.get(_p2,{}).get("change_24h",0)] for _p2 in PAIR_NAMES]
+            _mat = [[1.0]*len(PAIR_NAMES) for _ in range(len(PAIR_NAMES))]
+            for _i in range(len(PAIR_NAMES)):
+                for _j in range(_i+1, len(PAIR_NAMES)):
+                    _same = sum(1 for _a,_b in zip(_vecs[_i],_vecs[_j]) if (_a>=0)==(_b>=0))
+                    _c = round(0.4 + _same / (len(_vecs[_i]) * 1.5), 2)
+                    _mat[_i][_j] = _mat[_j][_i] = min(1.0, _c)
+            _corr_cache["matrix"] = _mat
+            _corr_cache_ts = _now_c
+            print(f"[qaoa] живая корреляционная матрица обновлена")
+        except Exception as _ce:
+            print(f"[qaoa] corr error: {_ce}")
+    live_corr = _corr_cache.get("matrix", CORR_MATRIX)
     chip_used = "CPU_simulator"
     try:
         if _qcloud_ready and _qvm_instance is not None:
@@ -325,7 +366,7 @@ async def run_qaoa_optimization(price_changes: Dict[str, float]) -> Dict[str, fl
         else:
             # ── Phase 3: CPU симулятор ────────────────────────────────────────
             bias_list = await asyncio.get_event_loop().run_in_executor(
-                None, _qaoa_cpu_simulate, changes_list, 2  # p=2 на CPU
+                None, _qaoa_cpu_simulate, changes_list, 2, live_corr  # v7.3.0: live corr
             )
         raw_bias = {PAIR_NAMES[i]: bias_list[i] for i in range(N_PAIRS)}
         # v7.2.0: применяем rolling average для снижения шума
@@ -918,7 +959,14 @@ def calc_signal(price_change: float, vision: dict = None,
     score += whale_bonus       # Whale flow: ±5 (упрощённо)
 
     # ── QAOA Quantum Bias (max ±15) ───────────────────────────────────────
+    # v7.3.0: Квантовое усиление: +50% когда квант согласен с трендом
     q_b = max(-15.0, min(15.0, quantum_bias))  # clamp безопасности
+    _p_dir = 1 if price_change > 0.3 else (-1 if price_change < -0.3 else 0)
+    _q_dir = 1 if q_b > 1.5 else (-1 if q_b < -1.5 else 0)
+    if _p_dir != 0 and _q_dir == _p_dir:
+        q_b = min(15.0, q_b * 1.5)   # квант + тренд согласны: +50% усиление
+    elif _p_dir != 0 and _q_dir == -_p_dir:
+        q_b = q_b * 0.3              # квант противоречит тренду: ослабляем
     score += q_b
 
     score = max(0.0, min(100.0, score))
@@ -2042,7 +2090,7 @@ async def _tg_ai_ask(chat_id: int, question: str):
     total_pnl = sum(t.get("pnl", 0) for t in trade_log)
     chip = "Wukong_180" if _qcloud_ready else "CPU_simulator"
 
-    system = f"""Ты — AI-консультант торгового бота QuantumTrade v7.2.4.
+    system = f"""Ты — AI-консультант торгового бота QuantumTrade v7.3.0.
 Текущие показатели:
 - Всего сделок: {total}, Win Rate: {win_rate:.1f}%, PnL: ${total_pnl:.2f}
 - Q-Score последний: {last_q_score:.1f}, MIN_Q: {MIN_Q_SCORE}
@@ -2269,7 +2317,7 @@ async def startup():
     mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
     await notify(
-        f"⚛ <b>QuantumTrade v7.2.4</b>\n"
+        f"⚛ <b>QuantumTrade v7.3.0</b>\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
         f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
@@ -2568,7 +2616,7 @@ async def update_settings(body: dict):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "7.2.4", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "7.3.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
