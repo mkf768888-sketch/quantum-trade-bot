@@ -51,6 +51,8 @@ MAX_LEVERAGE   = int(os.getenv("MAX_LEVERAGE", "5"))   # v6.9: Strategy C defaul
 # v7.2.3: TP/SL ratio улучшен до 3:1 (было 2:1) — исправляет асимметрию убытков
 TP_PCT         = 0.06   # v7.2.3: 6% (было 5%)
 SL_PCT         = 0.02   # v7.2.3: 2% (было 2.5%) → ratio 3:1 вместо 2:1
+TRAIL_TRIGGER  = 0.025  # v7.2.4: trailing stop при +2.5% прибыли
+TRAIL_PCT      = 0.015  # v7.2.4: закрывать при откате 1.5% от пика
 TEST_MODE      = os.getenv("TEST_MODE", "false").lower() == "true"  # v6.7: default LIVE mode
 if TEST_MODE:
     RISK_PER_TRADE = 0.10
@@ -1435,7 +1437,8 @@ async def auto_trade_cycle():
         # ── Спот (только BUY) ─────────────────────────────────────────────────
         if action == "BUY":
             elapsed = time.time() - last_signals.get(symbol, {}).get("ts", 0)
-            if elapsed >= COOLDOWN and spot_trade_usdt >= 1.0:
+            eff_cd_spot = COOLDOWN // 2 if conf >= 0.80 else COOLDOWN  # v7.2.4
+            if elapsed >= eff_cd_spot and spot_trade_usdt >= 1.0:
                 log_activity(f"[cycle] {symbol}: PLACING spot BUY ${spot_trade_usdt:.2f}")
                 ok = await execute_spot_trade(symbol, signal, vision, price, spot_trade_usdt)
                 if ok:
@@ -1451,7 +1454,8 @@ async def auto_trade_cycle():
             margin = (price * cs) / MAX_LEVERAGE
             elapsed = time.time() - last_signals.get(f"FUT_{symbol}", {}).get("ts", 0)
             reason = None
-            if elapsed < COOLDOWN:  reason = f"cooldown {int(COOLDOWN-elapsed)}s"
+            eff_cd = COOLDOWN // 2 if conf >= 0.80 else COOLDOWN  # v7.2.4
+            if elapsed < eff_cd:  reason = f"cooldown {int(eff_cd-elapsed)}s"
             elif fut_usdt < 1.0:    reason = f"bal ${fut_usdt:.2f}<$1"
             elif margin > fut_usdt: reason = f"margin ${margin:.2f}>${fut_usdt:.2f}"
             if reason:
@@ -1671,6 +1675,26 @@ async def position_monitor_loop():
                     # v7.2.0: мин 5 мин до закрытия — защита от race condition
                     if (time.time() - trade.get("open_ts", time.time())) < 300:
                         continue
+                    # v7.2.4: Trailing Stop — защищаем прибыль для открытых позиций
+                    if trade["symbol"] in open_syms and not trade.get("trail_triggered"):
+                        base_sym_t = SYM_REV.get(trade["symbol"], "BTC-USDT")
+                        try:
+                            cur_p = await get_ticker(base_sym_t)
+                            ent   = trade["price"]
+                            sd    = trade["side"]
+                            pct_t = (cur_p - ent) / ent if sd == "buy" else (ent - cur_p) / ent
+                            peak  = trade.get("peak_pct", 0.0)
+                            if pct_t > peak:
+                                trade["peak_pct"] = pct_t
+                                peak = pct_t
+                            if peak >= TRAIL_TRIGGER and (peak - pct_t) >= TRAIL_PCT:
+                                cs = "sell" if sd == "buy" else "buy"
+                                await place_futures_order(trade["symbol"], cs, trade.get("size", 1), reduce_only=True)
+                                trade["trail_triggered"] = True
+                                log_activity(f"[trail] {trade['symbol']} peak={peak*100:.1f}% now={pct_t*100:.1f}% CLOSED")
+                                print(f"[TRAIL] {trade['symbol']} peak={peak*100:.1f}% pullback={(peak-pct_t)*100:.1f}%", flush=True)
+                        except Exception as te:
+                            print(f"[trail] {trade['symbol']} err: {te}", flush=True)
                     if trade["symbol"] not in open_syms:
                         base_sym      = SYM_REV.get(trade["symbol"], "BTC-USDT")
                         entry         = trade["price"]
@@ -2018,7 +2042,7 @@ async def _tg_ai_ask(chat_id: int, question: str):
     total_pnl = sum(t.get("pnl", 0) for t in trade_log)
     chip = "Wukong_180" if _qcloud_ready else "CPU_simulator"
 
-    system = f"""Ты — AI-консультант торгового бота QuantumTrade v7.2.3.
+    system = f"""Ты — AI-консультант торгового бота QuantumTrade v7.2.4.
 Текущие показатели:
 - Всего сделок: {total}, Win Rate: {win_rate:.1f}%, PnL: ${total_pnl:.2f}
 - Q-Score последний: {last_q_score:.1f}, MIN_Q: {MIN_Q_SCORE}
@@ -2245,7 +2269,7 @@ async def startup():
     mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
     await notify(
-        f"⚛ <b>QuantumTrade v7.2.3</b>\n"
+        f"⚛ <b>QuantumTrade v7.2.4</b>\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
         f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
@@ -2544,7 +2568,7 @@ async def update_settings(body: dict):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "7.2.3", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "7.2.4", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
