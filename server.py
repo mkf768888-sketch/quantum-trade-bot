@@ -40,11 +40,11 @@ RAILWAY_TOKEN     = os.getenv("RAILWAY_TOKEN", "")       # v7.2.1: Railway API �
 
 RISK_PER_TRADE = 0.25  # v6.9: Strategy C (25% of balance)
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
-MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "65"))  # v6.7: 78→65 (extreme fear market, F&G≈11)
-# v7.1.2: per-pair Q thresholds (tune per volatility profile)
-PAIR_Q_THRESHOLDS: dict = {"BTC-USDT": 64, "ETH-USDT": 66, "SOL-USDT": 65,
-                            "BNB-USDT": 65, "XRP-USDT": 65, "AVAX-USDT": 65}
-COOLDOWN       = int(os.getenv("COOLDOWN", "600"))   # v6.8: 300→600s (10 мин — меньше шума, лучше сигналы)
+MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "55"))  # v7.2.2: 65→55 (dead zone 45-55 вместо 35-65)
+# v7.2.2: per-pair Q thresholds = MIN_Q_SCORE - 1, чтобы не блокировать торговлю при изменении MIN_Q_SCORE
+PAIR_Q_THRESHOLDS: dict = {"BTC-USDT": 54, "ETH-USDT": 54, "SOL-USDT": 54,
+                            "BNB-USDT": 54, "XRP-USDT": 54, "AVAX-USDT": 54}
+COOLDOWN       = int(os.getenv("COOLDOWN", "450"))   # v7.2.2: 600→450s (баланс частоты и качества)
 MAX_LEVERAGE   = int(os.getenv("MAX_LEVERAGE", "5"))   # v6.9: Strategy C default
 # v6.9: Strategy C — risk 25%, leverage 5x, TP=5%, SL=2.5% (backtested optimal for bear market)
 TP_PCT         = 0.05   # v6.9: Strategy C (5%)
@@ -59,6 +59,7 @@ FUT_PAIRS  = ["XBTUSDTM", "ETHUSDTM", "SOLUSDTM"]
 
 last_signals  = {}
 last_q_score  = 0.0
+_q_alert_last: dict = {}   # v7.2.2: антиспам для Q-алертов {"sell": ts, "buy": ts}
 trade_log: List[dict] = []
 
 # ── Персистентное хранилище сделок ─────────────────────────────────────────────
@@ -974,6 +975,7 @@ async def execute_futures_trade(symbol, signal, vision, price, available_usdt):
     log_activity(f"[futures] {fut_symbol} TP={tp}({'ok' if tp_res.get('code')=='200000' else 'err'}) SL={sl}({'ok' if sl_res.get('code')=='200000' else 'err'})")
     log_trade(fut_symbol, side, price, n_contracts, tp, sl, signal["confidence"], signal["q_score"], vision.get("pattern","?"), "futures")
     last_signals[f"FUT_{symbol}"] = {"action": signal["action"], "ts": time.time()}
+    print(f"[TRADE] {fut_symbol} {side.upper()} Q={signal['q_score']:.1f} conf={signal['confidence']:.0%} n={n_contracts} @ ${price:,.2f} TP={tp} SL={sl}", flush=True)
     return True
 
 
@@ -1201,6 +1203,7 @@ async def execute_with_strategy(strategy: str, symbol: str, signal: dict,
               signal["confidence"], signal["q_score"], vision.get("pattern","?"), f"futures_{strategy}")
     last_signals[f"FUT_{symbol}"] = {"action": signal["action"], "ts": time.time()}
     log_activity(f"[strategy] {strategy} {fut_symbol} {side.upper()} OK TP={tp} SL={sl}")
+    print(f"[TRADE] {strategy} {fut_symbol} {side.upper()} Q={signal['q_score']:.1f} n={n_contracts} @ ${price:,.2f} TP={tp} SL={sl}", flush=True)
     await notify(f"{s['emoji']} <b>Стратегия {strategy} — {s['name']}</b>\n<code>{fut_symbol}</code> {side.upper()} Q={signal['q_score']}")
     return True
 
@@ -1467,10 +1470,15 @@ async def auto_trade_cycle():
         _, _, btc_signal, _, _ = btc_res
         q = btc_signal["q_score"]; conf = btc_signal["confidence"]
         btc_price = prices_data["prices"].get("BTC-USDT", {}).get("price", 0)
+        sell_thresh = 100 - MIN_Q_SCORE  # v7.2.2: динамический порог
         if q >= MIN_Q_SCORE and last_q_score < MIN_Q_SCORE:
-            await notify(f"🚀 <b>Q-Score {q}!</b> BTC <code>${btc_price:,.0f}</code> · {btc_signal['action']} <code>{int(conf*100)}%</code> · F&G={fg_val}")
-        elif q <= 35 and last_q_score > 35:
-            await notify(f"⚠️ <b>Q-Score упал до {q}!</b> BTC <code>${btc_price:,.0f}</code>")
+            await notify(f"🚀 <b>Q-Score {q:.0f} — сигнал BUY!</b> BTC <code>${btc_price:,.0f}</code> · <code>{int(conf*100)}%</code> · F&G={fg_val}")
+        elif q <= sell_thresh and last_q_score > sell_thresh:
+            # v7.2.2: антиспам — не чаще раза в 5 мин
+            now = time.time()
+            if now - _q_alert_last.get("sell", 0) > 300:
+                _q_alert_last["sell"] = now
+                await notify(f"⚠️ <b>Q-Score {q:.0f} — зона SELL</b> · BTC <code>${btc_price:,.0f}</code>")
         last_q_score = q
 
 
@@ -1653,6 +1661,7 @@ async def position_monitor_loop():
                         emoji = "✅" if pnl_usdt >= 0 else "❌"
                         strat = trade.get("account", "B").replace("futures_", "")
                         log_activity(f"[monitor] {trade['symbol']} {reason} closed PnL=${pnl_usdt:+.4f}")
+                        print(f"[CLOSE] {trade['symbol']} {trade['side'].upper()} PnL=${pnl_usdt:+.4f} entry=${trade['price']} exit=${price_now}", flush=True)
                         _save_trades_to_disk()
                         await notify(
                             f"{emoji} <b>Сделка закрыта — Стратегия {strat}</b>\n"
