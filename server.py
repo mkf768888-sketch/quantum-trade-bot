@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v7.3.0
+QuantumTrade AI - FastAPI Backend v7.3.1
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
 Phase3: Origin QC QAOA — квантовая оптимизация портфеля (CPU симулятор + Wukong 180 реальный чип)
 Phase5: Claude Vision — AI-анализ графиков
@@ -37,6 +37,11 @@ YANDEX_VISION_KEY = os.getenv("YANDEX_VISION_KEY", "")
 YANDEX_FOLDER_ID  = os.getenv("YANDEX_FOLDER_ID", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ORIGIN_QC_TOKEN   = os.getenv("ORIGIN_QC_TOKEN", "")     # Phase 6: Origin QC Wukong 180
+AWS_ACCESS_KEY_ID  = os.getenv("AWS_ACCESS_KEY_ID",  "")   # v7.3.1: Amazon Braket
+AWS_SECRET_KEY     = os.getenv("AWS_SECRET_ACCESS_KEY", "") # v7.3.1: Amazon Braket
+AWS_REGION         = os.getenv("AWS_REGION", "us-east-1")  # v7.3.1: Braket region
+BRAKET_S3_BUCKET   = os.getenv("BRAKET_S3_BUCKET",   "")   # v7.3.1: S3 бакет для результатов
+BRAKET_DEVICE_ARN  = os.getenv("BRAKET_DEVICE_ARN",  "arn:aws:braket:us-east-1::device/qpu/ionq/Harmony")  # v7.3.1
 RAILWAY_TOKEN     = os.getenv("RAILWAY_TOKEN", "")       # v7.2.1: Railway API — persist variable changes
 WEBAPP_URL        = os.getenv("WEBAPP_URL", "https://mkf768888-sketch.github.io/quantum-trade-ui/")  # v7.2.2: GitHub Pages frontend
 
@@ -95,6 +100,9 @@ _quantum_ts: float = 0.0               # timestamp последнего запу
 _qaoa_best_angles: dict  = {"gamma": [], "beta": [], "score": -999.0}  # v7.3.0: память лучших углов
 _corr_cache: dict        = {}   # v7.3.0: кэш живых корреляций
 _corr_cache_ts: float    = 0.0  # v7.3.0: время последнего обновления
+_braket_ts: float    = 0.0   # v7.3.1: timestamp последнего запуска Braket
+_braket_bias: dict   = {}    # v7.3.1: последний bias от Braket
+_braket_ready: bool  = bool(os.getenv("AWS_ACCESS_KEY_ID","") and os.getenv("AWS_SECRET_ACCESS_KEY",""))  # v7.3.1
 
 # v7.2.0: QAOA rolling average smoother (окно=3, clamp=±5 на CPU, ±15 на чипе)
 _qaoa_history: Dict[str, list] = {}    # symbol → последние N значений
@@ -327,7 +335,7 @@ async def run_qaoa_optimization(price_changes: Dict[str, float]) -> Dict[str, fl
     - Иначе → CPU симулятор (6 кубитов, p=2)
     Обновляет глобальный _quantum_bias. Вызывается каждые 15 минут.
     """
-    global _quantum_bias, _quantum_ts, _corr_cache, _corr_cache_ts
+    global _quantum_bias, _quantum_ts, _corr_cache, _corr_cache_ts, _braket_ts, _braket_bias
     # v7.3.0: Мультитаймфреймовый вход QAOA — 50%×1h + 30%×4h + 20%×24h
     prices_snap = _cache_get("all_prices", 300) or {}
     all_p = prices_snap.get("prices", {})
@@ -369,8 +377,29 @@ async def run_qaoa_optimization(price_changes: Dict[str, float]) -> Dict[str, fl
                 None, _qaoa_cpu_simulate, changes_list, 2, live_corr  # v7.3.0: live corr
             )
         raw_bias = {PAIR_NAMES[i]: bias_list[i] for i in range(N_PAIRS)}
-        # v7.2.0: применяем rolling average для снижения шума
-        clamp_val = 15.0 if chip_used == "Wukong_180" else 5.0  # CPU шумнее
+
+        # v7.3.1: Amazon Braket энсембль — 12×/день (каждые 2 часа)
+        braket_interval = 7200  # 2 часа = 12 запусков в день
+        if _braket_ready and (time.time() - _braket_ts) >= braket_interval:
+            try:
+                braket_list = await _braket_qaoa_run(changes_list, live_corr)
+                _braket_bias.update({PAIR_NAMES[i]: braket_list[i] for i in range(N_PAIRS)})
+                _braket_ts = time.time()
+                chip_used  = chip_used + "+Braket"
+                # Энсембль: CPU 30% + Braket 70% — реальное железо важнее
+                for i, p in enumerate(PAIR_NAMES):
+                    raw_bias[p] = round(raw_bias[p] * 0.30 + braket_list[i] * 0.70, 2)
+                log_b = " ".join(f"{p.split('-')[0]}={_braket_bias[p]:+.1f}" for p in PAIR_NAMES)
+                print(f"[braket] энсембль обновлён: {log_b}", flush=True)
+            except Exception as be:
+                print(f"[braket] ошибка энсембля: {be}", flush=True)
+        elif _braket_bias and _braket_ready:
+            # Между запусками Braket: смешиваем со старым Braket-результатом (50/50)
+            for p in PAIR_NAMES:
+                if p in _braket_bias:
+                    raw_bias[p] = round(raw_bias[p] * 0.50 + _braket_bias[p] * 0.50, 2)
+
+        clamp_val = 15.0 if "Wukong" in chip_used else (12.0 if "Braket" in chip_used else 5.0)
         _quantum_bias = {sym: _smooth_qaoa_bias(sym, b, clamp_val) for sym, b in raw_bias.items()}
         _quantum_ts = time.time()
         log_str = " ".join(f"{p.split('-')[0]}={b:+.1f}" for p, b in _quantum_bias.items())
@@ -379,6 +408,84 @@ async def run_qaoa_optimization(price_changes: Dict[str, float]) -> Dict[str, fl
         print(f"[qaoa] error ({chip_used}): {e}")
         _quantum_bias = {p: 0.0 for p in PAIR_NAMES}
     return _quantum_bias
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v7.3.1: Amazon Braket QAOA — квантовый энсембль (12×/день, каждые 2 часа)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _braket_run_sync(changes_list: list, live_corr: list) -> list:
+    """v7.3.1: Синхронный QAOA на Amazon Braket QPU — для run_in_executor."""
+    try:
+        import os, boto3
+        os.environ["AWS_ACCESS_KEY_ID"]     = AWS_ACCESS_KEY_ID
+        os.environ["AWS_SECRET_ACCESS_KEY"] = AWS_SECRET_KEY
+        os.environ["AWS_DEFAULT_REGION"]    = AWS_REGION
+        from braket.circuits import Circuit
+        from braket.aws import AwsDevice
+
+        n  = N_PAIRS
+        cm = live_corr if live_corr else CORR_MATRIX
+        mom = [max(-1.0, min(1.0, pc / 5.0)) for pc in changes_list]
+
+        # Берём лучшие углы из памяти (уже оптимизированы CPU-циклами)
+        g = _qaoa_best_angles["gamma"][0] if _qaoa_best_angles.get("gamma") else 0.6
+        b = _qaoa_best_angles["beta"][0]  if _qaoa_best_angles.get("beta")  else 0.35
+
+        # Строим QAOA схему (p=1)
+        circ = Circuit()
+        for i in range(n):                             # суперпозиция |+⟩^n
+            circ.h(i)
+        for i in range(n):                             # Cost unitary U_C(γ)
+            for j in range(i + 1, n):
+                angle = 2 * g * cm[i][j]
+                circ.cnot(i, j)
+                circ.rz(j, angle)
+                circ.cnot(i, j)
+        for i in range(n):                             # Momentum bias RZ
+            circ.rz(i, mom[i] * g * 0.5)
+        for i in range(n):                             # Mixer U_B(β)
+            circ.rx(i, 2 * b)
+
+        # Запуск на QPU
+        device = AwsDevice(BRAKET_DEVICE_ARN)
+        task   = device.run(circ, s3_destination_folder=(BRAKET_S3_BUCKET, "qaoa"), shots=1024)
+        result = task.result()
+
+        # Вычисляем <Z_i> из измерений
+        meas  = result.measurements
+        z_exp = [0.0] * n
+        for shot in meas:
+            for i in range(min(n, len(shot))):
+                z_exp[i] += (1 - 2 * int(shot[i])) / len(meas)
+
+        # bias [-15..+15] с учётом momentum
+        bias = []
+        for i in range(n):
+            bv = z_exp[i] * 15.0
+            if   mom[i] >  0.1: bv =  abs(bv)
+            elif mom[i] < -0.1: bv = -abs(bv)
+            bias.append(round(bv, 1))
+
+        log_str = " ".join(f"{PAIR_NAMES[i].split('-')[0]}={bias[i]:+.1f}" for i in range(n))
+        print(f"[braket] QPU result: {log_str}", flush=True)
+        return bias
+
+    except ImportError:
+        print("[braket] amazon-braket-sdk не установлен — pip install amazon-braket-sdk", flush=True)
+        return [0.0] * N_PAIRS
+    except Exception as e:
+        print(f"[braket] error: {e}", flush=True)
+        return [0.0] * N_PAIRS
+
+
+async def _braket_qaoa_run(changes_list: list, live_corr: list) -> list:
+    """v7.3.1: Асинхронная обёртка для Braket QPU."""
+    import functools
+    return await asyncio.get_event_loop().run_in_executor(
+        None, functools.partial(_braket_run_sync, changes_list, live_corr)
+    )
+
 
 def log_trade(symbol, side, price, size, tp, sl, confidence, q_score, pattern, account="spot"):
     trade_log.append({
@@ -2090,7 +2197,7 @@ async def _tg_ai_ask(chat_id: int, question: str):
     total_pnl = sum(t.get("pnl", 0) for t in trade_log)
     chip = "Wukong_180" if _qcloud_ready else "CPU_simulator"
 
-    system = f"""Ты — AI-консультант торгового бота QuantumTrade v7.3.0.
+    system = f"""Ты — AI-консультант торгового бота QuantumTrade v7.3.1.
 Текущие показатели:
 - Всего сделок: {total}, Win Rate: {win_rate:.1f}%, PnL: ${total_pnl:.2f}
 - Q-Score последний: {last_q_score:.1f}, MIN_Q: {MIN_Q_SCORE}
@@ -2317,7 +2424,7 @@ async def startup():
     mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
     await notify(
-        f"⚛ <b>QuantumTrade v7.3.0</b>\n"
+        f"⚛ <b>QuantumTrade v7.3.1</b>\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
         f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
@@ -2616,13 +2723,13 @@ async def update_settings(body: dict):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "7.3.0", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "7.3.1", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
             "claude_vision": bool(ANTHROPIC_API_KEY), "ai_chat": bool(ANTHROPIC_API_KEY),
             "quantum_chip": "Wukong_180" if _qcloud_ready else "CPU_simulator",
-            "origin_qc_token": bool(ORIGIN_QC_TOKEN),
+            "origin_qc_token": bool(ORIGIN_QC_TOKEN), "braket_ready": _braket_ready, "braket_last_run": round(time.time()-_braket_ts) if _braket_ts else None,
             "timestamp": datetime.utcnow().isoformat()}
 
 @app.post("/api/setup-webhook")
