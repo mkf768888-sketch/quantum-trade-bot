@@ -1,9 +1,10 @@
 """
-QuantumTrade AI - FastAPI Backend v6.8.0
+QuantumTrade AI - FastAPI Backend v7.2.3
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
 Phase3: Origin QC QAOA — квантовая оптимизация портфеля (CPU симулятор + Wukong 180 реальный чип)
 Phase5: Claude Vision — AI-анализ графиков
 Phase6: Origin QC Wukong 180 — реальный квантовый чип (авто-переключение по ORIGIN_QC_TOKEN)
+v7.2.3: PnL fix — реальная цена закрытия из KuCoin fills; TP/SL ratio 3:1 (было 2:1)
 """
 
 import asyncio
@@ -47,9 +48,9 @@ PAIR_Q_THRESHOLDS: dict = {"BTC-USDT": 54, "ETH-USDT": 54, "SOL-USDT": 54,
                             "BNB-USDT": 54, "XRP-USDT": 54, "AVAX-USDT": 54}
 COOLDOWN       = int(os.getenv("COOLDOWN", "450"))   # v7.2.2: 600→450s (баланс частоты и качества)
 MAX_LEVERAGE   = int(os.getenv("MAX_LEVERAGE", "5"))   # v6.9: Strategy C default
-# v6.9: Strategy C — risk 25%, leverage 5x, TP=5%, SL=2.5% (backtested optimal for bear market)
-TP_PCT         = 0.05   # v6.9: Strategy C (5%)
-SL_PCT         = 0.025  # v6.9: Strategy C (2.5%)
+# v7.2.3: TP/SL ratio улучшен до 3:1 (было 2:1) — исправляет асимметрию убытков
+TP_PCT         = 0.06   # v7.2.3: 6% (было 5%)
+SL_PCT         = 0.02   # v7.2.3: 2% (было 2.5%) → ratio 3:1 вместо 2:1
 TEST_MODE      = os.getenv("TEST_MODE", "false").lower() == "true"  # v6.7: default LIVE mode
 if TEST_MODE:
     RISK_PER_TRADE = 0.10
@@ -397,6 +398,38 @@ async def get_futures_balance() -> dict:
             return {"available_balance": 0, "success": False, "error": data.get("msg")}
     except Exception as e:
         return {"available_balance": 0, "success": False, "error": str(e)}
+
+async def get_recent_futures_fills(symbol: str, since_ts: float) -> Optional[float]:
+    """v7.2.3: Возвращает реальную среднюю цену закрытия позиции из fills KuCoin Futures.
+    Используется в position_monitor вместо price_now для точного PnL."""
+    endpoint = f"/api/v1/fills?symbol={symbol}&type=trade&pageSize=20"
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(
+                KUCOIN_FUT_URL + endpoint,
+                headers=kucoin_headers("GET", endpoint),
+                timeout=aiohttp.ClientTimeout(total=8)
+            )
+            data = await r.json()
+            if data.get("code") == "200000":
+                items = data["data"].get("items", [])
+                # Берём fills ПОСЛЕ открытия позиции (createdAt в миллисекундах)
+                close_fills = [
+                    f for f in items
+                    if float(f.get("createdAt", 0)) / 1000 > since_ts
+                ]
+                if close_fills:
+                    total_qty = sum(float(f.get("size", 1)) for f in close_fills)
+                    if total_qty > 0:
+                        avg_price = sum(
+                            float(f["price"]) * float(f.get("size", 1))
+                            for f in close_fills
+                        ) / total_qty
+                        print(f"[fills] {symbol}: реальная цена закрытия ${avg_price:,.4f} ({len(close_fills)} fills)", flush=True)
+                        return avg_price
+    except Exception as e:
+        print(f"[fills] {symbol}: ошибка получения fills — {e}", flush=True)
+    return None
 
 async def get_futures_positions() -> dict:
     endpoint = "/api/v1/positions"
@@ -1110,9 +1143,10 @@ pending_strategies: dict = {}  # trade_id → {symbol, signal, vision, price, fu
 
 # ── Стратегии A/B/C ────────────────────────────────────────────────────────────
 STRATEGIES = {
-    "A": {"name": "Консервативная", "risk": 0.05, "leverage": 2, "tp": 0.02, "sl": 0.01,  "emoji": "🛡",  "tag": "real"},
-    "B": {"name": "Стандартная",    "risk": 0.10, "leverage": 3, "tp": 0.03, "sl": 0.015, "emoji": "⚖️", "tag": "real"},
-    "C": {"name": "Бонусная",       "risk": 0.25, "leverage": 5, "tp": 0.05, "sl": 0.025, "emoji": "🚀",  "tag": "bonus"},
+    # v7.2.3: TP/SL ratio улучшен до 3:1 во всех стратегиях (было 2:1)
+    "A": {"name": "Консервативная", "risk": 0.05, "leverage": 2, "tp": 0.03, "sl": 0.01,  "emoji": "🛡",  "tag": "real"},
+    "B": {"name": "Стандартная",    "risk": 0.10, "leverage": 3, "tp": 0.045,"sl": 0.015, "emoji": "⚖️", "tag": "real"},
+    "C": {"name": "Бонусная",       "risk": 0.25, "leverage": 5, "tp": 0.06, "sl": 0.02,  "emoji": "🚀",  "tag": "bonus"},
 }
 # DUAL: одновременно B (реальный) + C (бонусный агрессивный)
 STRATEGY_TIMEOUT = 60   # 1 минута
@@ -1130,9 +1164,9 @@ async def send_strategy_choice(trade_id, symbol, action, price, q, pattern, fg, 
         f"Q-Score: `{q}` · Паттерн: `{pattern}`\n"
         f"{ctx}\n\n"
         f"*Выбери стратегию:*\n"
-        f"🛡 *A* — Консерватив (5%, TP 2%, SL 1%)\n"
-        f"⚖️ *B* — Стандарт (10%, TP 3%, SL 1.5%)\n"
-        f"🚀 *C* — Бонусная (25%, TP 5%, SL 2.5%)\n"
+        f"🛡 *A* — Консерватив (5%, TP 3%, SL 1%) [3:1]\n"
+        f"⚖️ *B* — Стандарт (10%, TP 4.5%, SL 1.5%) [3:1]\n"
+        f"🚀 *C* — Бонусная (25%, TP 6%, SL 2%) [3:1]\n"
         f"💥 *DUAL* — B + C одновременно\n\n"
         f"_Нет ответа 1 мин → авто стратегия B_"
     )
@@ -1639,26 +1673,30 @@ async def position_monitor_loop():
                         continue
                     if trade["symbol"] not in open_syms:
                         base_sym      = SYM_REV.get(trade["symbol"], "BTC-USDT")
-                        price_now     = await get_ticker(base_sym)
                         entry         = trade["price"]
                         contract_size = CONTRACT_SIZES.get(trade["symbol"], 0.01)
+                        open_ts       = trade.get("open_ts", time.time() - 400)
+                        # v7.2.3: сначала пробуем реальную цену из KuCoin fills
+                        real_close = await get_recent_futures_fills(trade["symbol"], open_ts)
+                        price_now  = real_close if real_close else await get_ticker(base_sym)
+                        price_source = "fills" if real_close else "ticker"
                         if trade["side"] == "sell":
                             pnl_pct = (entry - price_now) / entry
                         else:
                             pnl_pct = (price_now - entry) / entry
-                        # v6.8 fix: PnL = price_change * n_contracts * contract_size_in_eth * entry
                         pnl_usdt = round(pnl_pct * entry * trade["size"] * contract_size, 4)
-                        duration_min = round((time.time() - trade.get("open_ts", time.time())) / 60, 1)
-                        # Определяем причину закрытия
+                        duration_min = round((time.time() - open_ts) / 60, 1)
+                        # Определяем причину закрытия по реальной цене
                         tp  = trade.get("tp", entry * 1.03)
                         sl  = trade.get("sl", entry * 0.985)
                         if trade["side"] == "buy":
                             reason = "🎯 TP" if price_now >= tp * 0.995 else ("🛑 SL" if price_now <= sl * 1.005 else "📊 Монитор")
                         else:
                             reason = "🎯 TP" if price_now <= tp * 1.005 else ("🛑 SL" if price_now >= sl * 0.995 else "📊 Монитор")
-                        trade["status"]      = "closed"
-                        trade["pnl"]         = pnl_usdt
-                        trade["close_price"] = price_now
+                        trade["status"]       = "closed"
+                        trade["pnl"]          = pnl_usdt
+                        trade["close_price"]  = price_now
+                        trade["price_source"] = price_source  # для диагностики
                         emoji = "✅" if pnl_usdt >= 0 else "❌"
                         strat = trade.get("account", "B").replace("futures_", "")
                         log_activity(f"[monitor] {trade['symbol']} {reason} closed PnL=${pnl_usdt:+.4f}")
@@ -2506,7 +2544,7 @@ async def update_settings(body: dict):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "7.1.2", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
+    return {"status": "ok", "version": "7.2.3", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
             "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
             "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
             "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
