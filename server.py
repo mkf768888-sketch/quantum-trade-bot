@@ -1,10 +1,10 @@
 """
 QuantumTrade AI - FastAPI Backend v7.2.3
-Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
-Phase3: Origin QC QAOA — квантовая оптимизация портфеля (CPU симулятор + Wukong 180 реальный чип)
-Phase5: Claude Vision — AI-анализ графиков
-Phase6: Origin QC Wukong 180 — реальный квантовый чип (авто-переключение по ORIGIN_QC_TOKEN)
-v7.2.3: PnL fix — реальная цена закрытия из KuCoin fills; TP/SL ratio 3:1 (было 2:1)
+Phase1: Fear&Greed, PolymarketâQ-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
+Phase3: Origin QC QAOA â ÐºÐ²Ð°Ð½ÑÐ¾Ð²Ð°Ñ Ð¾Ð¿ÑÐ¸Ð¼Ð¸Ð·Ð°ÑÐ¸Ñ Ð¿Ð¾ÑÑÑÐµÐ»Ñ (CPU ÑÐ¸Ð¼ÑÐ»ÑÑÐ¾Ñ + Wukong 180 ÑÐµÐ°Ð»ÑÐ½ÑÐ¹ ÑÐ¸Ð¿)
+Phase5: Claude Vision â AI-Ð°Ð½Ð°Ð»Ð¸Ð· Ð³ÑÐ°ÑÐ¸ÐºÐ¾Ð²
+Phase6: Origin QC Wukong 180 â ÑÐµÐ°Ð»ÑÐ½ÑÐ¹ ÐºÐ²Ð°Ð½ÑÐ¾Ð²ÑÐ¹ ÑÐ¸Ð¿ (Ð°Ð²ÑÐ¾-Ð¿ÐµÑÐµÐºÐ»ÑÑÐµÐ½Ð¸Ðµ Ð¿Ð¾ ORIGIN_QC_TOKEN)
+v7.2.3: PnL fix â ÑÐµÐ°Ð»ÑÐ½Ð°Ñ ÑÐµÐ½Ð° Ð·Ð°ÐºÑÑÑÐ¸Ñ Ð¸Ð· KuCoin fills; TP/SL ratio 3:1 (Ð±ÑÐ»Ð¾ 2:1)
 """
 
 import asyncio
@@ -37,20 +37,20 @@ YANDEX_VISION_KEY = os.getenv("YANDEX_VISION_KEY", "")
 YANDEX_FOLDER_ID  = os.getenv("YANDEX_FOLDER_ID", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ORIGIN_QC_TOKEN   = os.getenv("ORIGIN_QC_TOKEN", "")     # Phase 6: Origin QC Wukong 180
-RAILWAY_TOKEN     = os.getenv("RAILWAY_TOKEN", "")       # v7.2.1: Railway API — persist variable changes
+RAILWAY_TOKEN     = os.getenv("RAILWAY_TOKEN", "")       # v7.2.1: Railway API â persist variable changes
 WEBAPP_URL        = os.getenv("WEBAPP_URL", "https://mkf768888-sketch.github.io/quantum-trade-ui/")  # v7.2.2: GitHub Pages frontend
 
 RISK_PER_TRADE = 0.25  # v6.9: Strategy C (25% of balance)
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
-MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "55"))  # v7.2.2: 65→55 (dead zone 45-55 вместо 35-65)
-# v7.2.2: per-pair Q thresholds = MIN_Q_SCORE - 1, чтобы не блокировать торговлю при изменении MIN_Q_SCORE
+MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "55"))  # v7.2.2: 65â55 (dead zone 45-55 Ð²Ð¼ÐµÑÑÐ¾ 35-65)
+# v7.2.2: per-pair Q thresholds = MIN_Q_SCORE - 1, ÑÑÐ¾Ð±Ñ Ð½Ðµ Ð±Ð»Ð¾ÐºÐ¸ÑÐ¾Ð²Ð°ÑÑ ÑÐ¾ÑÐ³Ð¾Ð²Ð»Ñ Ð¿ÑÐ¸ Ð¸Ð·Ð¼ÐµÐ½ÐµÐ½Ð¸Ð¸ MIN_Q_SCORE
 PAIR_Q_THRESHOLDS: dict = {"BTC-USDT": 54, "ETH-USDT": 54, "SOL-USDT": 54,
                             "BNB-USDT": 54, "XRP-USDT": 54, "AVAX-USDT": 54}
-COOLDOWN       = int(os.getenv("COOLDOWN", "450"))   # v7.2.2: 600→450s (баланс частоты и качества)
+COOLDOWN       = int(os.getenv("COOLDOWN", "450"))   # v7.2.2: 600â450s (Ð±Ð°Ð»Ð°Ð½Ñ ÑÐ°ÑÑÐ¾ÑÑ Ð¸ ÐºÐ°ÑÐµÑÑÐ²Ð°)
 MAX_LEVERAGE   = int(os.getenv("MAX_LEVERAGE", "5"))   # v6.9: Strategy C default
-# v7.2.3: TP/SL ratio улучшен до 3:1 (было 2:1) — исправляет асимметрию убытков
-TP_PCT         = 0.06   # v7.2.3: 6% (было 5%)
-SL_PCT         = 0.02   # v7.2.3: 2% (было 2.5%) → ratio 3:1 вместо 2:1
+# v7.2.3: TP/SL ratio ÑÐ»ÑÑÑÐµÐ½ Ð´Ð¾ 3:1 (Ð±ÑÐ»Ð¾ 2:1) â Ð¸ÑÐ¿ÑÐ°Ð²Ð»ÑÐµÑ Ð°ÑÐ¸Ð¼Ð¼ÐµÑÑÐ¸Ñ ÑÐ±ÑÑÐºÐ¾Ð²
+TP_PCT         = 0.06   # v7.2.3: 6% (Ð±ÑÐ»Ð¾ 5%)
+SL_PCT         = 0.02   # v7.2.3: 2% (Ð±ÑÐ»Ð¾ 2.5%) â ratio 3:1 Ð²Ð¼ÐµÑÑÐ¾ 2:1
 TEST_MODE      = os.getenv("TEST_MODE", "false").lower() == "true"  # v6.7: default LIVE mode
 if TEST_MODE:
     RISK_PER_TRADE = 0.10
@@ -61,85 +61,85 @@ FUT_PAIRS  = ["XBTUSDTM", "ETHUSDTM", "SOLUSDTM"]
 
 last_signals  = {}
 last_q_score  = 0.0
-_q_alert_last: dict = {}   # v7.2.2: антиспам для Q-алертов {"sell": ts, "buy": ts}
+_q_alert_last: dict = {}   # v7.2.2: Ð°Ð½ÑÐ¸ÑÐ¿Ð°Ð¼ Ð´Ð»Ñ Q-Ð°Ð»ÐµÑÑÐ¾Ð² {"sell": ts, "buy": ts}
 trade_log: List[dict] = []
 
-# ── Персистентное хранилище сделок ─────────────────────────────────────────────
-# Выживает при редеплое — пишем в /tmp/trades.json (Railway ephemeral storage)
+# ââ ÐÐµÑÑÐ¸ÑÑÐµÐ½ÑÐ½Ð¾Ðµ ÑÑÐ°Ð½Ð¸Ð»Ð¸ÑÐµ ÑÐ´ÐµÐ»Ð¾Ðº âââââââââââââââââââââââââââââââââââââââââââââ
+# ÐÑÐ¶Ð¸Ð²Ð°ÐµÑ Ð¿ÑÐ¸ ÑÐµÐ´ÐµÐ¿Ð»Ð¾Ðµ â Ð¿Ð¸ÑÐµÐ¼ Ð² /tmp/trades.json (Railway ephemeral storage)
 _TRADES_FILE = "/tmp/qt_trades.json"
 
 def _load_trades_from_disk():
-    """Загружаем историю сделок при старте."""
+    """ÐÐ°Ð³ÑÑÐ¶Ð°ÐµÐ¼ Ð¸ÑÑÐ¾ÑÐ¸Ñ ÑÐ´ÐµÐ»Ð¾Ðº Ð¿ÑÐ¸ ÑÑÐ°ÑÑÐµ."""
     global trade_log
     try:
         if os.path.exists(_TRADES_FILE):
             with open(_TRADES_FILE, "r") as f:
                 trade_log = json.load(f)
-            print(f"[trades] загружено {len(trade_log)} сделок из {_TRADES_FILE}")
+            print(f"[trades] Ð·Ð°Ð³ÑÑÐ¶ÐµÐ½Ð¾ {len(trade_log)} ÑÐ´ÐµÐ»Ð¾Ðº Ð¸Ð· {_TRADES_FILE}")
     except Exception as e:
-        print(f"[trades] ошибка загрузки: {e}")
+        print(f"[trades] Ð¾ÑÐ¸Ð±ÐºÐ° Ð·Ð°Ð³ÑÑÐ·ÐºÐ¸: {e}")
 
 def _save_trades_to_disk():
-    """Сохраняем trade_log на диск после каждой новой сделки."""
+    """Ð¡Ð¾ÑÑÐ°Ð½ÑÐµÐ¼ trade_log Ð½Ð° Ð´Ð¸ÑÐº Ð¿Ð¾ÑÐ»Ðµ ÐºÐ°Ð¶Ð´Ð¾Ð¹ Ð½Ð¾Ð²Ð¾Ð¹ ÑÐ´ÐµÐ»ÐºÐ¸."""
     try:
         with open(_TRADES_FILE, "w") as f:
-            json.dump(trade_log[-500:], f)  # храним последние 500
+            json.dump(trade_log[-500:], f)  # ÑÑÐ°Ð½Ð¸Ð¼ Ð¿Ð¾ÑÐ»ÐµÐ´Ð½Ð¸Ðµ 500
     except Exception as e:
-        print(f"[trades] ошибка записи: {e}")
+        print(f"[trades] Ð¾ÑÐ¸Ð±ÐºÐ° Ð·Ð°Ð¿Ð¸ÑÐ¸: {e}")
 
-# ── QAOA State ─────────────────────────────────────────────────────────────────
-_quantum_bias: Dict[str, float] = {}   # symbol → bias [-15..+15]
-_quantum_ts: float = 0.0               # timestamp последнего запуска
+# ââ QAOA State âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+_quantum_bias: Dict[str, float] = {}   # symbol â bias [-15..+15]
+_quantum_ts: float = 0.0               # timestamp Ð¿Ð¾ÑÐ»ÐµÐ´Ð½ÐµÐ³Ð¾ Ð·Ð°Ð¿ÑÑÐºÐ°
 
-# v7.2.0: QAOA rolling average smoother (окно=3, clamp=±5 на CPU, ±15 на чипе)
-_qaoa_history: Dict[str, list] = {}    # symbol → последние N значений
+# v7.2.0: QAOA rolling average smoother (Ð¾ÐºÐ½Ð¾=3, clamp=Â±5 Ð½Ð° CPU, Â±15 Ð½Ð° ÑÐ¸Ð¿Ðµ)
+_qaoa_history: Dict[str, list] = {}    # symbol â Ð¿Ð¾ÑÐ»ÐµÐ´Ð½Ð¸Ðµ N Ð·Ð½Ð°ÑÐµÐ½Ð¸Ð¹
 _QAOA_WINDOW = 3
 
 def _smooth_qaoa_bias(symbol: str, raw_bias: float, clamp: float = 15.0) -> float:
-    """Rolling average + clamp для QAOA bias. Убирает шум CPU симулятора."""
+    """Rolling average + clamp Ð´Ð»Ñ QAOA bias. Ð£Ð±Ð¸ÑÐ°ÐµÑ ÑÑÐ¼ CPU ÑÐ¸Ð¼ÑÐ»ÑÑÐ¾ÑÐ°."""
     hist = _qaoa_history.setdefault(symbol, [])
     hist.append(max(-clamp, min(clamp, raw_bias)))
     if len(hist) > _QAOA_WINDOW:
         hist.pop(0)
     return round(sum(hist) / len(hist), 2)
 
-# ── Phase 6: Origin QC Wukong 180 ──────────────────────────────────────────────
-_qcloud_ready: bool = False            # True после успешной инициализации чипа
-_qvm_instance = None                   # глобальный инстанс QCloud (ленивая init)
+# ââ Phase 6: Origin QC Wukong 180 ââââââââââââââââââââââââââââââââââââââââââââââ
+_qcloud_ready: bool = False            # True Ð¿Ð¾ÑÐ»Ðµ ÑÑÐ¿ÐµÑÐ½Ð¾Ð¹ Ð¸Ð½Ð¸ÑÐ¸Ð°Ð»Ð¸Ð·Ð°ÑÐ¸Ð¸ ÑÐ¸Ð¿Ð°
+_qvm_instance = None                   # Ð³Ð»Ð¾Ð±Ð°Ð»ÑÐ½ÑÐ¹ Ð¸Ð½ÑÑÐ°Ð½Ñ QCloud (Ð»ÐµÐ½Ð¸Ð²Ð°Ñ init)
 
 
 def _init_qcloud() -> bool:
     """
-    Пытается подключиться к Origin QC Wukong 180 через pyqpanda3.
-    Вызывается при старте, если ORIGIN_QC_TOKEN задан.
-    Возвращает True при успехе, False → CPU fallback.
+    ÐÑÑÐ°ÐµÑÑÑ Ð¿Ð¾Ð´ÐºÐ»ÑÑÐ¸ÑÑÑÑ Ðº Origin QC Wukong 180 ÑÐµÑÐµÐ· pyqpanda3.
+    ÐÑÐ·ÑÐ²Ð°ÐµÑÑÑ Ð¿ÑÐ¸ ÑÑÐ°ÑÑÐµ, ÐµÑÐ»Ð¸ ORIGIN_QC_TOKEN Ð·Ð°Ð´Ð°Ð½.
+    ÐÐ¾Ð·Ð²ÑÐ°ÑÐ°ÐµÑ True Ð¿ÑÐ¸ ÑÑÐ¿ÐµÑÐµ, False â CPU fallback.
     """
     global _qcloud_ready, _qvm_instance
     if not ORIGIN_QC_TOKEN:
-        print("[qaoa] ORIGIN_QC_TOKEN не задан → CPU симулятор")
+        print("[qaoa] ORIGIN_QC_TOKEN Ð½Ðµ Ð·Ð°Ð´Ð°Ð½ â CPU ÑÐ¸Ð¼ÑÐ»ÑÑÐ¾Ñ")
         return False
     try:
         from pyqpanda3 import QCloud, QMachineType  # type: ignore
         qvm = QCloud()
         qvm.init_qvm(ORIGIN_QC_TOKEN, QMachineType.Wukong)
-        qvm.set_chip_id("72")  # Wukong-180: публичный чип #72
+        qvm.set_chip_id("72")  # Wukong-180: Ð¿ÑÐ±Ð»Ð¸ÑÐ½ÑÐ¹ ÑÐ¸Ð¿ #72
         _qvm_instance = qvm
         _qcloud_ready = True
-        print("[qaoa] ✅ Origin QC Wukong 180 подключён (chip_id=72)")
+        print("[qaoa] â Origin QC Wukong 180 Ð¿Ð¾Ð´ÐºÐ»ÑÑÑÐ½ (chip_id=72)")
         return True
     except ImportError:
-        print("[qaoa] pyqpanda3 не установлен → CPU fallback")
+        print("[qaoa] pyqpanda3 Ð½Ðµ ÑÑÑÐ°Ð½Ð¾Ð²Ð»ÐµÐ½ â CPU fallback")
     except Exception as e:
-        print(f"[qaoa] Origin QC ошибка инициализации: {e} → CPU fallback")
+        print(f"[qaoa] Origin QC Ð¾ÑÐ¸Ð±ÐºÐ° Ð¸Ð½Ð¸ÑÐ¸Ð°Ð»Ð¸Ð·Ð°ÑÐ¸Ð¸: {e} â CPU fallback")
     _qcloud_ready = False
     return False
 
 
-# ── QAOA Module (Phase 3 + Phase 6: Origin QC) ─────────────────────────────────
-# CPU-симулятор активен по умолчанию.
-# При наличии ORIGIN_QC_TOKEN и pyqpanda3 — авто-переключение на Wukong 180.
+# ââ QAOA Module (Phase 3 + Phase 6: Origin QC) âââââââââââââââââââââââââââââââââ
+# CPU-ÑÐ¸Ð¼ÑÐ»ÑÑÐ¾Ñ Ð°ÐºÑÐ¸Ð²ÐµÐ½ Ð¿Ð¾ ÑÐ¼Ð¾Ð»ÑÐ°Ð½Ð¸Ñ.
+# ÐÑÐ¸ Ð½Ð°Ð»Ð¸ÑÐ¸Ð¸ ORIGIN_QC_TOKEN Ð¸ pyqpanda3 â Ð°Ð²ÑÐ¾-Ð¿ÐµÑÐµÐºÐ»ÑÑÐµÐ½Ð¸Ðµ Ð½Ð° Wukong 180.
 #
-# Корреляционная матрица (BTC ETH SOL BNB XRP AVAX)
+# ÐÐ¾ÑÑÐµÐ»ÑÑÐ¸Ð¾Ð½Ð½Ð°Ñ Ð¼Ð°ÑÑÐ¸ÑÐ° (BTC ETH SOL BNB XRP AVAX)
 PAIR_NAMES = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT", "AVAX-USDT"]
 CORR_MATRIX = [
     # BTC    ETH    SOL    BNB    XRP    AVAX
@@ -155,34 +155,34 @@ N_PAIRS = len(PAIR_NAMES)
 
 def _qaoa_cpu_simulate(price_changes: List[float], p_layers: int = 2) -> List[float]:
     """
-    QAOA CPU симулятор: оптимизирует портфельные веса с учётом корреляций.
-    Возвращает bias [-15..+15] для каждой пары.
-    p_layers: глубина схемы (1-3, больше = точнее, медленнее).
+    QAOA CPU ÑÐ¸Ð¼ÑÐ»ÑÑÐ¾Ñ: Ð¾Ð¿ÑÐ¸Ð¼Ð¸Ð·Ð¸ÑÑÐµÑ Ð¿Ð¾ÑÑÑÐµÐ»ÑÐ½ÑÐµ Ð²ÐµÑÐ° Ñ ÑÑÑÑÐ¾Ð¼ ÐºÐ¾ÑÑÐµÐ»ÑÑÐ¸Ð¹.
+    ÐÐ¾Ð·Ð²ÑÐ°ÑÐ°ÐµÑ bias [-15..+15] Ð´Ð»Ñ ÐºÐ°Ð¶Ð´Ð¾Ð¹ Ð¿Ð°ÑÑ.
+    p_layers: Ð³Ð»ÑÐ±Ð¸Ð½Ð° ÑÑÐµÐ¼Ñ (1-3, Ð±Ð¾Ð»ÑÑÐµ = ÑÐ¾ÑÐ½ÐµÐµ, Ð¼ÐµÐ´Ð»ÐµÐ½Ð½ÐµÐµ).
     """
     n = N_PAIRS
 
-    # 1. Строим QUBO матрицу задачи максимизации Шарпа
-    # Q_ij = corr[i][j] (штраф за коррелированные позиции)
-    # Линейный член: -momentum[i] (награда за сильный тренд)
+    # 1. Ð¡ÑÑÐ¾Ð¸Ð¼ QUBO Ð¼Ð°ÑÑÐ¸ÑÑ Ð·Ð°Ð´Ð°ÑÐ¸ Ð¼Ð°ÐºÑÐ¸Ð¼Ð¸Ð·Ð°ÑÐ¸Ð¸ Ð¨Ð°ÑÐ¿Ð°
+    # Q_ij = corr[i][j] (ÑÑÑÐ°Ñ Ð·Ð° ÐºÐ¾ÑÑÐµÐ»Ð¸ÑÐ¾Ð²Ð°Ð½Ð½ÑÐµ Ð¿Ð¾Ð·Ð¸ÑÐ¸Ð¸)
+    # ÐÐ¸Ð½ÐµÐ¹Ð½ÑÐ¹ ÑÐ»ÐµÐ½: -momentum[i] (Ð½Ð°Ð³ÑÐ°Ð´Ð° Ð·Ð° ÑÐ¸Ð»ÑÐ½ÑÐ¹ ÑÑÐµÐ½Ð´)
     momentum = [max(-1.0, min(1.0, pc / 5.0)) for pc in price_changes]
 
-    # 2. Инициализируем углы QAOA (gamma, beta) случайно с seed
-    random.seed(int(time.time()) // 900)  # меняется раз в 15 мин
+    # 2. ÐÐ½Ð¸ÑÐ¸Ð°Ð»Ð¸Ð·Ð¸ÑÑÐµÐ¼ ÑÐ³Ð»Ñ QAOA (gamma, beta) ÑÐ»ÑÑÐ°Ð¹Ð½Ð¾ Ñ seed
+    random.seed(int(time.time()) // 900)  # Ð¼ÐµÐ½ÑÐµÑÑÑ ÑÐ°Ð· Ð² 15 Ð¼Ð¸Ð½
     gamma = [random.uniform(0.1, math.pi) for _ in range(p_layers)]
     beta  = [random.uniform(0.1, math.pi / 2) for _ in range(p_layers)]
 
-    # 3. Симулируем квантовое состояние (упрощённая vector sim)
-    # |ψ⟩ = H^n|0⟩ → apply U_C(γ) → U_B(β) → measure
-    # Начальное состояние: суперпозиция всех 2^n битовых строк
-    state_size = 1 << n  # 64 состояния для 6 кубитов
+    # 3. Ð¡Ð¸Ð¼ÑÐ»Ð¸ÑÑÐµÐ¼ ÐºÐ²Ð°Ð½ÑÐ¾Ð²Ð¾Ðµ ÑÐ¾ÑÑÐ¾ÑÐ½Ð¸Ðµ (ÑÐ¿ÑÐ¾ÑÑÐ½Ð½Ð°Ñ vector sim)
+    # |Ïâ© = H^n|0â© â apply U_C(Î³) â U_B(Î²) â measure
+    # ÐÐ°ÑÐ°Ð»ÑÐ½Ð¾Ðµ ÑÐ¾ÑÑÐ¾ÑÐ½Ð¸Ðµ: ÑÑÐ¿ÐµÑÐ¿Ð¾Ð·Ð¸ÑÐ¸Ñ Ð²ÑÐµÑ 2^n Ð±Ð¸ÑÐ¾Ð²ÑÑ ÑÑÑÐ¾Ðº
+    state_size = 1 << n  # 64 ÑÐ¾ÑÑÐ¾ÑÐ½Ð¸Ñ Ð´Ð»Ñ 6 ÐºÑÐ±Ð¸ÑÐ¾Ð²
     amplitudes = [complex(1.0 / math.sqrt(state_size))] * state_size
 
     for layer in range(p_layers):
-        # U_C(γ): применяем cost unitary
+        # U_C(Î³): Ð¿ÑÐ¸Ð¼ÐµÐ½ÑÐµÐ¼ cost unitary
         new_amp = [complex(0)] * state_size
         for s in range(state_size):
             bits = [(s >> i) & 1 for i in range(n)]
-            # cost = -Σ momentum[i]*bits[i] + γ*Σ corr[i][j]*bits[i]*bits[j]
+            # cost = -Î£ momentum[i]*bits[i] + Î³*Î£ corr[i][j]*bits[i]*bits[j]
             cost = 0.0
             for i in range(n):
                 cost -= momentum[i] * bits[i]
@@ -192,32 +192,32 @@ def _qaoa_cpu_simulate(price_changes: List[float], p_layers: int = 2) -> List[fl
             new_amp[s] = amplitudes[s] * phase
         amplitudes = new_amp
 
-        # U_B(β): mixing unitary (X-rotation на каждом кубите)
+        # U_B(Î²): mixing unitary (X-rotation Ð½Ð° ÐºÐ°Ð¶Ð´Ð¾Ð¼ ÐºÑÐ±Ð¸ÑÐµ)
         for q in range(n):
             new_amp = [complex(0)] * state_size
             cos_b = math.cos(beta[layer])
             sin_b = math.sin(beta[layer])
             for s in range(state_size):
-                # flip бит q
+                # flip Ð±Ð¸Ñ q
                 s_flip = s ^ (1 << q)
                 new_amp[s] += amplitudes[s] * complex(cos_b, 0)
                 new_amp[s] += amplitudes[s_flip] * complex(0, sin_b)
             amplitudes = new_amp
 
-    # 4. Вычисляем ожидаемое значение <Z_i> для каждого кубита
+    # 4. ÐÑÑÐ¸ÑÐ»ÑÐµÐ¼ Ð¾Ð¶Ð¸Ð´Ð°ÐµÐ¼Ð¾Ðµ Ð·Ð½Ð°ÑÐµÐ½Ð¸Ðµ <Z_i> Ð´Ð»Ñ ÐºÐ°Ð¶Ð´Ð¾Ð³Ð¾ ÐºÑÐ±Ð¸ÑÐ°
     z_exp = [0.0] * n
     for s in range(state_size):
         prob = (amplitudes[s] * amplitudes[s].conjugate()).real
         bits = [(s >> i) & 1 for i in range(n)]
         for i in range(n):
-            z_exp[i] += prob * (1 - 2 * bits[i])  # +1 если bit=0, -1 если bit=1
+            z_exp[i] += prob * (1 - 2 * bits[i])  # +1 ÐµÑÐ»Ð¸ bit=0, -1 ÐµÑÐ»Ð¸ bit=1
 
-    # 5. Конвертируем в bias [-15..+15]
-    # z_exp[i] ∈ [-1..+1] → bias = z_exp * 15 * momentum_sign
+    # 5. ÐÐ¾Ð½Ð²ÐµÑÑÐ¸ÑÑÐµÐ¼ Ð² bias [-15..+15]
+    # z_exp[i] â [-1..+1] â bias = z_exp * 15 * momentum_sign
     bias = []
     for i in range(n):
         b = z_exp[i] * 15.0
-        # Усиливаем сигнал в направлении momentum
+        # Ð£ÑÐ¸Ð»Ð¸Ð²Ð°ÐµÐ¼ ÑÐ¸Ð³Ð½Ð°Ð» Ð² Ð½Ð°Ð¿ÑÐ°Ð²Ð»ÐµÐ½Ð¸Ð¸ momentum
         if momentum[i] > 0.1:
             b = abs(b)
         elif momentum[i] < -0.1:
@@ -229,32 +229,32 @@ def _qaoa_cpu_simulate(price_changes: List[float], p_layers: int = 2) -> List[fl
 
 def _qaoa_wukong_run(price_changes: List[float], p_layers: int = 1) -> List[float]:
     """
-    Phase 6: QAOA на реальном чипе Origin Wukong 180.
-    Строит 6-кубитную QAOA схему, отправляет на аппаратный чип, парсит гистограмму.
-    p_layers=1 (на реальном железе шум растёт с глубиной — используем p=1).
-    Возвращает bias [-15..+15] для каждой пары.
-    Требует: _qcloud_ready=True и _qvm_instance инициализирован.
+    Phase 6: QAOA Ð½Ð° ÑÐµÐ°Ð»ÑÐ½Ð¾Ð¼ ÑÐ¸Ð¿Ðµ Origin Wukong 180.
+    Ð¡ÑÑÐ¾Ð¸Ñ 6-ÐºÑÐ±Ð¸ÑÐ½ÑÑ QAOA ÑÑÐµÐ¼Ñ, Ð¾ÑÐ¿ÑÐ°Ð²Ð»ÑÐµÑ Ð½Ð° Ð°Ð¿Ð¿Ð°ÑÐ°ÑÐ½ÑÐ¹ ÑÐ¸Ð¿, Ð¿Ð°ÑÑÐ¸Ñ Ð³Ð¸ÑÑÐ¾Ð³ÑÐ°Ð¼Ð¼Ñ.
+    p_layers=1 (Ð½Ð° ÑÐµÐ°Ð»ÑÐ½Ð¾Ð¼ Ð¶ÐµÐ»ÐµÐ·Ðµ ÑÑÐ¼ ÑÐ°ÑÑÑÑ Ñ Ð³Ð»ÑÐ±Ð¸Ð½Ð¾Ð¹ â Ð¸ÑÐ¿Ð¾Ð»ÑÐ·ÑÐµÐ¼ p=1).
+    ÐÐ¾Ð·Ð²ÑÐ°ÑÐ°ÐµÑ bias [-15..+15] Ð´Ð»Ñ ÐºÐ°Ð¶Ð´Ð¾Ð¹ Ð¿Ð°ÑÑ.
+    Ð¢ÑÐµÐ±ÑÐµÑ: _qcloud_ready=True Ð¸ _qvm_instance Ð¸Ð½Ð¸ÑÐ¸Ð°Ð»Ð¸Ð·Ð¸ÑÐ¾Ð²Ð°Ð½.
     """
     from pyqpanda3 import QProg, H, Rz, Rx, CNOT, measure_all  # type: ignore
 
-    n = N_PAIRS  # 6 кубитов
+    n = N_PAIRS  # 6 ÐºÑÐ±Ð¸ÑÐ¾Ð²
     momentum = [max(-1.0, min(1.0, pc / 5.0)) for pc in price_changes]
 
-    # Оптимальные углы QAOA p=1 (предварительно откалиброваны на CPU)
+    # ÐÐ¿ÑÐ¸Ð¼Ð°Ð»ÑÐ½ÑÐµ ÑÐ³Ð»Ñ QAOA p=1 (Ð¿ÑÐµÐ´Ð²Ð°ÑÐ¸ÑÐµÐ»ÑÐ½Ð¾ Ð¾ÑÐºÐ°Ð»Ð¸Ð±ÑÐ¾Ð²Ð°Ð½Ñ Ð½Ð° CPU)
     gamma = 0.8   # cost unitary angle
     beta  = 0.4   # mixing unitary angle
 
-    # ── Строим квантовую схему QAOA ──────────────────────────────────────────
-    qv  = _qvm_instance.allocate_qubit(n)    # 6 кубитов
-    cv  = _qvm_instance.allocate_cbit(n)     # 6 классических бит для измерений
+    # ââ Ð¡ÑÑÐ¾Ð¸Ð¼ ÐºÐ²Ð°Ð½ÑÐ¾Ð²ÑÑ ÑÑÐµÐ¼Ñ QAOA ââââââââââââââââââââââââââââââââââââââââââ
+    qv  = _qvm_instance.allocate_qubit(n)    # 6 ÐºÑÐ±Ð¸ÑÐ¾Ð²
+    cv  = _qvm_instance.allocate_cbit(n)     # 6 ÐºÐ»Ð°ÑÑÐ¸ÑÐµÑÐºÐ¸Ñ Ð±Ð¸Ñ Ð´Ð»Ñ Ð¸Ð·Ð¼ÐµÑÐµÐ½Ð¸Ð¹
     prog = QProg()
 
-    # Инициализация: суперпозиция H^⊗6|0⟩
+    # ÐÐ½Ð¸ÑÐ¸Ð°Ð»Ð¸Ð·Ð°ÑÐ¸Ñ: ÑÑÐ¿ÐµÑÐ¿Ð¾Ð·Ð¸ÑÐ¸Ñ H^â6|0â©
     for i in range(n):
         prog << H(qv[i])
 
-    # Cost unitary U_C(γ):
-    # ZZ-взаимодействие для коррелированных пар (только сильные связи corr > 0.5)
+    # Cost unitary U_C(Î³):
+    # ZZ-Ð²Ð·Ð°Ð¸Ð¼Ð¾Ð´ÐµÐ¹ÑÑÐ²Ð¸Ðµ Ð´Ð»Ñ ÐºÐ¾ÑÑÐµÐ»Ð¸ÑÐ¾Ð²Ð°Ð½Ð½ÑÑ Ð¿Ð°Ñ (ÑÐ¾Ð»ÑÐºÐ¾ ÑÐ¸Ð»ÑÐ½ÑÐµ ÑÐ²ÑÐ·Ð¸ corr > 0.5)
     for i in range(n):
         for j in range(i + 1, n):
             if CORR_MATRIX[i][j] > 0.5:
@@ -262,35 +262,35 @@ def _qaoa_wukong_run(price_changes: List[float], p_layers: int = 1) -> List[floa
                 prog << CNOT(qv[i], qv[j])
                 prog << Rz(qv[j], angle)
                 prog << CNOT(qv[i], qv[j])
-    # Линейные члены: momentum bias
+    # ÐÐ¸Ð½ÐµÐ¹Ð½ÑÐµ ÑÐ»ÐµÐ½Ñ: momentum bias
     for i in range(n):
         prog << Rz(qv[i], -2.0 * gamma * momentum[i])
 
-    # Mixing unitary U_B(β): X-ротации
+    # Mixing unitary U_B(Î²): X-ÑÐ¾ÑÐ°ÑÐ¸Ð¸
     for i in range(n):
         prog << Rx(qv[i], 2.0 * beta)
 
-    # Измерения
+    # ÐÐ·Ð¼ÐµÑÐµÐ½Ð¸Ñ
     prog << measure_all(qv, cv)
 
-    # ── Запуск на реальном чипе (1024 выборки) ───────────────────────────────
+    # ââ ÐÐ°Ð¿ÑÑÐº Ð½Ð° ÑÐµÐ°Ð»ÑÐ½Ð¾Ð¼ ÑÐ¸Ð¿Ðµ (1024 Ð²ÑÐ±Ð¾ÑÐºÐ¸) âââââââââââââââââââââââââââââââ
     result = _qvm_instance.run_with_configuration(prog, cv, 1024)
-    # result: dict[str, int], ключ = битовая строка "010110", значение = кол-во
+    # result: dict[str, int], ÐºÐ»ÑÑ = Ð±Ð¸ÑÐ¾Ð²Ð°Ñ ÑÑÑÐ¾ÐºÐ° "010110", Ð·Ð½Ð°ÑÐµÐ½Ð¸Ðµ = ÐºÐ¾Ð»-Ð²Ð¾
 
-    # Вычисляем <Z_i> из гистограммы
+    # ÐÑÑÐ¸ÑÐ»ÑÐµÐ¼ <Z_i> Ð¸Ð· Ð³Ð¸ÑÑÐ¾Ð³ÑÐ°Ð¼Ð¼Ñ
     z_exp = [0.0] * n
     total_shots = sum(result.values()) if result else 0
     if total_shots > 0:
         for bitstring, count in result.items():
-            # Wukong возвращает строку MSB-first: bitstring[0] = кубит 0
+            # Wukong Ð²Ð¾Ð·Ð²ÑÐ°ÑÐ°ÐµÑ ÑÑÑÐ¾ÐºÑ MSB-first: bitstring[0] = ÐºÑÐ±Ð¸Ñ 0
             for i in range(min(n, len(bitstring))):
                 bit = int(bitstring[i])
-                z_exp[i] += (count / total_shots) * (1 - 2 * bit)  # +1→0, -1→1
+                z_exp[i] += (count / total_shots) * (1 - 2 * bit)  # +1â0, -1â1
     else:
-        print("[qaoa_wukong] пустой результат — возвращаем нули")
+        print("[qaoa_wukong] Ð¿ÑÑÑÐ¾Ð¹ ÑÐµÐ·ÑÐ»ÑÑÐ°Ñ â Ð²Ð¾Ð·Ð²ÑÐ°ÑÐ°ÐµÐ¼ Ð½ÑÐ»Ð¸")
         return [0.0] * n
 
-    # Конвертируем в bias [-15..+15], усиливаем в направлении momentum
+    # ÐÐ¾Ð½Ð²ÐµÑÑÐ¸ÑÑÐµÐ¼ Ð² bias [-15..+15], ÑÑÐ¸Ð»Ð¸Ð²Ð°ÐµÐ¼ Ð² Ð½Ð°Ð¿ÑÐ°Ð²Ð»ÐµÐ½Ð¸Ð¸ momentum
     bias = []
     for i in range(n):
         b = z_exp[i] * 15.0
@@ -305,29 +305,29 @@ def _qaoa_wukong_run(price_changes: List[float], p_layers: int = 1) -> List[floa
 
 async def run_qaoa_optimization(price_changes: Dict[str, float]) -> Dict[str, float]:
     """
-    Phase 3 + Phase 6: QAOA оптимизация с авто-выбором бэкенда.
-    - Если ORIGIN_QC_TOKEN задан и pyqpanda3 доступен → реальный чип Wukong 180
-    - Иначе → CPU симулятор (6 кубитов, p=2)
-    Обновляет глобальный _quantum_bias. Вызывается каждые 15 минут.
+    Phase 3 + Phase 6: QAOA Ð¾Ð¿ÑÐ¸Ð¼Ð¸Ð·Ð°ÑÐ¸Ñ Ñ Ð°Ð²ÑÐ¾-Ð²ÑÐ±Ð¾ÑÐ¾Ð¼ Ð±ÑÐºÐµÐ½Ð´Ð°.
+    - ÐÑÐ»Ð¸ ORIGIN_QC_TOKEN Ð·Ð°Ð´Ð°Ð½ Ð¸ pyqpanda3 Ð´Ð¾ÑÑÑÐ¿ÐµÐ½ â ÑÐµÐ°Ð»ÑÐ½ÑÐ¹ ÑÐ¸Ð¿ Wukong 180
+    - ÐÐ½Ð°ÑÐµ â CPU ÑÐ¸Ð¼ÑÐ»ÑÑÐ¾Ñ (6 ÐºÑÐ±Ð¸ÑÐ¾Ð², p=2)
+    ÐÐ±Ð½Ð¾Ð²Ð»ÑÐµÑ Ð³Ð»Ð¾Ð±Ð°Ð»ÑÐ½ÑÐ¹ _quantum_bias. ÐÑÐ·ÑÐ²Ð°ÐµÑÑÑ ÐºÐ°Ð¶Ð´ÑÐµ 15 Ð¼Ð¸Ð½ÑÑ.
     """
     global _quantum_bias, _quantum_ts
     changes_list = [price_changes.get(p, 0.0) for p in PAIR_NAMES]
     chip_used = "CPU_simulator"
     try:
         if _qcloud_ready and _qvm_instance is not None:
-            # ── Phase 6: реальный квантовый чип ──────────────────────────────
+            # ââ Phase 6: ÑÐµÐ°Ð»ÑÐ½ÑÐ¹ ÐºÐ²Ð°Ð½ÑÐ¾Ð²ÑÐ¹ ÑÐ¸Ð¿ ââââââââââââââââââââââââââââââ
             bias_list = await asyncio.get_event_loop().run_in_executor(
-                None, _qaoa_wukong_run, changes_list, 1  # p=1 на железе
+                None, _qaoa_wukong_run, changes_list, 1  # p=1 Ð½Ð° Ð¶ÐµÐ»ÐµÐ·Ðµ
             )
             chip_used = "Wukong_180"
         else:
-            # ── Phase 3: CPU симулятор ────────────────────────────────────────
+            # ââ Phase 3: CPU ÑÐ¸Ð¼ÑÐ»ÑÑÐ¾Ñ ââââââââââââââââââââââââââââââââââââââââ
             bias_list = await asyncio.get_event_loop().run_in_executor(
-                None, _qaoa_cpu_simulate, changes_list, 2  # p=2 на CPU
+                None, _qaoa_cpu_simulate, changes_list, 2  # p=2 Ð½Ð° CPU
             )
         raw_bias = {PAIR_NAMES[i]: bias_list[i] for i in range(N_PAIRS)}
-        # v7.2.0: применяем rolling average для снижения шума
-        clamp_val = 15.0 if chip_used == "Wukong_180" else 5.0  # CPU шумнее
+        # v7.2.0: Ð¿ÑÐ¸Ð¼ÐµÐ½ÑÐµÐ¼ rolling average Ð´Ð»Ñ ÑÐ½Ð¸Ð¶ÐµÐ½Ð¸Ñ ÑÑÐ¼Ð°
+        clamp_val = 15.0 if chip_used == "Wukong_180" else 5.0  # CPU ÑÑÐ¼Ð½ÐµÐµ
         _quantum_bias = {sym: _smooth_qaoa_bias(sym, b, clamp_val) for sym, b in raw_bias.items()}
         _quantum_ts = time.time()
         log_str = " ".join(f"{p.split('-')[0]}={b:+.1f}" for p, b in _quantum_bias.items())
@@ -349,7 +349,7 @@ def log_trade(symbol, side, price, size, tp, sl, confidence, q_score, pattern, a
     _save_trades_to_disk()
 
 
-# ── KuCoin Auth ────────────────────────────────────────────────────────────────
+# ââ KuCoin Auth ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 def kucoin_headers(method: str, endpoint: str, body: str = "") -> dict:
     timestamp = str(int(time.time() * 1000))
     str_to_sign = timestamp + method.upper() + endpoint + body
@@ -366,7 +366,7 @@ def kucoin_headers(method: str, endpoint: str, body: str = "") -> dict:
     }
 
 
-# ── KuCoin API ─────────────────────────────────────────────────────────────────
+# ââ KuCoin API âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 async def get_balance() -> dict:
     endpoint = "/api/v1/accounts"
     try:
@@ -400,8 +400,8 @@ async def get_futures_balance() -> dict:
         return {"available_balance": 0, "success": False, "error": str(e)}
 
 async def get_recent_futures_fills(symbol: str, since_ts: float) -> Optional[float]:
-    """v7.2.3: Возвращает реальную среднюю цену закрытия позиции из fills KuCoin Futures.
-    Используется в position_monitor вместо price_now для точного PnL."""
+    """v7.2.3: ÐÐ¾Ð·Ð²ÑÐ°ÑÐ°ÐµÑ ÑÐµÐ°Ð»ÑÐ½ÑÑ ÑÑÐµÐ´Ð½ÑÑ ÑÐµÐ½Ñ Ð·Ð°ÐºÑÑÑÐ¸Ñ Ð¿Ð¾Ð·Ð¸ÑÐ¸Ð¸ Ð¸Ð· fills KuCoin Futures.
+    ÐÑÐ¿Ð¾Ð»ÑÐ·ÑÐµÑÑÑ Ð² position_monitor Ð²Ð¼ÐµÑÑÐ¾ price_now Ð´Ð»Ñ ÑÐ¾ÑÐ½Ð¾Ð³Ð¾ PnL."""
     endpoint = f"/api/v1/fills?symbol={symbol}&type=trade&pageSize=20"
     try:
         async with aiohttp.ClientSession() as s:
@@ -413,7 +413,7 @@ async def get_recent_futures_fills(symbol: str, since_ts: float) -> Optional[flo
             data = await r.json()
             if data.get("code") == "200000":
                 items = data["data"].get("items", [])
-                # Берём fills ПОСЛЕ открытия позиции (createdAt в миллисекундах)
+                # ÐÐµÑÑÐ¼ fills ÐÐÐ¡ÐÐ Ð¾ÑÐºÑÑÑÐ¸Ñ Ð¿Ð¾Ð·Ð¸ÑÐ¸Ð¸ (createdAt Ð² Ð¼Ð¸Ð»Ð»Ð¸ÑÐµÐºÑÐ½Ð´Ð°Ñ)
                 close_fills = [
                     f for f in items
                     if float(f.get("createdAt", 0)) / 1000 > since_ts
@@ -425,10 +425,10 @@ async def get_recent_futures_fills(symbol: str, since_ts: float) -> Optional[flo
                             float(f["price"]) * float(f.get("size", 1))
                             for f in close_fills
                         ) / total_qty
-                        print(f"[fills] {symbol}: реальная цена закрытия ${avg_price:,.4f} ({len(close_fills)} fills)", flush=True)
+                        print(f"[fills] {symbol}: ÑÐµÐ°Ð»ÑÐ½Ð°Ñ ÑÐµÐ½Ð° Ð·Ð°ÐºÑÑÑÐ¸Ñ ${avg_price:,.4f} ({len(close_fills)} fills)", flush=True)
                         return avg_price
     except Exception as e:
-        print(f"[fills] {symbol}: ошибка получения fills — {e}", flush=True)
+        print(f"[fills] {symbol}: Ð¾ÑÐ¸Ð±ÐºÐ° Ð¿Ð¾Ð»ÑÑÐµÐ½Ð¸Ñ fills â {e}", flush=True)
     return None
 
 async def get_futures_positions() -> dict:
@@ -504,7 +504,7 @@ async def place_futures_order(symbol: str, side: str, size: int, leverage: int =
         return {"code": "error", "msg": str(e)}
 
 
-# ── Technical Analysis ─────────────────────────────────────────────────────────
+# ââ Technical Analysis âââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 def _ema(data: list, period: int) -> float:
     if not data: return 0.0
     if len(data) < period: return data[-1]
@@ -525,9 +525,9 @@ def _rsi(data: list, period: int = 14) -> float:
     return round(100.0 - 100.0 / (1.0 + avg_gain / avg_loss), 1)
 
 
-# ── Yandex Vision — свечной график + OCR паттернов ────────────────────────────
+# ââ Yandex Vision â ÑÐ²ÐµÑÐ½Ð¾Ð¹ Ð³ÑÐ°ÑÐ¸Ðº + OCR Ð¿Ð°ÑÑÐµÑÐ½Ð¾Ð² ââââââââââââââââââââââââââââ
 def _render_candles_png_b64(candles: list, width: int = 400, height: int = 280) -> str:
-    """Рисует свечной график через PIL и возвращает base64 PNG."""
+    """Ð Ð¸ÑÑÐµÑ ÑÐ²ÐµÑÐ½Ð¾Ð¹ Ð³ÑÐ°ÑÐ¸Ðº ÑÐµÑÐµÐ· PIL Ð¸ Ð²Ð¾Ð·Ð²ÑÐ°ÑÐ°ÐµÑ base64 PNG."""
     try:
         from PIL import Image, ImageDraw
         import io, base64 as _b64
@@ -554,12 +554,12 @@ def _render_candles_png_b64(candles: list, width: int = 400, height: int = 280) 
         def p2y(p):
             return int(pad + ch - (p - p_min) / p_rng * ch)
 
-        # Сетка
+        # Ð¡ÐµÑÐºÐ°
         for pct in [0.25, 0.5, 0.75]:
             y = p2y(p_min + p_rng * pct)
             draw.line([(pad, y), (width - pad, y)], fill=(40, 40, 60), width=1)
 
-        # Свечи
+        # Ð¡Ð²ÐµÑÐ¸
         for i, (o, c, h, l) in enumerate(zip(opens, closes, highs, lows)):
             xc   = pad + i * (cw // len(chron)) + cand_w // 2
             bull = c >= o
@@ -569,7 +569,7 @@ def _render_candles_png_b64(candles: list, width: int = 400, height: int = 280) 
             yb = max(yb, yt + 2)
             draw.rectangle([(xc - cand_w//2, yt), (xc + cand_w//2, yb)], fill=col)
 
-        # Ценовые метки для OCR
+        # Ð¦ÐµÐ½Ð¾Ð²ÑÐµ Ð¼ÐµÑÐºÐ¸ Ð´Ð»Ñ OCR
         for price, label in [
             (p_min,      f"LOW:{p_min:.0f}"),
             (p_max,      f"HIGH:{p_max:.0f}"),
@@ -579,7 +579,7 @@ def _render_candles_png_b64(candles: list, width: int = 400, height: int = 280) 
             y = p2y(price)
             draw.text((2, max(0, y - 7)), label, fill=(200, 200, 200))
 
-        # Тренд-линия
+        # Ð¢ÑÐµÐ½Ð´-Ð»Ð¸Ð½Ð¸Ñ
         n = len(closes)
         x1 = pad + cand_w // 2
         x2 = pad + (n - 1) * (cw // n) + cand_w // 2
@@ -597,7 +597,7 @@ def _render_candles_png_b64(candles: list, width: int = 400, height: int = 280) 
 
 
 async def call_yandex_vision(img_b64: str) -> dict:
-    """Отправляет PNG в Yandex Vision OCR и возвращает распознанный текст."""
+    """ÐÑÐ¿ÑÐ°Ð²Ð»ÑÐµÑ PNG Ð² Yandex Vision OCR Ð¸ Ð²Ð¾Ð·Ð²ÑÐ°ÑÐ°ÐµÑ ÑÐ°ÑÐ¿Ð¾Ð·Ð½Ð°Ð½Ð½ÑÐ¹ ÑÐµÐºÑÑ."""
     if not YANDEX_VISION_KEY or not YANDEX_FOLDER_ID or not img_b64:
         return {"text": "", "success": False}
     try:
@@ -624,7 +624,7 @@ async def call_yandex_vision(img_b64: str) -> dict:
             )
             data = await r.json()
 
-        # Собираем весь текст из результата
+        # Ð¡Ð¾Ð±Ð¸ÑÐ°ÐµÐ¼ Ð²ÐµÑÑ ÑÐµÐºÑÑ Ð¸Ð· ÑÐµÐ·ÑÐ»ÑÑÐ°ÑÐ°
         words = []
         for res in data.get("results", []):
             for inner in res.get("results", []):
@@ -641,9 +641,9 @@ async def call_yandex_vision(img_b64: str) -> dict:
 
 def parse_vision_bonus(ocr_text: str, vision_dict: dict) -> float:
     """
-    Анализирует OCR-текст с графика → ±8 к Q-Score.
-    Vision рисует: HIGH:2065 LOW:2048 CLOSE:2051 OPEN:2060
-    Но иногда OPEN не попадает в кадр — используем price_change из vision_dict.
+    ÐÐ½Ð°Ð»Ð¸Ð·Ð¸ÑÑÐµÑ OCR-ÑÐµÐºÑÑ Ñ Ð³ÑÐ°ÑÐ¸ÐºÐ° â Â±8 Ðº Q-Score.
+    Vision ÑÐ¸ÑÑÐµÑ: HIGH:2065 LOW:2048 CLOSE:2051 OPEN:2060
+    ÐÐ¾ Ð¸Ð½Ð¾Ð³Ð´Ð° OPEN Ð½Ðµ Ð¿Ð¾Ð¿Ð°Ð´Ð°ÐµÑ Ð² ÐºÐ°Ð´Ñ â Ð¸ÑÐ¿Ð¾Ð»ÑÐ·ÑÐµÐ¼ price_change Ð¸Ð· vision_dict.
     """
     if not ocr_text:
         return 0.0
@@ -652,45 +652,45 @@ def parse_vision_bonus(ocr_text: str, vision_dict: dict) -> float:
     try:
         import re as _re
         nums = {}
-        # Ищем все числа после меток (включая десятичные)
+        # ÐÑÐµÐ¼ Ð²ÑÐµ ÑÐ¸ÑÐ»Ð° Ð¿Ð¾ÑÐ»Ðµ Ð¼ÐµÑÐ¾Ðº (Ð²ÐºÐ»ÑÑÐ°Ñ Ð´ÐµÑÑÑÐ¸ÑÐ½ÑÐµ)
         for label in ["HIGH", "LOW", "CLOSE", "OPEN"]:
             m = _re.search(rf"{label}[:\s]+(\d+\.?\d*)", text)
             if m:
                 nums[label] = float(m.group(1))
 
         ema_bull     = vision_dict.get("ema_bullish", None)
-        price_change = vision_dict.get("price_change", 0.0)  # уже посчитан
+        price_change = vision_dict.get("price_change", 0.0)  # ÑÐ¶Ðµ Ð¿Ð¾ÑÑÐ¸ÑÐ°Ð½
 
-        # Используем price_change из технического анализа (надёжнее чем OCR OPEN)
+        # ÐÑÐ¿Ð¾Ð»ÑÐ·ÑÐµÐ¼ price_change Ð¸Ð· ÑÐµÑÐ½Ð¸ÑÐµÑÐºÐ¾Ð³Ð¾ Ð°Ð½Ð°Ð»Ð¸Ð·Ð° (Ð½Ð°Ð´ÑÐ¶Ð½ÐµÐµ ÑÐµÐ¼ OCR OPEN)
         pct_move = price_change
 
-        # Если OCR всё же дал CLOSE и OPEN — используем их (точнее)
+        # ÐÑÐ»Ð¸ OCR Ð²ÑÑ Ð¶Ðµ Ð´Ð°Ð» CLOSE Ð¸ OPEN â Ð¸ÑÐ¿Ð¾Ð»ÑÐ·ÑÐµÐ¼ Ð¸Ñ (ÑÐ¾ÑÐ½ÐµÐµ)
         if "CLOSE" in nums and "OPEN" in nums and nums["OPEN"] > 0:
             pct_move = (nums["CLOSE"] - nums["OPEN"]) / nums["OPEN"] * 100
 
-        # Vision подтверждает тренд → усиливаем сигнал
+        # Vision Ð¿Ð¾Ð´ÑÐ²ÐµÑÐ¶Ð´Ð°ÐµÑ ÑÑÐµÐ½Ð´ â ÑÑÐ¸Ð»Ð¸Ð²Ð°ÐµÐ¼ ÑÐ¸Ð³Ð½Ð°Ð»
         if pct_move < -1.5 and ema_bull is False:
-            bonus = -8.0   # сильный нисходящий + EMA медвежья
+            bonus = -8.0   # ÑÐ¸Ð»ÑÐ½ÑÐ¹ Ð½Ð¸ÑÑÐ¾Ð´ÑÑÐ¸Ð¹ + EMA Ð¼ÐµÐ´Ð²ÐµÐ¶ÑÑ
         elif pct_move < -0.5 and ema_bull is False:
-            bonus = -5.0   # умеренный нисходящий
+            bonus = -5.0   # ÑÐ¼ÐµÑÐµÐ½Ð½ÑÐ¹ Ð½Ð¸ÑÑÐ¾Ð´ÑÑÐ¸Ð¹
         elif pct_move < -0.3:
-            bonus = -3.0   # слабый нисходящий
+            bonus = -3.0   # ÑÐ»Ð°Ð±ÑÐ¹ Ð½Ð¸ÑÑÐ¾Ð´ÑÑÐ¸Ð¹
         elif pct_move > 1.5 and ema_bull is True:
-            bonus = +8.0   # сильный восходящий + EMA бычья
+            bonus = +8.0   # ÑÐ¸Ð»ÑÐ½ÑÐ¹ Ð²Ð¾ÑÑÐ¾Ð´ÑÑÐ¸Ð¹ + EMA Ð±ÑÑÑÑ
         elif pct_move > 0.5 and ema_bull is True:
-            bonus = +5.0   # умеренный восходящий
+            bonus = +5.0   # ÑÐ¼ÐµÑÐµÐ½Ð½ÑÐ¹ Ð²Ð¾ÑÑÐ¾Ð´ÑÑÐ¸Ð¹
         elif pct_move > 0.3:
-            bonus = +3.0   # слабый восходящий
+            bonus = +3.0   # ÑÐ»Ð°Ð±ÑÐ¹ Ð²Ð¾ÑÑÐ¾Ð´ÑÑÐ¸Ð¹
 
-        # Позиция цены в диапазоне HIGH/LOW → дополнительный сигнал
+        # ÐÐ¾Ð·Ð¸ÑÐ¸Ñ ÑÐµÐ½Ñ Ð² Ð´Ð¸Ð°Ð¿Ð°Ð·Ð¾Ð½Ðµ HIGH/LOW â Ð´Ð¾Ð¿Ð¾Ð»Ð½Ð¸ÑÐµÐ»ÑÐ½ÑÐ¹ ÑÐ¸Ð³Ð½Ð°Ð»
         if "HIGH" in nums and "LOW" in nums and "CLOSE" in nums:
             rng = nums["HIGH"] - nums["LOW"]
             if rng > 0:
                 price_pos = (nums["CLOSE"] - nums["LOW"]) / rng * 100
                 if price_pos < 20 and pct_move < 0:
-                    bonus -= 2.0  # цена у дна + падение → усиливаем SELL
+                    bonus -= 2.0  # ÑÐµÐ½Ð° Ñ Ð´Ð½Ð° + Ð¿Ð°Ð´ÐµÐ½Ð¸Ðµ â ÑÑÐ¸Ð»Ð¸Ð²Ð°ÐµÐ¼ SELL
                 elif price_pos > 80 and pct_move > 0:
-                    bonus += 2.0  # цена у вершины + рост → усиливаем BUY
+                    bonus += 2.0  # ÑÐµÐ½Ð° Ñ Ð²ÐµÑÑÐ¸Ð½Ñ + ÑÐ¾ÑÑ â ÑÑÐ¸Ð»Ð¸Ð²Ð°ÐµÐ¼ BUY
 
     except Exception:
         pass
@@ -749,7 +749,7 @@ async def analyze_chart_with_vision(symbol: str, candles: list) -> dict:
                   "rsi": rsi_val, "ema_fast": round(ema_fast, 4), "ema_slow": round(ema_slow, 4),
                   "ema_bullish": ema_bull, "vol_ratio": round(vol_ratio, 2), "price_pos_pct": round(price_pos, 1),
                   "vision_bonus": 0.0, "vision_ocr": ""}
-        # ── Phase 5: Claude Vision (нативный AI-анализ графика) ─────────────────
+        # ââ Phase 5: Claude Vision (Ð½Ð°ÑÐ¸Ð²Ð½ÑÐ¹ AI-Ð°Ð½Ð°Ð»Ð¸Ð· Ð³ÑÐ°ÑÐ¸ÐºÐ°) âââââââââââââââââ
         if ANTHROPIC_API_KEY:
             img_b64 = _render_candles_png_b64(candles)
             if img_b64:
@@ -766,35 +766,35 @@ async def analyze_chart_with_vision(symbol: str, candles: list) -> dict:
                 "error": str(e), "vision_bonus": 0.0, "vision_ocr": ""}
 
 
-# ── Phase 5: Claude Vision — нативный AI-анализ свечного графика ──────────────
+# ââ Phase 5: Claude Vision â Ð½Ð°ÑÐ¸Ð²Ð½ÑÐ¹ AI-Ð°Ð½Ð°Ð»Ð¸Ð· ÑÐ²ÐµÑÐ½Ð¾Ð³Ð¾ Ð³ÑÐ°ÑÐ¸ÐºÐ° ââââââââââââââ
 async def _analyze_chart_claude_vision(img_b64: str, symbol: str, tech: dict) -> dict:
     """
-    Отправляет PNG графика в Claude Haiku с просьбой проанализировать паттерн.
-    Возвращает bonus ∈ [-10, +10] и текстовое резюме.
-    Haiku выбран за скорость и низкую стоимость (~$0.0003/вызов).
+    ÐÑÐ¿ÑÐ°Ð²Ð»ÑÐµÑ PNG Ð³ÑÐ°ÑÐ¸ÐºÐ° Ð² Claude Haiku Ñ Ð¿ÑÐ¾ÑÑÐ±Ð¾Ð¹ Ð¿ÑÐ¾Ð°Ð½Ð°Ð»Ð¸Ð·Ð¸ÑÐ¾Ð²Ð°ÑÑ Ð¿Ð°ÑÑÐµÑÐ½.
+    ÐÐ¾Ð·Ð²ÑÐ°ÑÐ°ÐµÑ bonus â [-10, +10] Ð¸ ÑÐµÐºÑÑÐ¾Ð²Ð¾Ðµ ÑÐµÐ·ÑÐ¼Ðµ.
+    Haiku Ð²ÑÐ±ÑÐ°Ð½ Ð·Ð° ÑÐºÐ¾ÑÐ¾ÑÑÑ Ð¸ Ð½Ð¸Ð·ÐºÑÑ ÑÑÐ¾Ð¸Ð¼Ð¾ÑÑÑ (~$0.0003/Ð²ÑÐ·Ð¾Ð²).
     """
     if not ANTHROPIC_API_KEY or not img_b64:
         return {"success": False, "bonus": 0.0, "summary": ""}
     try:
         tech_ctx = (
-            f"Технический контекст: RSI={tech.get('rsi', 50):.0f}, "
-            f"EMA_fast={'выше' if tech.get('ema_bullish') else 'ниже'} EMA_slow, "
+            f"Ð¢ÐµÑÐ½Ð¸ÑÐµÑÐºÐ¸Ð¹ ÐºÐ¾Ð½ÑÐµÐºÑÑ: RSI={tech.get('rsi', 50):.0f}, "
+            f"EMA_fast={'Ð²ÑÑÐµ' if tech.get('ema_bullish') else 'Ð½Ð¸Ð¶Ðµ'} EMA_slow, "
             f"price_change={tech.get('price_change', 0):+.2f}%, "
             f"volatility={tech.get('volatility', 0):.2f}%, "
-            f"price_pos={tech.get('price_pos_pct', 50):.0f}% от диапазона"
+            f"price_pos={tech.get('price_pos_pct', 50):.0f}% Ð¾Ñ Ð´Ð¸Ð°Ð¿Ð°Ð·Ð¾Ð½Ð°"
         )
         prompt = (
-            f"Ты — торговый аналитик. Смотришь на свечной график {symbol} (последние 24 свечи).\n"
+            f"Ð¢Ñ â ÑÐ¾ÑÐ³Ð¾Ð²ÑÐ¹ Ð°Ð½Ð°Ð»Ð¸ÑÐ¸Ðº. Ð¡Ð¼Ð¾ÑÑÐ¸ÑÑ Ð½Ð° ÑÐ²ÐµÑÐ½Ð¾Ð¹ Ð³ÑÐ°ÑÐ¸Ðº {symbol} (Ð¿Ð¾ÑÐ»ÐµÐ´Ð½Ð¸Ðµ 24 ÑÐ²ÐµÑÐ¸).\n"
             f"{tech_ctx}\n\n"
-            f"Проанализируй ВИЗУАЛЬНО:\n"
-            f"1. Какой паттерн видишь? (флаг, клин, голова-плечи, треугольник, пробой и т.д.)\n"
-            f"2. Направление: BULLISH / BEARISH / NEUTRAL\n"
-            f"3. Уверенность: 0–100%\n"
-            f"4. Ключевые уровни поддержки/сопротивления\n\n"
-            f"Ответь СТРОГО в формате JSON:\n"
-            f'{{ "pattern": "название", "direction": "BULLISH|BEARISH|NEUTRAL", '
-            f'"confidence": 0-100, "support": число, "resistance": число, '
-            f'"summary": "1 предложение по-русски" }}'
+            f"ÐÑÐ¾Ð°Ð½Ð°Ð»Ð¸Ð·Ð¸ÑÑÐ¹ ÐÐÐÐ£ÐÐÐ¬ÐÐ:\n"
+            f"1. ÐÐ°ÐºÐ¾Ð¹ Ð¿Ð°ÑÑÐµÑÐ½ Ð²Ð¸Ð´Ð¸ÑÑ? (ÑÐ»Ð°Ð³, ÐºÐ»Ð¸Ð½, Ð³Ð¾Ð»Ð¾Ð²Ð°-Ð¿Ð»ÐµÑÐ¸, ÑÑÐµÑÐ³Ð¾Ð»ÑÐ½Ð¸Ðº, Ð¿ÑÐ¾Ð±Ð¾Ð¹ Ð¸ Ñ.Ð´.)\n"
+            f"2. ÐÐ°Ð¿ÑÐ°Ð²Ð»ÐµÐ½Ð¸Ðµ: BULLISH / BEARISH / NEUTRAL\n"
+            f"3. Ð£Ð²ÐµÑÐµÐ½Ð½Ð¾ÑÑÑ: 0â100%\n"
+            f"4. ÐÐ»ÑÑÐµÐ²ÑÐµ ÑÑÐ¾Ð²Ð½Ð¸ Ð¿Ð¾Ð´Ð´ÐµÑÐ¶ÐºÐ¸/ÑÐ¾Ð¿ÑÐ¾ÑÐ¸Ð²Ð»ÐµÐ½Ð¸Ñ\n\n"
+            f"ÐÑÐ²ÐµÑÑ Ð¡Ð¢Ð ÐÐÐ Ð² ÑÐ¾ÑÐ¼Ð°ÑÐµ JSON:\n"
+            f'{{ "pattern": "Ð½Ð°Ð·Ð²Ð°Ð½Ð¸Ðµ", "direction": "BULLISH|BEARISH|NEUTRAL", '
+            f'"confidence": 0-100, "support": ÑÐ¸ÑÐ»Ð¾, "resistance": ÑÐ¸ÑÐ»Ð¾, '
+            f'"summary": "1 Ð¿ÑÐµÐ´Ð»Ð¾Ð¶ÐµÐ½Ð¸Ðµ Ð¿Ð¾-ÑÑÑÑÐºÐ¸" }}'
         )
         payload = {
             "model": "claude-haiku-4-5-20251001",
@@ -822,16 +822,16 @@ async def _analyze_chart_claude_vision(img_b64: str, symbol: str, tech: dict) ->
             )
             data = await r.json()
 
-        # v7.2.0: логируем HTTP статус для диагностики
+        # v7.2.0: Ð»Ð¾Ð³Ð¸ÑÑÐµÐ¼ HTTP ÑÑÐ°ÑÑÑ Ð´Ð»Ñ Ð´Ð¸Ð°Ð³Ð½Ð¾ÑÑÐ¸ÐºÐ¸
         if r.status != 200:
             err_body = await r.text()
-            print(f"[claude_vision] {symbol}: HTTP {r.status} — {err_body[:120]}")
+            print(f"[claude_vision] {symbol}: HTTP {r.status} â {err_body[:120]}")
             if r.status == 401:
-                print(f"[claude_vision] ❌ AUTHENTICATION ERROR — проверь ANTHROPIC_API_KEY в Railway Variables")
+                print(f"[claude_vision] â AUTHENTICATION ERROR â Ð¿ÑÐ¾Ð²ÐµÑÑ ANTHROPIC_API_KEY Ð² Railway Variables")
             return {"success": False, "bonus": 0.0, "summary": ""}
 
         raw = data.get("content", [{}])[0].get("text", "{}")
-        # Извлекаем JSON из ответа
+        # ÐÐ·Ð²Ð»ÐµÐºÐ°ÐµÐ¼ JSON Ð¸Ð· Ð¾ÑÐ²ÐµÑÐ°
         import re as _re
         m = _re.search(r'\{.*\}', raw, _re.DOTALL)
         parsed = json.loads(m.group()) if m else {}
@@ -841,22 +841,22 @@ async def _analyze_chart_claude_vision(img_b64: str, symbol: str, tech: dict) ->
         confidence  = confidence_pct / 100.0
         summary     = parsed.get("summary", parsed.get("pattern", ""))
 
-        # v7.2.0: уверенность < 60% → принудительно NEUTRAL (слабый сигнал)
+        # v7.2.0: ÑÐ²ÐµÑÐµÐ½Ð½Ð¾ÑÑÑ < 60% â Ð¿ÑÐ¸Ð½ÑÐ´Ð¸ÑÐµÐ»ÑÐ½Ð¾ NEUTRAL (ÑÐ»Ð°Ð±ÑÐ¹ ÑÐ¸Ð³Ð½Ð°Ð»)
         if confidence_pct < 60:
-            print(f"[claude_vision] {symbol}: ➖ NEUTRAL (confidence {confidence_pct}% < 60%) → bonus=+0.0")
+            print(f"[claude_vision] {symbol}: â NEUTRAL (confidence {confidence_pct}% < 60%) â bonus=+0.0")
             return {"success": True, "bonus": 0.0, "summary": summary,
                     "pattern": parsed.get("pattern", ""), "direction": "NEUTRAL"}
 
-        # Рассчитываем bonus: BULLISH → +, BEARISH → -, масштаб по уверенности
+        # Ð Ð°ÑÑÑÐ¸ÑÑÐ²Ð°ÐµÐ¼ bonus: BULLISH â +, BEARISH â -, Ð¼Ð°ÑÑÑÐ°Ð± Ð¿Ð¾ ÑÐ²ÐµÑÐµÐ½Ð½Ð¾ÑÑÐ¸
         if direction == "BULLISH":
-            bonus = round((confidence_pct - 50) / 50 * 10, 1)   # 60%→+2, 80%→+6, 100%→+10
+            bonus = round((confidence_pct - 50) / 50 * 10, 1)   # 60%â+2, 80%â+6, 100%â+10
         elif direction == "BEARISH":
-            bonus = round(-(confidence_pct - 50) / 50 * 10, 1)  # 60%→-2, 80%→-6, 100%→-10
+            bonus = round(-(confidence_pct - 50) / 50 * 10, 1)  # 60%â-2, 80%â-6, 100%â-10
         else:
             bonus = 0.0
 
-        icon = "📈" if direction == "BULLISH" else "📉" if direction == "BEARISH" else "➖"
-        print(f"[claude_vision] {symbol}: {icon} {direction} {confidence_pct}% → bonus={bonus:+.1f} | {summary}")
+        icon = "ð" if direction == "BULLISH" else "ð" if direction == "BEARISH" else "â"
+        print(f"[claude_vision] {symbol}: {icon} {direction} {confidence_pct}% â bonus={bonus:+.1f} | {summary}")
         return {"success": True, "bonus": bonus, "summary": summary,
                 "pattern": parsed.get("pattern", ""), "direction": direction}
 
@@ -865,7 +865,7 @@ async def _analyze_chart_claude_vision(img_b64: str, symbol: str, tech: dict) ->
         return {"success": False, "bonus": 0.0, "summary": ""}
 
 
-# ── Telegram ───────────────────────────────────────────────────────────────────
+# ââ Telegram âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 async def notify(text: str):
     if not BOT_TOKEN or not ALERT_CHAT_ID: return
     try:
@@ -881,23 +881,23 @@ async def notify(text: str):
         print(f"[notify] network error: {e}")
 
 
-# ── Signal Generator v5.0 ──────────────────────────────────────────────────────
+# ââ Signal Generator v5.0 ââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 def calc_signal(price_change: float, vision: dict = None,
                 fear_greed: dict = None, polymarket_bonus: float = 0.0,
                 whale_bonus: float = 0.0, quantum_bias: float = 0.0) -> dict:
-    """Q-Score v5.6: технический анализ + мировые события + киты + QAOA quantum bias."""
+    """Q-Score v5.6: ÑÐµÑÐ½Ð¸ÑÐµÑÐºÐ¸Ð¹ Ð°Ð½Ð°Ð»Ð¸Ð· + Ð¼Ð¸ÑÐ¾Ð²ÑÐµ ÑÐ¾Ð±ÑÑÐ¸Ñ + ÐºÐ¸ÑÑ + QAOA quantum bias."""
     score = 50.0
 
-    # ── Технический анализ (max ±35) ─────────────────────────────────────
-    score += price_change * 2.0  # было × 5 — слишком доминировало
+    # ââ Ð¢ÐµÑÐ½Ð¸ÑÐµÑÐºÐ¸Ð¹ Ð°Ð½Ð°Ð»Ð¸Ð· (max Â±35) âââââââââââââââââââââââââââââââââââââ
+    score += price_change * 2.0  # Ð±ÑÐ»Ð¾ Ã 5 â ÑÐ»Ð¸ÑÐºÐ¾Ð¼ Ð´Ð¾Ð¼Ð¸Ð½Ð¸ÑÐ¾Ð²Ð°Ð»Ð¾
     if vision and vision.get("pattern") not in ("error", "insufficient_data"):
         rsi     = vision.get("rsi", 50.0)
         pattern = vision.get("pattern", "consolidation")
         is_reversal = pattern in ("oversold_bounce", "oversold_reversal", "overbought_drop", "overbought_reversal")
         score += (rsi - 50.0) * 0.2
         if not is_reversal:
-            if vision.get("ema_bullish") is True:  score += 5.0   # v5.7: 8→5 (убираем перекос к BUY)
-            elif vision.get("ema_bullish") is False: score -= 5.0  # v5.7: -8→-5
+            if vision.get("ema_bullish") is True:  score += 5.0   # v5.7: 8â5 (ÑÐ±Ð¸ÑÐ°ÐµÐ¼ Ð¿ÐµÑÐµÐºÐ¾Ñ Ðº BUY)
+            elif vision.get("ema_bullish") is False: score -= 5.0  # v5.7: -8â-5
         vol_ratio = vision.get("vol_ratio", 1.0)
         if vol_ratio > 1.2: score += 5.0 if price_change >= 0 else -5.0
         pattern_bonus_map = {
@@ -906,17 +906,17 @@ def calc_signal(price_change: float, vision: dict = None,
             "downtrend": -4, "downtrend_breakdown": -7, "overbought_reversal": -10, "overbought_drop": -10
         }
         score += pattern_bonus_map.get(pattern, 0)
-        # ── Yandex Vision OCR бонус (max ±8) ─────────────────────────────
+        # ââ Yandex Vision OCR Ð±Ð¾Ð½ÑÑ (max Â±8) âââââââââââââââââââââââââââââ
         score += vision.get("vision_bonus", 0.0)
 
-    # ── Внешние сигналы (max ±23) ─────────────────────────────────────────
+    # ââ ÐÐ½ÐµÑÐ½Ð¸Ðµ ÑÐ¸Ð³Ð½Ð°Ð»Ñ (max Â±23) âââââââââââââââââââââââââââââââââââââââââ
     fg_bonus = fear_greed.get("bonus", 0) if fear_greed else 0
-    score += fg_bonus          # Fear&Greed контрарный: ±8
-    score += polymarket_bonus  # Polymarket events v7.0: ±8 (multi-query smart scoring)
-    score += whale_bonus       # Whale flow: ±5 (упрощённо)
+    score += fg_bonus          # Fear&Greed ÐºÐ¾Ð½ÑÑÐ°ÑÐ½ÑÐ¹: Â±8
+    score += polymarket_bonus  # Polymarket events v7.0: Â±8 (multi-query smart scoring)
+    score += whale_bonus       # Whale flow: Â±5 (ÑÐ¿ÑÐ¾ÑÑÐ½Ð½Ð¾)
 
-    # ── QAOA Quantum Bias (max ±15) ───────────────────────────────────────
-    q_b = max(-15.0, min(15.0, quantum_bias))  # clamp безопасности
+    # ââ QAOA Quantum Bias (max Â±15) âââââââââââââââââââââââââââââââââââââââ
+    q_b = max(-15.0, min(15.0, quantum_bias))  # clamp Ð±ÐµÐ·Ð¾Ð¿Ð°ÑÐ½Ð¾ÑÑÐ¸
     score += q_b
 
     score = max(0.0, min(100.0, score))
@@ -945,7 +945,7 @@ def calc_signal(price_change: float, vision: dict = None,
     }
 
 
-# ── Trading ────────────────────────────────────────────────────────────────────
+# ââ Trading ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 async def execute_spot_trade(symbol, signal, vision, price, trade_usdt):
     side = "buy" if signal["action"] == "BUY" else "sell"
     size = round(trade_usdt / price, 6)
@@ -961,7 +961,7 @@ async def execute_spot_trade(symbol, signal, vision, price, trade_usdt):
 
 async def place_futures_stop_order(symbol: str, side: str, size: int,
                                    stop_price: float, stop_dir: str) -> dict:
-    """Выставляет stop-market ордер на KuCoin Futures (для TP/SL)."""
+    """ÐÑÑÑÐ°Ð²Ð»ÑÐµÑ stop-market Ð¾ÑÐ´ÐµÑ Ð½Ð° KuCoin Futures (Ð´Ð»Ñ TP/SL)."""
     endpoint = "/api/v1/st-orders"
     body = json.dumps({
         "clientOid": f"qts_{int(time.time()*1000)}",
@@ -990,7 +990,7 @@ async def execute_futures_trade(symbol, signal, vision, price, available_usdt):
     n_contracts = max(1, int(trade_usdt * MAX_LEVERAGE / contract_value))
     margin_needed = contract_value / MAX_LEVERAGE
     if margin_needed > available_usdt:
-        log_activity(f"[futures] {symbol}: SKIP — need ${margin_needed:.2f}, have ${available_usdt:.2f}")
+        log_activity(f"[futures] {symbol}: SKIP â need ${margin_needed:.2f}, have ${available_usdt:.2f}")
         return False
     print(f"[futures] {symbol} -> {fut_symbol}: {side.upper()} {n_contracts} @ ${price:.2f}")
     result = await place_futures_order(fut_symbol, side, n_contracts, MAX_LEVERAGE)
@@ -998,7 +998,7 @@ async def execute_futures_trade(symbol, signal, vision, price, available_usdt):
         err = result.get("msg", result.get("code", "?"))
         log_activity(f"[futures] {fut_symbol} FAILED: {err}")
         return False
-    # ── Реальные TP/SL стоп-ордера на KuCoin ─────────────────────────────
+    # ââ Ð ÐµÐ°Ð»ÑÐ½ÑÐµ TP/SL ÑÑÐ¾Ð¿-Ð¾ÑÐ´ÐµÑÐ° Ð½Ð° KuCoin âââââââââââââââââââââââââââââ
     tp = round(price * (1 + TP_PCT if side == "buy" else 1 - TP_PCT), 4)
     sl = round(price * (1 - SL_PCT if side == "buy" else 1 + SL_PCT), 4)
     close_side = "sell" if side == "buy" else "buy"
@@ -1013,7 +1013,7 @@ async def execute_futures_trade(symbol, signal, vision, price, available_usdt):
     return True
 
 
-# ── Кеш ────────────────────────────────────────────────────────────────────────
+# ââ ÐÐµÑ ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 _cache: dict = {}
 def _cache_get(key: str, ttl: int):
     entry = _cache.get(key)
@@ -1024,7 +1024,7 @@ def _cache_set(key: str, val):
     _cache[key] = {"val": val, "ts": time.time()}
 
 
-# ── Fear & Greed Index ─────────────────────────────────────────────────────────
+# ââ Fear & Greed Index âââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 async def get_fear_greed() -> dict:
     cached = _cache_get("fear_greed", 3600)
     if cached: return cached
@@ -1035,15 +1035,15 @@ async def get_fear_greed() -> dict:
             data = await r.json()
             val = int(data["data"][0]["value"])
             cls = data["data"][0]["value_classification"]
-        # Контрарная логика: Extreme Fear → ждём разворота вверх (+)
-        # НО: слишком сильный бонус гасит SELL сигналы при медвежьем рынке
-        # Поэтому при Extreme Fear даём умеренный бонус +3 (не +8)
-        if val <= 15:   bonus = +3   # Extreme Fear — рынок явно перепродан
-        elif val <= 25: bonus = +6   # Fear — умеренный контрарный
+        # ÐÐ¾Ð½ÑÑÐ°ÑÐ½Ð°Ñ Ð»Ð¾Ð³Ð¸ÐºÐ°: Extreme Fear â Ð¶Ð´ÑÐ¼ ÑÐ°Ð·Ð²Ð¾ÑÐ¾ÑÐ° Ð²Ð²ÐµÑÑ (+)
+        # ÐÐ: ÑÐ»Ð¸ÑÐºÐ¾Ð¼ ÑÐ¸Ð»ÑÐ½ÑÐ¹ Ð±Ð¾Ð½ÑÑ Ð³Ð°ÑÐ¸Ñ SELL ÑÐ¸Ð³Ð½Ð°Ð»Ñ Ð¿ÑÐ¸ Ð¼ÐµÐ´Ð²ÐµÐ¶ÑÐµÐ¼ ÑÑÐ½ÐºÐµ
+        # ÐÐ¾ÑÑÐ¾Ð¼Ñ Ð¿ÑÐ¸ Extreme Fear Ð´Ð°ÑÐ¼ ÑÐ¼ÐµÑÐµÐ½Ð½ÑÐ¹ Ð±Ð¾Ð½ÑÑ +3 (Ð½Ðµ +8)
+        if val <= 15:   bonus = +3   # Extreme Fear â ÑÑÐ½Ð¾Ðº ÑÐ²Ð½Ð¾ Ð¿ÐµÑÐµÐ¿ÑÐ¾Ð´Ð°Ð½
+        elif val <= 25: bonus = +6   # Fear â ÑÐ¼ÐµÑÐµÐ½Ð½ÑÐ¹ ÐºÐ¾Ð½ÑÑÐ°ÑÐ½ÑÐ¹
         elif val <= 40: bonus = +3
         elif val <= 60: bonus = 0
         elif val <= 75: bonus = -4
-        else:           bonus = -7   # Extreme Greed → сильный SELL сигнал
+        else:           bonus = -7   # Extreme Greed â ÑÐ¸Ð»ÑÐ½ÑÐ¹ SELL ÑÐ¸Ð³Ð½Ð°Ð»
         result = {"value": val, "classification": cls, "bonus": bonus, "success": True}
         _cache_set("fear_greed", result)
         return result
@@ -1051,9 +1051,9 @@ async def get_fear_greed() -> dict:
         return {"value": 50, "classification": "Neutral", "bonus": 0, "success": False, "error": str(e)}
 
 
-# ── Whale Tracker ──────────────────────────────────────────────────────────────
+# ââ Whale Tracker ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 async def get_whale_signal(symbol: str) -> dict:
-    # v7.1.2: expanded to SOL, XRP, BNB via Blockchair (AVAX not supported → skip)
+    # v7.1.2: expanded to SOL, XRP, BNB via Blockchair (AVAX not supported â skip)
     coin_map = {
         "BTC-USDT": "bitcoin",
         "ETH-USDT": "ethereum",
@@ -1074,9 +1074,9 @@ async def get_whale_signal(symbol: str) -> dict:
             )
             data = await r.json()
             stats = data.get("data", {})
-            # Используем mempool_transactions_count как proxy активности
+            # ÐÑÐ¿Ð¾Ð»ÑÐ·ÑÐµÐ¼ mempool_transactions_count ÐºÐ°Ðº proxy Ð°ÐºÑÐ¸Ð²Ð½Ð¾ÑÑÐ¸
             txn_count = stats.get("mempool_transactions_count", 0)
-            # Нормализуем: высокая активность мемпула = потенциальная продажа
+            # ÐÐ¾ÑÐ¼Ð°Ð»Ð¸Ð·ÑÐµÐ¼: Ð²ÑÑÐ¾ÐºÐ°Ñ Ð°ÐºÑÐ¸Ð²Ð½Ð¾ÑÑÑ Ð¼ÐµÐ¼Ð¿ÑÐ»Ð° = Ð¿Ð¾ÑÐµÐ½ÑÐ¸Ð°Ð»ÑÐ½Ð°Ñ Ð¿ÑÐ¾Ð´Ð°Ð¶Ð°
             if txn_count > 50000:   bonus = -5
             elif txn_count > 20000: bonus = -2
             elif txn_count < 5000:  bonus = +3
@@ -1088,11 +1088,11 @@ async def get_whale_signal(symbol: str) -> dict:
         return {"bonus": 0, "success": False, "error": str(e)}
 
 
-# ── Polymarket bonus v7.0 ─────────────────────────────────────────────────────
-# Маркеры: ключевые слова → (направление, вес)
-# direction: +1 = bullish если YES prob высок, -1 = bearish если YES prob высок
+# ââ Polymarket bonus v7.0 âââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ÐÐ°ÑÐºÐµÑÑ: ÐºÐ»ÑÑÐµÐ²ÑÐµ ÑÐ»Ð¾Ð²Ð° â (Ð½Ð°Ð¿ÑÐ°Ð²Ð»ÐµÐ½Ð¸Ðµ, Ð²ÐµÑ)
+# direction: +1 = bullish ÐµÑÐ»Ð¸ YES prob Ð²ÑÑÐ¾Ðº, -1 = bearish ÐµÑÐ»Ð¸ YES prob Ð²ÑÑÐ¾Ðº
 _PM_SIGNALS = [
-    # Крипто-специфичные bullish
+    # ÐÑÐ¸Ð¿ÑÐ¾-ÑÐ¿ÐµÑÐ¸ÑÐ¸ÑÐ½ÑÐµ bullish
     ("bitcoin etf",            +1, 3.0), ("btc etf",              +1, 3.0),
     ("eth etf",                +1, 2.5), ("ethereum etf",         +1, 2.5),
     ("crypto etf",             +1, 2.0), ("bitcoin above",        +1, 2.0),
@@ -1100,12 +1100,12 @@ _PM_SIGNALS = [
     ("bitcoin $",              +1, 1.5), ("crypto regulation",    +1, 1.5),
     ("sec approve",            +1, 2.0), ("bitcoin strategic",    +1, 2.0),
     ("us bitcoin reserve",     +1, 3.0), ("bitcoin reserve",      +1, 2.5),
-    # Крипто-специфичные bearish
+    # ÐÑÐ¸Ð¿ÑÐ¾-ÑÐ¿ÐµÑÐ¸ÑÐ¸ÑÐ½ÑÐµ bearish
     ("bitcoin below",          -1, 2.0), ("btc below",            -1, 2.0),
     ("bitcoin crash",          -1, 2.5), ("crypto ban",           -1, 2.0),
     ("sec reject",             -1, 2.0), ("exchange hack",        -1, 1.5),
     ("exchange collapse",      -1, 2.5), ("bitcoin bankrupt",     -1, 2.0),
-    # Макро-события (влияют на весь крипто)
+    # ÐÐ°ÐºÑÐ¾-ÑÐ¾Ð±ÑÑÐ¸Ñ (Ð²Ð»Ð¸ÑÑÑ Ð½Ð° Ð²ÐµÑÑ ÐºÑÐ¸Ð¿ÑÐ¾)
     ("recession",              -1, 2.0), ("financial crisis",     -1, 2.5),
     ("fed rate hike",          -1, 1.5), ("fed hike",             -1, 1.5),
     ("interest rate hike",     -1, 1.5), ("us debt",              -1, 1.0),
@@ -1115,7 +1115,7 @@ _PM_SIGNALS = [
 ]
 
 def calc_polymarket_bonus(symbol: str, events: list) -> float:
-    """v7.0: умная классификация рынков Polymarket → бонус Q-Score ±8."""
+    """v7.0: ÑÐ¼Ð½Ð°Ñ ÐºÐ»Ð°ÑÑÐ¸ÑÐ¸ÐºÐ°ÑÐ¸Ñ ÑÑÐ½ÐºÐ¾Ð² Polymarket â Ð±Ð¾Ð½ÑÑ Q-Score Â±8."""
     if not events: return 0.0
     total_score = 0.0
     total_weight = 0.0
@@ -1123,61 +1123,61 @@ def calc_polymarket_bonus(symbol: str, events: list) -> float:
         title = ev.get("title", "").lower()
         yes_p = ev.get("yes_prob", 50.0) / 100.0  # 0..1
         vol   = ev.get("volume", 0)
-        # Вес события пропорционален объёму торгов
+        # ÐÐµÑ ÑÐ¾Ð±ÑÑÐ¸Ñ Ð¿ÑÐ¾Ð¿Ð¾ÑÑÐ¸Ð¾Ð½Ð°Ð»ÐµÐ½ Ð¾Ð±ÑÑÐ¼Ñ ÑÐ¾ÑÐ³Ð¾Ð²
         vol_weight = min(1.0 + (vol / 100_000), 3.0)
         for keyword, direction, base_weight in _PM_SIGNALS:
             if keyword in title:
-                # YES > 0.5 → сигнал direction, сила = |yes_p - 0.5| * 2
+                # YES > 0.5 â ÑÐ¸Ð³Ð½Ð°Ð» direction, ÑÐ¸Ð»Ð° = |yes_p - 0.5| * 2
                 signal_strength = (yes_p - 0.5) * 2  # -1..+1
                 contribution = direction * signal_strength * base_weight * vol_weight
                 total_score  += contribution
                 total_weight += base_weight * vol_weight
     if total_weight == 0: return 0.0
-    # Нормализуем и ограничиваем до ±8
+    # ÐÐ¾ÑÐ¼Ð°Ð»Ð¸Ð·ÑÐµÐ¼ Ð¸ Ð¾Ð³ÑÐ°Ð½Ð¸ÑÐ¸Ð²Ð°ÐµÐ¼ Ð´Ð¾ Â±8
     raw = total_score / max(total_weight, 1.0) * 8.0
     return round(max(-8.0, min(8.0, raw)), 2)
 
 
-# ── Pending strategy choices ───────────────────────────────────────────────────
-pending_strategies: dict = {}  # trade_id → {symbol, signal, vision, price, fut_usdt, expires_at}
+# ââ Pending strategy choices âââââââââââââââââââââââââââââââââââââââââââââââââââ
+pending_strategies: dict = {}  # trade_id â {symbol, signal, vision, price, fut_usdt, expires_at}
 
-# ── Стратегии A/B/C ────────────────────────────────────────────────────────────
+# ââ Ð¡ÑÑÐ°ÑÐµÐ³Ð¸Ð¸ A/B/C ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 STRATEGIES = {
-    # v7.2.3: TP/SL ratio улучшен до 3:1 во всех стратегиях (было 2:1)
-    "A": {"name": "Консервативная", "risk": 0.05, "leverage": 2, "tp": 0.03, "sl": 0.01,  "emoji": "🛡",  "tag": "real"},
-    "B": {"name": "Стандартная",    "risk": 0.10, "leverage": 3, "tp": 0.045,"sl": 0.015, "emoji": "⚖️", "tag": "real"},
-    "C": {"name": "Бонусная",       "risk": 0.25, "leverage": 5, "tp": 0.06, "sl": 0.02,  "emoji": "🚀",  "tag": "bonus"},
+    # v7.2.3: TP/SL ratio ÑÐ»ÑÑÑÐµÐ½ Ð´Ð¾ 3:1 Ð²Ð¾ Ð²ÑÐµÑ ÑÑÑÐ°ÑÐµÐ³Ð¸ÑÑ (Ð±ÑÐ»Ð¾ 2:1)
+    "A": {"name": "ÐÐ¾Ð½ÑÐµÑÐ²Ð°ÑÐ¸Ð²Ð½Ð°Ñ", "risk": 0.05, "leverage": 2, "tp": 0.03, "sl": 0.01,  "emoji": "ð¡",  "tag": "real"},
+    "B": {"name": "Ð¡ÑÐ°Ð½Ð´Ð°ÑÑÐ½Ð°Ñ",    "risk": 0.10, "leverage": 3, "tp": 0.045,"sl": 0.015, "emoji": "âï¸", "tag": "real"},
+    "C": {"name": "ÐÐ¾Ð½ÑÑÐ½Ð°Ñ",       "risk": 0.25, "leverage": 5, "tp": 0.06, "sl": 0.02,  "emoji": "ð",  "tag": "bonus"},
 }
-# DUAL: одновременно B (реальный) + C (бонусный агрессивный)
-STRATEGY_TIMEOUT = 60   # 1 минута
+# DUAL: Ð¾Ð´Ð½Ð¾Ð²ÑÐµÐ¼ÐµÐ½Ð½Ð¾ B (ÑÐµÐ°Ð»ÑÐ½ÑÐ¹) + C (Ð±Ð¾Ð½ÑÑÐ½ÑÐ¹ Ð°Ð³ÑÐµÑÑÐ¸Ð²Ð½ÑÐ¹)
+STRATEGY_TIMEOUT = 60   # 1 Ð¼Ð¸Ð½ÑÑÐ°
 
 
 async def send_strategy_choice(trade_id, symbol, action, price, q, pattern, fg, poly_b, whale_b):
-    fg_txt = f"F&G: {fg.get('value',50)} {fg.get('classification','—')} ({fg.get('bonus',0):+d})" if fg.get("success") else ""
+    fg_txt = f"F&G: {fg.get('value',50)} {fg.get('classification','â')} ({fg.get('bonus',0):+d})" if fg.get("success") else ""
     poly_txt = f"Poly: {poly_b:+.0f}" if poly_b != 0 else ""
     whale_txt = f"Whale: {whale_b:+.0f}" if whale_b != 0 else ""
-    ctx = " · ".join(p for p in [fg_txt, poly_txt, whale_txt] if p)
-    act_emoji = "🟢 BUY" if action == "BUY" else "🔴 SELL"
+    ctx = " Â· ".join(p for p in [fg_txt, poly_txt, whale_txt] if p)
+    act_emoji = "ð¢ BUY" if action == "BUY" else "ð´ SELL"
     text = (
-        f"⚛ *QuantumTrade — {act_emoji}*\n\n"
-        f"Пара: *{symbol}* · Цена: `${price:,.2f}`\n"
-        f"Q-Score: `{q}` · Паттерн: `{pattern}`\n"
+        f"â *QuantumTrade â {act_emoji}*\n\n"
+        f"ÐÐ°ÑÐ°: *{symbol}* Â· Ð¦ÐµÐ½Ð°: `${price:,.2f}`\n"
+        f"Q-Score: `{q}` Â· ÐÐ°ÑÑÐµÑÐ½: `{pattern}`\n"
         f"{ctx}\n\n"
-        f"*Выбери стратегию:*\n"
-        f"🛡 *A* — Консерватив (5%, TP 3%, SL 1%) [3:1]\n"
-        f"⚖️ *B* — Стандарт (10%, TP 4.5%, SL 1.5%) [3:1]\n"
-        f"🚀 *C* — Бонусная (25%, TP 6%, SL 2%) [3:1]\n"
-        f"💥 *DUAL* — B + C одновременно\n\n"
-        f"_Нет ответа 1 мин → авто стратегия B_"
+        f"*ÐÑÐ±ÐµÑÐ¸ ÑÑÑÐ°ÑÐµÐ³Ð¸Ñ:*\n"
+        f"ð¡ *A* â ÐÐ¾Ð½ÑÐµÑÐ²Ð°ÑÐ¸Ð² (5%, TP 3%, SL 1%) [3:1]\n"
+        f"âï¸ *B* â Ð¡ÑÐ°Ð½Ð´Ð°ÑÑ (10%, TP 4.5%, SL 1.5%) [3:1]\n"
+        f"ð *C* â ÐÐ¾Ð½ÑÑÐ½Ð°Ñ (25%, TP 6%, SL 2%) [3:1]\n"
+        f"ð¥ *DUAL* â B + C Ð¾Ð´Ð½Ð¾Ð²ÑÐµÐ¼ÐµÐ½Ð½Ð¾\n\n"
+        f"_ÐÐµÑ Ð¾ÑÐ²ÐµÑÐ° 1 Ð¼Ð¸Ð½ â Ð°Ð²ÑÐ¾ ÑÑÑÐ°ÑÐµÐ³Ð¸Ñ B_"
     )
     keyboard = {"inline_keyboard": [
         [
-            {"text": "🛡 A", "callback_data": f"strat_A_{trade_id}"},
-            {"text": "⚖️ B", "callback_data": f"strat_B_{trade_id}"},
-            {"text": "🚀 C", "callback_data": f"strat_C_{trade_id}"},
+            {"text": "ð¡ A", "callback_data": f"strat_A_{trade_id}"},
+            {"text": "âï¸ B", "callback_data": f"strat_B_{trade_id}"},
+            {"text": "ð C", "callback_data": f"strat_C_{trade_id}"},
         ],
         [
-            {"text": "💥 DUAL (B + C бонус)", "callback_data": f"strat_D_{trade_id}"},
+            {"text": "ð¥ DUAL (B + C Ð±Ð¾Ð½ÑÑ)", "callback_data": f"strat_D_{trade_id}"},
         ]
     ]}
     if not BOT_TOKEN or not ALERT_CHAT_ID: return
@@ -1196,13 +1196,13 @@ async def send_strategy_choice(trade_id, symbol, action, price, q, pattern, fg, 
 async def execute_with_strategy(strategy: str, symbol: str, signal: dict,
                                  vision: dict, price: float, fut_usdt: float) -> bool:
     s = STRATEGIES.get(strategy, STRATEGIES["B"])
-    log_activity(f"[strategy] {s['emoji']} {strategy} риск={int(s['risk']*100)}% lev={s['leverage']}x TP={int(s['tp']*100)}% SL={int(s['sl']*100)}%")
+    log_activity(f"[strategy] {s['emoji']} {strategy} ÑÐ¸ÑÐº={int(s['risk']*100)}% lev={s['leverage']}x TP={int(s['tp']*100)}% SL={int(s['sl']*100)}%")
     FMAP = {
-        "BTC-USDT":  ("XBTUSDTM",  0.001),  # 0.001 BTC/контракт  ~$85 → нужно $17+ маржи
-        "ETH-USDT":  ("ETHUSDTM",  0.01),   # 0.01  ETH/контракт  ~$22 → нужно ~$4.4 маржи
-        "SOL-USDT":  ("SOLUSDTM",  1.0),    # 1     SOL/контракт  ~$130 → нужно $26 маржи
-        "AVAX-USDT": ("AVAXUSDTM", 1.0),    # 1     AVAX/контракт ~$25  → нужно ~$5 маржи ✅
-        "XRP-USDT":  ("XRPUSDTM",  10.0),   # 10    XRP/контракт  ~$25  → нужно ~$5 маржи ✅
+        "BTC-USDT":  ("XBTUSDTM",  0.001),  # 0.001 BTC/ÐºÐ¾Ð½ÑÑÐ°ÐºÑ  ~$85 â Ð½ÑÐ¶Ð½Ð¾ $17+ Ð¼Ð°ÑÐ¶Ð¸
+        "ETH-USDT":  ("ETHUSDTM",  0.01),   # 0.01  ETH/ÐºÐ¾Ð½ÑÑÐ°ÐºÑ  ~$22 â Ð½ÑÐ¶Ð½Ð¾ ~$4.4 Ð¼Ð°ÑÐ¶Ð¸
+        "SOL-USDT":  ("SOLUSDTM",  1.0),    # 1     SOL/ÐºÐ¾Ð½ÑÑÐ°ÐºÑ  ~$130 â Ð½ÑÐ¶Ð½Ð¾ $26 Ð¼Ð°ÑÐ¶Ð¸
+        "AVAX-USDT": ("AVAXUSDTM", 1.0),    # 1     AVAX/ÐºÐ¾Ð½ÑÑÐ°ÐºÑ ~$25  â Ð½ÑÐ¶Ð½Ð¾ ~$5 Ð¼Ð°ÑÐ¶Ð¸ â
+        "XRP-USDT":  ("XRPUSDTM",  10.0),   # 10    XRP/ÐºÐ¾Ð½ÑÑÐ°ÐºÑ  ~$25  â Ð½ÑÐ¶Ð½Ð¾ ~$5 Ð¼Ð°ÑÐ¶Ð¸ â
     }
     if symbol not in FMAP: return False
     fut_symbol, contract_size = FMAP[symbol]
@@ -1211,7 +1211,7 @@ async def execute_with_strategy(strategy: str, symbol: str, signal: dict,
     contract_value = price * contract_size
     n_contracts = max(1, int(trade_usdt * s["leverage"] / contract_value))
     if (contract_value / s["leverage"]) > fut_usdt:
-        log_activity(f"[strategy] {symbol} SKIP — маржи недостаточно")
+        log_activity(f"[strategy] {symbol} SKIP â Ð¼Ð°ÑÐ¶Ð¸ Ð½ÐµÐ´Ð¾ÑÑÐ°ÑÐ¾ÑÐ½Ð¾")
         return False
     body = json.dumps({
         "clientOid": f"qts_{int(time.time()*1000)}", "side": side, "symbol": fut_symbol,
@@ -1226,7 +1226,7 @@ async def execute_with_strategy(strategy: str, symbol: str, signal: dict,
                                 data=body, timeout=aiohttp.ClientTimeout(total=10))
             result = await r.json()
     except Exception as e:
-        log_activity(f"[strategy] ошибка запроса: {e}"); return False
+        log_activity(f"[strategy] Ð¾ÑÐ¸Ð±ÐºÐ° Ð·Ð°Ð¿ÑÐ¾ÑÐ°: {e}"); return False
     if result.get("code") != "200000":
         log_activity(f"[strategy] {fut_symbol} FAILED: {result.get('msg','?')}"); return False
     tp = round(price * (1 + s["tp"] if side == "buy" else 1 - s["tp"]), 4)
@@ -1239,50 +1239,50 @@ async def execute_with_strategy(strategy: str, symbol: str, signal: dict,
     last_signals[f"FUT_{symbol}"] = {"action": signal["action"], "ts": time.time()}
     log_activity(f"[strategy] {strategy} {fut_symbol} {side.upper()} OK TP={tp} SL={sl}")
     print(f"[TRADE] {strategy} {fut_symbol} {side.upper()} Q={signal['q_score']:.1f} n={n_contracts} @ ${price:,.2f} TP={tp} SL={sl}", flush=True)
-    await notify(f"{s['emoji']} <b>Стратегия {strategy} — {s['name']}</b>\n<code>{fut_symbol}</code> {side.upper()} Q={signal['q_score']}")
+    await notify(f"{s['emoji']} <b>Ð¡ÑÑÐ°ÑÐµÐ³Ð¸Ñ {strategy} â {s['name']}</b>\n<code>{fut_symbol}</code> {side.upper()} Q={signal['q_score']}")
     return True
 
 
 
 async def execute_dual_strategy(symbol: str, signal: dict, vision: dict,
                                  price: float, fut_usdt: float) -> bool:
-    """DUAL: открывает B (реальный) + C (бонусный) одновременно."""
-    log_activity(f"[dual] {symbol}: B(реальный) + C(бонусный) одновременно")
-    # Запускаем оба параллельно
+    """DUAL: Ð¾ÑÐºÑÑÐ²Ð°ÐµÑ B (ÑÐµÐ°Ð»ÑÐ½ÑÐ¹) + C (Ð±Ð¾Ð½ÑÑÐ½ÑÐ¹) Ð¾Ð´Ð½Ð¾Ð²ÑÐµÐ¼ÐµÐ½Ð½Ð¾."""
+    log_activity(f"[dual] {symbol}: B(ÑÐµÐ°Ð»ÑÐ½ÑÐ¹) + C(Ð±Ð¾Ð½ÑÑÐ½ÑÐ¹) Ð¾Ð´Ð½Ð¾Ð²ÑÐµÐ¼ÐµÐ½Ð½Ð¾")
+    # ÐÐ°Ð¿ÑÑÐºÐ°ÐµÐ¼ Ð¾Ð±Ð° Ð¿Ð°ÑÐ°Ð»Ð»ÐµÐ»ÑÐ½Ð¾
     ok_b, ok_c = await asyncio.gather(
         execute_with_strategy("B", symbol, signal, vision, price, fut_usdt),
         execute_with_strategy("C", symbol, signal, vision, price, fut_usdt),
         return_exceptions=True
     )
     ok_b = ok_b is True; ok_c = ok_c is True
-    log_activity(f"[dual] результат: B={'OK' if ok_b else 'FAIL'} C={'OK' if ok_c else 'FAIL'}")
+    log_activity(f"[dual] ÑÐµÐ·ÑÐ»ÑÑÐ°Ñ: B={'OK' if ok_b else 'FAIL'} C={'OK' if ok_c else 'FAIL'}")
     if ok_b or ok_c:
         await notify(
-            f"💥 *DUAL стратегия*\n"
+            f"ð¥ *DUAL ÑÑÑÐ°ÑÐµÐ³Ð¸Ñ*\n"
             f"{symbol} {('BUY' if signal['action']=='BUY' else 'SELL')} Q={signal['q_score']}\n"
-            f"⚖️ B (реальный): {'✅' if ok_b else '❌'}\n"
-            f"🚀 C (бонусный): {'✅' if ok_c else '❌'}"
+            f"âï¸ B (ÑÐµÐ°Ð»ÑÐ½ÑÐ¹): {'â' if ok_b else 'â'}\n"
+            f"ð C (Ð±Ð¾Ð½ÑÑÐ½ÑÐ¹): {'â' if ok_c else 'â'}"
         )
     return ok_b or ok_c
 
 async def auto_execute_dynamic(trade_id: str):
-    """Динамический выбор стратегии по Q-Score при таймауте."""
+    """ÐÐ¸Ð½Ð°Ð¼Ð¸ÑÐµÑÐºÐ¸Ð¹ Ð²ÑÐ±Ð¾Ñ ÑÑÑÐ°ÑÐµÐ³Ð¸Ð¸ Ð¿Ð¾ Q-Score Ð¿ÑÐ¸ ÑÐ°Ð¹Ð¼Ð°ÑÑÐµ."""
     await asyncio.sleep(STRATEGY_TIMEOUT)
     pending = pending_strategies.pop(trade_id, None)
     if not pending: return
     q = pending["signal"]["q_score"]
-    # v6.9 Dynamic strategy: Q≥85→DUAL(B+C), Q≥65→C (оптимально для медвежьего рынка), else→B
+    # v6.9 Dynamic strategy: Qâ¥85âDUAL(B+C), Qâ¥65âC (Ð¾Ð¿ÑÐ¸Ð¼Ð°Ð»ÑÐ½Ð¾ Ð´Ð»Ñ Ð¼ÐµÐ´Ð²ÐµÐ¶ÑÐµÐ³Ð¾ ÑÑÐ½ÐºÐ°), elseâB
     if q >= 85:
         auto_strategy = "D"
         label = "DUAL (B+C)"
     elif q >= 65:
         auto_strategy = "C"
-        label = "C (агрессивная 🚀)"
+        label = "C (Ð°Ð³ÑÐµÑÑÐ¸Ð²Ð½Ð°Ñ ð)"
     else:
         auto_strategy = "B"
-        label = "B (стандартная)"
-    log_activity(f"[strategy] timeout {trade_id} Q={q:.1f} → авто {label}")
-    await notify(f"⏱ <i>Таймаут — Q={q:.0f} → стратегия {label}</i>")
+        label = "B (ÑÑÐ°Ð½Ð´Ð°ÑÑÐ½Ð°Ñ)"
+    log_activity(f"[strategy] timeout {trade_id} Q={q:.1f} â Ð°Ð²ÑÐ¾ {label}")
+    await notify(f"â± <i>Ð¢Ð°Ð¹Ð¼Ð°ÑÑ â Q={q:.0f} â ÑÑÑÐ°ÑÐµÐ³Ð¸Ñ {label}</i>")
     if auto_strategy == "D":
         await execute_dual_strategy(
             pending["symbol"], pending["signal"], pending["vision"],
@@ -1297,14 +1297,14 @@ async def auto_trade_cycle():
     global last_q_score, MIN_Q_SCORE, COOLDOWN, AUTOPILOT
     log_activity(f"[cycle start] {datetime.utcnow().strftime('%H:%M:%S')}")
 
-    # ── Все внешние данные параллельно ───────────────────────────────────────
+    # ââ ÐÑÐµ Ð²Ð½ÐµÑÐ½Ð¸Ðµ Ð´Ð°Ð½Ð½ÑÐµ Ð¿Ð°ÑÐ°Ð»Ð»ÐµÐ»ÑÐ½Ð¾ âââââââââââââââââââââââââââââââââââââââ
     try:
         prices_data, fg_data, spot_bal, fut_bal = await asyncio.wait_for(
             asyncio.gather(get_all_prices(), get_fear_greed(), get_balance(), get_futures_balance()),
             timeout=12.0
         )
     except asyncio.TimeoutError:
-        log_activity("[cycle] data fetch timeout — skipping"); return
+        log_activity("[cycle] data fetch timeout â skipping"); return
     if not prices_data.get("success"):
         log_activity("[cycle] prices fetch FAILED"); return
 
@@ -1318,16 +1318,16 @@ async def auto_trade_cycle():
     poly_events = _cache_get("polymarket", 900) or []
     log_activity(f"[cycle] F&G={fg_val}({fg_data.get('bonus',0):+d}) spot=${spot_usdt:.1f} fut=${fut_usdt:.1f} poly={len(poly_events)}mkts")
 
-    # ── Polymarket v7.0 (кеш 15 мин, multi-query) ──────────────────────────────
+    # ââ Polymarket v7.0 (ÐºÐµÑ 15 Ð¼Ð¸Ð½, multi-query) ââââââââââââââââââââââââââââââ
     poly_events = _cache_get("polymarket", 900) or []
     if not poly_events:
         try:
-            # Запросы по ключевым темам: крипто + макро
+            # ÐÐ°Ð¿ÑÐ¾ÑÑ Ð¿Ð¾ ÐºÐ»ÑÑÐµÐ²ÑÐ¼ ÑÐµÐ¼Ð°Ð¼: ÐºÑÐ¸Ð¿ÑÐ¾ + Ð¼Ð°ÐºÑÐ¾
             PM_QUERIES = [
                 "bitcoin", "ethereum", "crypto ETF", "crypto regulation",
                 "recession", "fed rate", "ceasefire",
             ]
-            result = {}  # slug → event (дедупликация)
+            result = {}  # slug â event (Ð´ÐµÐ´ÑÐ¿Ð»Ð¸ÐºÐ°ÑÐ¸Ñ)
             async with aiohttp.ClientSession() as _s:
                 for q in PM_QUERIES:
                     try:
@@ -1360,9 +1360,9 @@ async def auto_trade_cycle():
             log_activity(f"[polymarket] fetch error: {e}")
             poly_events = []
 
-    # ── QAOA: обновляем quantum bias раз в 15 минут ──────────────────────────
+    # ââ QAOA: Ð¾Ð±Ð½Ð¾Ð²Ð»ÑÐµÐ¼ quantum bias ÑÐ°Ð· Ð² 15 Ð¼Ð¸Ð½ÑÑ ââââââââââââââââââââââââââ
     global _quantum_ts
-    if time.time() - _quantum_ts > 870:  # 870 сек ≈ 14.5 мин (чуть раньше цикла)
+    if time.time() - _quantum_ts > 870:  # 870 ÑÐµÐº â 14.5 Ð¼Ð¸Ð½ (ÑÑÑÑ ÑÐ°Ð½ÑÑÐµ ÑÐ¸ÐºÐ»Ð°)
         price_changes_map = {
             sym: pdata.get("change", 0.0)
             for sym, pdata in prices_data["prices"].items()
@@ -1371,9 +1371,9 @@ async def auto_trade_cycle():
         await run_qaoa_optimization(price_changes_map)
 
     signals_fired = []
-    # COOLDOWN теперь глобальная переменная (изменяется через Telegram настройки)
+    # COOLDOWN ÑÐµÐ¿ÐµÑÑ Ð³Ð»Ð¾Ð±Ð°Ð»ÑÐ½Ð°Ñ Ð¿ÐµÑÐµÐ¼ÐµÐ½Ð½Ð°Ñ (Ð¸Ð·Ð¼ÐµÐ½ÑÐµÑÑÑ ÑÐµÑÐµÐ· Telegram Ð½Ð°ÑÑÑÐ¾Ð¹ÐºÐ¸)
 
-    # ── Параллельный fetch: chart + vision + whale ────────────────────────────
+    # ââ ÐÐ°ÑÐ°Ð»Ð»ÐµÐ»ÑÐ½ÑÐ¹ fetch: chart + vision + whale ââââââââââââââââââââââââââââ
     async def _get_sym_data(sym, pdata):
         try:
             candles = await asyncio.wait_for(get_kucoin_chart(sym), timeout=8.0)
@@ -1416,10 +1416,10 @@ async def auto_trade_cycle():
         # v7.1.2: per-pair Q threshold (overrides global MIN_Q_SCORE per symbol)
         _pair_min_q = PAIR_Q_THRESHOLDS.get(symbol, MIN_Q_SCORE)
         if action == "BUY" and q < _pair_min_q:
-            log_activity(f"[cycle] {symbol}: Q={q:.1f}<{_pair_min_q} (pair threshold) → SKIP")
+            log_activity(f"[cycle] {symbol}: Q={q:.1f}<{_pair_min_q} (pair threshold) â SKIP")
             continue
         if action == "SELL" and (100.0 - q) < _pair_min_q:
-            log_activity(f"[cycle] {symbol}: sellQ={(100.0-q):.1f}<{_pair_min_q} (pair threshold) → SKIP")
+            log_activity(f"[cycle] {symbol}: sellQ={(100.0-q):.1f}<{_pair_min_q} (pair threshold) â SKIP")
             continue
         v_bonus = vision.get("vision_bonus", 0.0)
         v_ocr   = vision.get("vision_ocr", "")[:20] if vision.get("vision_ocr") else ""
@@ -1432,7 +1432,7 @@ async def auto_trade_cycle():
         if conf < MIN_CONFIDENCE: continue
         if not AUTOPILOT: continue
 
-        # ── Спот (только BUY) ─────────────────────────────────────────────────
+        # ââ Ð¡Ð¿Ð¾Ñ (ÑÐ¾Ð»ÑÐºÐ¾ BUY) âââââââââââââââââââââââââââââââââââââââââââââââââ
         if action == "BUY":
             elapsed = time.time() - last_signals.get(symbol, {}).get("ts", 0)
             if elapsed >= COOLDOWN and spot_trade_usdt >= 1.0:
@@ -1444,7 +1444,7 @@ async def auto_trade_cycle():
                         "pattern": vision.get("pattern","?"), "rsi": vision.get("rsi", 0),
                         "tp": round(price*(1+TP_PCT),4), "sl": round(price*(1-SL_PCT),4)})
 
-        # ── Фьючерсы: собираем кандидатов ────────────────────────────────────
+        # ââ Ð¤ÑÑÑÐµÑÑÑ: ÑÐ¾Ð±Ð¸ÑÐ°ÐµÐ¼ ÐºÐ°Ð½Ð´Ð¸Ð´Ð°ÑÐ¾Ð² ââââââââââââââââââââââââââââââââââââ
         if symbol in ("BTC-USDT", "ETH-USDT", "SOL-USDT"):
             FMAP = {"BTC-USDT":("XBTUSDTM",0.001),"ETH-USDT":("ETHUSDTM",0.01),"SOL-USDT":("SOLUSDTM",1.0)}
             _, cs = FMAP[symbol]
@@ -1455,7 +1455,7 @@ async def auto_trade_cycle():
             elif fut_usdt < 1.0:    reason = f"bal ${fut_usdt:.2f}<$1"
             elif margin > fut_usdt: reason = f"margin ${margin:.2f}>${fut_usdt:.2f}"
             if reason:
-                log_activity(f"[cycle] {symbol}: SKIP fut — {reason}")
+                log_activity(f"[cycle] {symbol}: SKIP fut â {reason}")
             else:
                 futures_candidates.append({
                     "symbol": symbol, "signal": signal, "vision": vision,
@@ -1464,7 +1464,7 @@ async def auto_trade_cycle():
                     "pattern": vision.get("pattern","?")
                 })
 
-    # ── Лучший кандидат → Telegram A/B/C (3 мин таймаут) ────────────────────
+    # ââ ÐÑÑÑÐ¸Ð¹ ÐºÐ°Ð½Ð´Ð¸Ð´Ð°Ñ â Telegram A/B/C (3 Ð¼Ð¸Ð½ ÑÐ°Ð¹Ð¼Ð°ÑÑ) ââââââââââââââââââââ
     if futures_candidates:
         best = sorted(futures_candidates, key=lambda c: abs(c["q"] - 50), reverse=True)[0]
         others = [c["symbol"] for c in futures_candidates if c["symbol"] != best["symbol"]]
@@ -1477,10 +1477,10 @@ async def auto_trade_cycle():
             "price": best["price"], "fut_usdt": fut_usdt,
             "expires_at": time.time() + STRATEGY_TIMEOUT + 60
         }
-        # ВАЖНО: блокируем эту пару сразу, не ждём исполнения
-        # иначе следующий цикл создаст новый pending для той же пары
+        # ÐÐÐÐÐ: Ð±Ð»Ð¾ÐºÐ¸ÑÑÐµÐ¼ ÑÑÑ Ð¿Ð°ÑÑ ÑÑÐ°Ð·Ñ, Ð½Ðµ Ð¶Ð´ÑÐ¼ Ð¸ÑÐ¿Ð¾Ð»Ð½ÐµÐ½Ð¸Ñ
+        # Ð¸Ð½Ð°ÑÐµ ÑÐ»ÐµÐ´ÑÑÑÐ¸Ð¹ ÑÐ¸ÐºÐ» ÑÐ¾Ð·Ð´Ð°ÑÑ Ð½Ð¾Ð²ÑÐ¹ pending Ð´Ð»Ñ ÑÐ¾Ð¹ Ð¶Ðµ Ð¿Ð°ÑÑ
         last_signals[f"FUT_{best['symbol']}"] = {"action": best["action"], "ts": time.time()}
-        log_activity(f"[cycle] {best['symbol']}: reserved — cooldown {COOLDOWN}s")
+        log_activity(f"[cycle] {best['symbol']}: reserved â cooldown {COOLDOWN}s")
         for k in [k for k, v in list(pending_strategies.items()) if time.time() > v["expires_at"]]:
             del pending_strategies[k]
 
@@ -1490,60 +1490,60 @@ async def auto_trade_cycle():
         )
         asyncio.create_task(auto_execute_dynamic(trade_id))
 
-    # ── Уведомление спот ─────────────────────────────────────────────────────
+    # ââ Ð£Ð²ÐµÐ´Ð¾Ð¼Ð»ÐµÐ½Ð¸Ðµ ÑÐ¿Ð¾Ñ âââââââââââââââââââââââââââââââââââââââââââââââââââââ
     if signals_fired:
         mode = "TEST" if TEST_MODE else "LIVE"
-        msg  = f"⚛ *QuantumTrade {mode}*\n\n"
+        msg  = f"â *QuantumTrade {mode}*\n\n"
         for s in signals_fired:
-            emoji = "🟢" if s["action"] == "BUY" else "🔴"
+            emoji = "ð¢" if s["action"] == "BUY" else "ð´"
             msg += f"{emoji} *{s['symbol']}* {s['action']} [spot]\n   Q:`{s['q_score']}` TP:`${s['tp']:,.2f}` SL:`${s['sl']:,.2f}`\n\n"
         await notify(msg)
 
-    # ── BTC Q-Score алерты ────────────────────────────────────────────────────
+    # ââ BTC Q-Score Ð°Ð»ÐµÑÑÑ ââââââââââââââââââââââââââââââââââââââââââââââââââââ
     btc_res = next((r for r in cv_results if not isinstance(r, Exception) and r[0] == "BTC-USDT"), None)
     if btc_res:
         _, _, btc_signal, _, _ = btc_res
         q = btc_signal["q_score"]; conf = btc_signal["confidence"]
         btc_price = prices_data["prices"].get("BTC-USDT", {}).get("price", 0)
-        sell_thresh = 100 - MIN_Q_SCORE  # v7.2.2: динамический порог
+        sell_thresh = 100 - MIN_Q_SCORE  # v7.2.2: Ð´Ð¸Ð½Ð°Ð¼Ð¸ÑÐµÑÐºÐ¸Ð¹ Ð¿Ð¾ÑÐ¾Ð³
         if q >= MIN_Q_SCORE and last_q_score < MIN_Q_SCORE:
-            await notify(f"🚀 <b>Q-Score {q:.0f} — сигнал BUY!</b> BTC <code>${btc_price:,.0f}</code> · <code>{int(conf*100)}%</code> · F&G={fg_val}")
+            await notify(f"ð <b>Q-Score {q:.0f} â ÑÐ¸Ð³Ð½Ð°Ð» BUY!</b> BTC <code>${btc_price:,.0f}</code> Â· <code>{int(conf*100)}%</code> Â· F&G={fg_val}")
         elif q <= sell_thresh and last_q_score > sell_thresh:
-            # v7.2.2: антиспам — не чаще раза в 5 мин
+            # v7.2.2: Ð°Ð½ÑÐ¸ÑÐ¿Ð°Ð¼ â Ð½Ðµ ÑÐ°ÑÐµ ÑÐ°Ð·Ð° Ð² 5 Ð¼Ð¸Ð½
             now = time.time()
             if now - _q_alert_last.get("sell", 0) > 300:
                 _q_alert_last["sell"] = now
-                await notify(f"⚠️ <b>Q-Score {q:.0f} — зона SELL</b> · BTC <code>${btc_price:,.0f}</code>")
+                await notify(f"â ï¸ <b>Q-Score {q:.0f} â Ð·Ð¾Ð½Ð° SELL</b> Â· BTC <code>${btc_price:,.0f}</code>")
         last_q_score = q
 
 
-# ── Startup ────────────────────────────────────────────────────────────────────
-# ── Position Monitor ────────────────────────────────────────────────────────────
+# ââ Startup ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ââ Position Monitor ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 # TRIANGULAR ARBITRAGE MONITOR v7.1
-# Схема: USDT → A → B → USDT
-# Проверяем отклонение реального кросс-курса A-B от имплицитного
-# Если спред > 0.4% (>0.3% комиссий KuCoin) → алерт в Telegram
-# ══════════════════════════════════════════════════════════════════════════════
+# Ð¡ÑÐµÐ¼Ð°: USDT â A â B â USDT
+# ÐÑÐ¾Ð²ÐµÑÑÐµÐ¼ Ð¾ÑÐºÐ»Ð¾Ð½ÐµÐ½Ð¸Ðµ ÑÐµÐ°Ð»ÑÐ½Ð¾Ð³Ð¾ ÐºÑÐ¾ÑÑ-ÐºÑÑÑÐ° A-B Ð¾Ñ Ð¸Ð¼Ð¿Ð»Ð¸ÑÐ¸ÑÐ½Ð¾Ð³Ð¾
+# ÐÑÐ»Ð¸ ÑÐ¿ÑÐµÐ´ > 0.4% (>0.3% ÐºÐ¾Ð¼Ð¸ÑÑÐ¸Ð¹ KuCoin) â Ð°Ð»ÐµÑÑ Ð² Telegram
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
-# Треугольные пары: (coin_a, coin_b, cross_pair, description)
+# Ð¢ÑÐµÑÐ³Ð¾Ð»ÑÐ½ÑÐµ Ð¿Ð°ÑÑ: (coin_a, coin_b, cross_pair, description)
 ARB_TRIANGLES = [
-    ("ETH-USDT",  "BTC-USDT",  "ETH-BTC",  "USDT→ETH→BTC→USDT"),
-    # SOL-BTC and SOL-ETH pairs don't exist on KuCoin spot — removed
-    ("XRP-USDT",  "BTC-USDT",  "XRP-BTC",  "USDT→XRP→BTC→USDT"),
-    # XRP-ETH doesn't exist on KuCoin spot — removed
-    ("ADA-USDT",  "BTC-USDT",  "ADA-BTC",  "USDT→ADA→BTC→USDT"),
-    ("LINK-USDT", "BTC-USDT",  "LINK-BTC", "USDT→LINK→BTC→USDT"),
-    ("LTC-USDT",  "BTC-USDT",  "LTC-BTC",  "USDT→LTC→BTC→USDT"),
+    ("ETH-USDT",  "BTC-USDT",  "ETH-BTC",  "USDTâETHâBTCâUSDT"),
+    # SOL-BTC and SOL-ETH pairs don't exist on KuCoin spot â removed
+    ("XRP-USDT",  "BTC-USDT",  "XRP-BTC",  "USDTâXRPâBTCâUSDT"),
+    # XRP-ETH doesn't exist on KuCoin spot â removed
+    ("ADA-USDT",  "BTC-USDT",  "ADA-BTC",  "USDTâADAâBTCâUSDT"),
+    ("LINK-USDT", "BTC-USDT",  "LINK-BTC", "USDTâLINKâBTCâUSDT"),
+    ("LTC-USDT",  "BTC-USDT",  "LTC-BTC",  "USDTâLTCâBTCâUSDT"),
 ]
 ARB_FEE       = 0.001   # 0.1% per trade, 0.3% for 3 trades
-ARB_MIN_SPREAD = 0.004  # минимальный спред 0.4% после комиссий
-ARB_COOLDOWNS: dict = {}  # path → last_alert_ts (cooldown 5 мин)
+ARB_MIN_SPREAD = 0.004  # Ð¼Ð¸Ð½Ð¸Ð¼Ð°Ð»ÑÐ½ÑÐ¹ ÑÐ¿ÑÐµÐ´ 0.4% Ð¿Ð¾ÑÐ»Ðµ ÐºÐ¾Ð¼Ð¸ÑÑÐ¸Ð¹
+ARB_COOLDOWNS: dict = {}  # path â last_alert_ts (cooldown 5 Ð¼Ð¸Ð½)
 ARB_COOLDOWN_SEC = 300
 
 async def get_cross_ticker(symbol: str) -> float:
-    """Получить цену кросс-пары из KuCoin (напр. ETH-BTC)."""
+    """ÐÐ¾Ð»ÑÑÐ¸ÑÑ ÑÐµÐ½Ñ ÐºÑÐ¾ÑÑ-Ð¿Ð°ÑÑ Ð¸Ð· KuCoin (Ð½Ð°Ð¿Ñ. ETH-BTC)."""
     cached = _cache_get(f"ticker_{symbol}", 60)
     if cached: return cached
     try:
@@ -1566,8 +1566,8 @@ async def get_cross_ticker(symbol: str) -> float:
 
 async def check_triangular_arb(prices: dict) -> list:
     """
-    Проверяет все треугольные связки.
-    Возвращает список найденных возможностей [{path, spread_pct, direction, ...}].
+    ÐÑÐ¾Ð²ÐµÑÑÐµÑ Ð²ÑÐµ ÑÑÐµÑÐ³Ð¾Ð»ÑÐ½ÑÐµ ÑÐ²ÑÐ·ÐºÐ¸.
+    ÐÐ¾Ð·Ð²ÑÐ°ÑÐ°ÐµÑ ÑÐ¿Ð¸ÑÐ¾Ðº Ð½Ð°Ð¹Ð´ÐµÐ½Ð½ÑÑ Ð²Ð¾Ð·Ð¼Ð¾Ð¶Ð½Ð¾ÑÑÐµÐ¹ [{path, spread_pct, direction, ...}].
     """
     opportunities = []
     now = time.time()
@@ -1582,33 +1582,33 @@ async def check_triangular_arb(prices: dict) -> list:
         if not price_a or not price_b:
             continue
 
-        # Имплицитный кросс-курс (из USDT пар)
-        implied_cross = price_a / price_b  # напр. ETH/BTC = ETH_USDT / BTC_USDT
+        # ÐÐ¼Ð¿Ð»Ð¸ÑÐ¸ÑÐ½ÑÐ¹ ÐºÑÐ¾ÑÑ-ÐºÑÑÑ (Ð¸Ð· USDT Ð¿Ð°Ñ)
+        implied_cross = price_a / price_b  # Ð½Ð°Ð¿Ñ. ETH/BTC = ETH_USDT / BTC_USDT
 
-        # Реальный кросс-курс с биржи
+        # Ð ÐµÐ°Ð»ÑÐ½ÑÐ¹ ÐºÑÐ¾ÑÑ-ÐºÑÑÑ Ñ Ð±Ð¸ÑÐ¶Ð¸
         actual_cross = await get_cross_ticker(cross_sym)
         if not actual_cross:
             continue
 
-        # Спред: насколько реальный отличается от имплицитного
+        # Ð¡Ð¿ÑÐµÐ´: Ð½Ð°ÑÐºÐ¾Ð»ÑÐºÐ¾ ÑÐµÐ°Ð»ÑÐ½ÑÐ¹ Ð¾ÑÐ»Ð¸ÑÐ°ÐµÑÑÑ Ð¾Ñ Ð¸Ð¼Ð¿Ð»Ð¸ÑÐ¸ÑÐ½Ð¾Ð³Ð¾
         spread = (actual_cross - implied_cross) / implied_cross
 
-        # Проверяем оба направления
-        fee3 = ARB_FEE * 3  # 0.3% суммарные комиссии
+        # ÐÑÐ¾Ð²ÐµÑÑÐµÐ¼ Ð¾Ð±Ð° Ð½Ð°Ð¿ÑÐ°Ð²Ð»ÐµÐ½Ð¸Ñ
+        fee3 = ARB_FEE * 3  # 0.3% ÑÑÐ¼Ð¼Ð°ÑÐ½ÑÐµ ÐºÐ¾Ð¼Ð¸ÑÑÐ¸Ð¸
 
-        # Направление 1: USDT → A → B → USDT (используем actual_cross для продажи A за B)
-        # Прибыль = (1/price_a) * actual_cross * price_b * (1-fee)^3 - 1
+        # ÐÐ°Ð¿ÑÐ°Ð²Ð»ÐµÐ½Ð¸Ðµ 1: USDT â A â B â USDT (Ð¸ÑÐ¿Ð¾Ð»ÑÐ·ÑÐµÐ¼ actual_cross Ð´Ð»Ñ Ð¿ÑÐ¾Ð´Ð°Ð¶Ð¸ A Ð·Ð° B)
+        # ÐÑÐ¸Ð±ÑÐ»Ñ = (1/price_a) * actual_cross * price_b * (1-fee)^3 - 1
         profit1 = (1 / price_a) * actual_cross * price_b * (1 - ARB_FEE)**3 - 1
 
-        # Направление 2: USDT → B → A → USDT (обратный путь)
-        # Прибыль = (1/price_b) * (1/actual_cross) * price_a * (1-fee)^3 - 1
+        # ÐÐ°Ð¿ÑÐ°Ð²Ð»ÐµÐ½Ð¸Ðµ 2: USDT â B â A â USDT (Ð¾Ð±ÑÐ°ÑÐ½ÑÐ¹ Ð¿ÑÑÑ)
+        # ÐÑÐ¸Ð±ÑÐ»Ñ = (1/price_b) * (1/actual_cross) * price_a * (1-fee)^3 - 1
         profit2 = (1 / price_b) * (1 / actual_cross) * price_a * (1 - ARB_FEE)**3 - 1
 
         best_profit = max(profit1, profit2)
         direction   = 1 if profit1 >= profit2 else 2
 
         if best_profit >= ARB_MIN_SPREAD:
-            path_str = path if direction == 1 else path.replace("→", "←").split("←")[0] + "←".join(path.split("→")[1:])
+            path_str = path if direction == 1 else path.replace("â", "â").split("â")[0] + "â".join(path.split("â")[1:])
             opp = {
                 "path":        path,
                 "cross_sym":   cross_sym,
@@ -1624,15 +1624,15 @@ async def check_triangular_arb(prices: dict) -> list:
             }
             opportunities.append(opp)
             ARB_COOLDOWNS[path] = now
-            log_activity(f"[arb] ⚡ {path} profit={best_profit*100:.3f}% spread={spread*100:.3f}%")
+            log_activity(f"[arb] â¡ {path} profit={best_profit*100:.3f}% spread={spread*100:.3f}%")
 
     return opportunities
 
 async def _notify_arb(opp: dict):
     """Telegram alert for triangular arbitrage opportunity."""
     d = opp["direction"]
-    steps = opp["path"].split("→")
-    arrow = "➡️"
+    steps = opp["path"].split("â")
+    arrow = "â¡ï¸"
     if d == 1:
         route = f"{steps[0]} {arrow} {steps[1]} {arrow} {steps[2]} {arrow} {steps[3]}"
     else:
@@ -1655,10 +1655,10 @@ async def _notify_arb(opp: dict):
 
 
 async def position_monitor_loop():
-    """Каждые 30 сек проверяет открытые позиции — закрылись ли по TP/SL."""
+    """ÐÐ°Ð¶Ð´ÑÐµ 30 ÑÐµÐº Ð¿ÑÐ¾Ð²ÐµÑÑÐµÑ Ð¾ÑÐºÑÑÑÑÐµ Ð¿Ð¾Ð·Ð¸ÑÐ¸Ð¸ â Ð·Ð°ÐºÑÑÐ»Ð¸ÑÑ Ð»Ð¸ Ð¿Ð¾ TP/SL."""
     await asyncio.sleep(30)
     SYM_REV = {"XBTUSDTM": "BTC-USDT", "ETHUSDTM": "ETH-USDT", "SOLUSDTM": "SOL-USDT"}
-    # v6.8: правильные размеры контрактов для расчёта PnL
+    # v6.8: Ð¿ÑÐ°Ð²Ð¸Ð»ÑÐ½ÑÐµ ÑÐ°Ð·Ð¼ÐµÑÑ ÐºÐ¾Ð½ÑÑÐ°ÐºÑÐ¾Ð² Ð´Ð»Ñ ÑÐ°ÑÑÑÑÐ° PnL
     CONTRACT_SIZES = {"XBTUSDTM": 0.001, "ETHUSDTM": 0.01, "SOLUSDTM": 1.0,
                       "AVAXUSDTM": 1.0, "XRPUSDTM": 10.0}
     while True:
@@ -1668,7 +1668,7 @@ async def position_monitor_loop():
                 pos_data   = await get_futures_positions()
                 open_syms  = {p.get("symbol") for p in pos_data.get("positions", [])}
                 for trade in open_trades:
-                    # v7.2.0: мин 5 мин до закрытия — защита от race condition
+                    # v7.2.0: Ð¼Ð¸Ð½ 5 Ð¼Ð¸Ð½ Ð´Ð¾ Ð·Ð°ÐºÑÑÑÐ¸Ñ â Ð·Ð°ÑÐ¸ÑÐ° Ð¾Ñ race condition
                     if (time.time() - trade.get("open_ts", time.time())) < 300:
                         continue
                     if trade["symbol"] not in open_syms:
@@ -1676,7 +1676,7 @@ async def position_monitor_loop():
                         entry         = trade["price"]
                         contract_size = CONTRACT_SIZES.get(trade["symbol"], 0.01)
                         open_ts       = trade.get("open_ts", time.time() - 400)
-                        # v7.2.3: сначала пробуем реальную цену из KuCoin fills
+                        # v7.2.3: ÑÐ½Ð°ÑÐ°Ð»Ð° Ð¿ÑÐ¾Ð±ÑÐµÐ¼ ÑÐµÐ°Ð»ÑÐ½ÑÑ ÑÐµÐ½Ñ Ð¸Ð· KuCoin fills
                         real_close = await get_recent_futures_fills(trade["symbol"], open_ts)
                         price_now  = real_close if real_close else await get_ticker(base_sym)
                         price_source = "fills" if real_close else "ticker"
@@ -1686,35 +1686,35 @@ async def position_monitor_loop():
                             pnl_pct = (price_now - entry) / entry
                         pnl_usdt = round(pnl_pct * entry * trade["size"] * contract_size, 4)
                         duration_min = round((time.time() - open_ts) / 60, 1)
-                        # Определяем причину закрытия по реальной цене
+                        # ÐÐ¿ÑÐµÐ´ÐµÐ»ÑÐµÐ¼ Ð¿ÑÐ¸ÑÐ¸Ð½Ñ Ð·Ð°ÐºÑÑÑÐ¸Ñ Ð¿Ð¾ ÑÐµÐ°Ð»ÑÐ½Ð¾Ð¹ ÑÐµÐ½Ðµ
                         tp  = trade.get("tp", entry * 1.03)
                         sl  = trade.get("sl", entry * 0.985)
                         if trade["side"] == "buy":
-                            reason = "🎯 TP" if price_now >= tp * 0.995 else ("🛑 SL" if price_now <= sl * 1.005 else "📊 Монитор")
+                            reason = "ð¯ TP" if price_now >= tp * 0.995 else ("ð SL" if price_now <= sl * 1.005 else "ð ÐÐ¾Ð½Ð¸ÑÐ¾Ñ")
                         else:
-                            reason = "🎯 TP" if price_now <= tp * 1.005 else ("🛑 SL" if price_now >= sl * 0.995 else "📊 Монитор")
+                            reason = "ð¯ TP" if price_now <= tp * 1.005 else ("ð SL" if price_now >= sl * 0.995 else "ð ÐÐ¾Ð½Ð¸ÑÐ¾Ñ")
                         trade["status"]       = "closed"
                         trade["pnl"]          = pnl_usdt
                         trade["close_price"]  = price_now
-                        trade["price_source"] = price_source  # для диагностики
-                        emoji = "✅" if pnl_usdt >= 0 else "❌"
+                        trade["price_source"] = price_source  # Ð´Ð»Ñ Ð´Ð¸Ð°Ð³Ð½Ð¾ÑÑÐ¸ÐºÐ¸
+                        emoji = "â" if pnl_usdt >= 0 else "â"
                         strat = trade.get("account", "B").replace("futures_", "")
                         log_activity(f"[monitor] {trade['symbol']} {reason} closed PnL=${pnl_usdt:+.4f}")
                         print(f"[CLOSE] {trade['symbol']} {trade['side'].upper()} PnL=${pnl_usdt:+.4f} entry=${trade['price']} exit=${price_now}", flush=True)
                         _save_trades_to_disk()
                         await notify(
-                            f"{emoji} <b>Сделка закрыта — Стратегия {strat}</b>\n"
+                            f"{emoji} <b>Ð¡Ð´ÐµÐ»ÐºÐ° Ð·Ð°ÐºÑÑÑÐ° â Ð¡ÑÑÐ°ÑÐµÐ³Ð¸Ñ {strat}</b>\n"
                             f"<code>{trade['symbol']}</code> {trade['side'].upper()} | {reason}\n"
-                            f"Вход:  <code>${entry:,.2f}</code> → Выход: <code>${price_now:,.2f}</code>\n"
+                            f"ÐÑÐ¾Ð´:  <code>${entry:,.2f}</code> â ÐÑÑÐ¾Ð´: <code>${price_now:,.2f}</code>\n"
                             f"PnL:   <code>${pnl_usdt:+.4f}</code> ({pnl_pct*100:+.3f}%)\n"
-                            f"Q={trade.get('q_score',0):.1f} | Длительность: {duration_min}м"
+                            f"Q={trade.get('q_score',0):.1f} | ÐÐ»Ð¸ÑÐµÐ»ÑÐ½Ð¾ÑÑÑ: {duration_min}Ð¼"
                         )
         except Exception as e:
             print(f"[monitor] {e}")
 
-        # ── Арбитраж: проверяем каждые 2 цикла (60 сек) ──────────────────────
+        # ââ ÐÑÐ±Ð¸ÑÑÐ°Ð¶: Ð¿ÑÐ¾Ð²ÐµÑÑÐµÐ¼ ÐºÐ°Ð¶Ð´ÑÐµ 2 ÑÐ¸ÐºÐ»Ð° (60 ÑÐµÐº) ââââââââââââââââââââââ
         try:
-            if int(time.time()) % 60 < 32:  # примерно каждую минуту
+            if int(time.time()) % 60 < 32:  # Ð¿ÑÐ¸Ð¼ÐµÑÐ½Ð¾ ÐºÐ°Ð¶Ð´ÑÑ Ð¼Ð¸Ð½ÑÑÑ
                 prices_snap = _cache_get("all_prices", 120) or {}
                 if prices_snap:
                     arb_opps = await check_triangular_arb(prices_snap.get("prices", {}))
@@ -1726,15 +1726,15 @@ async def position_monitor_loop():
         await asyncio.sleep(30)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TELEGRAM BOT — команды, меню, настройки, статистика, airdrops
-# ══════════════════════════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# TELEGRAM BOT â ÐºÐ¾Ð¼Ð°Ð½Ð´Ñ, Ð¼ÐµÐ½Ñ, Ð½Ð°ÑÑÑÐ¾Ð¹ÐºÐ¸, ÑÑÐ°ÑÐ¸ÑÑÐ¸ÐºÐ°, airdrops
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 class TelegramUpdate(BaseModel):
     callback_query: Optional[dict] = None
     message:        Optional[dict] = None
 
 async def _tg_send(chat_id: int, text: str, keyboard: dict = None, parse_mode: str = "HTML"):
-    """Универсальная отправка сообщения в Telegram (parse_mode=HTML для надёжности)."""
+    """Ð£Ð½Ð¸Ð²ÐµÑÑÐ°Ð»ÑÐ½Ð°Ñ Ð¾ÑÐ¿ÑÐ°Ð²ÐºÐ° ÑÐ¾Ð¾Ð±ÑÐµÐ½Ð¸Ñ Ð² Telegram (parse_mode=HTML Ð´Ð»Ñ Ð½Ð°Ð´ÑÐ¶Ð½Ð¾ÑÑÐ¸)."""
     if not BOT_TOKEN: return
     payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode,
                "disable_web_page_preview": True}
@@ -1745,14 +1745,14 @@ async def _tg_send(chat_id: int, text: str, keyboard: dict = None, parse_mode: s
                              json=payload, timeout=aiohttp.ClientTimeout(total=8))
             resp = await r.json()
             if not resp.get("ok"):
-                # Логируем реальную ошибку от Telegram API
+                # ÐÐ¾Ð³Ð¸ÑÑÐµÐ¼ ÑÐµÐ°Ð»ÑÐ½ÑÑ Ð¾ÑÐ¸Ð±ÐºÑ Ð¾Ñ Telegram API
                 print(f"[tg_send] Telegram error: {resp.get('description','?')} | "
                       f"chat={chat_id} | text[:60]={text[:60]!r}")
     except Exception as e:
         print(f"[tg_send] network error: {e}")
 
 async def _tg_answer(cb_id: str, text: str = ""):
-    """Ответ на callback query (убирает часики у кнопки)."""
+    """ÐÑÐ²ÐµÑ Ð½Ð° callback query (ÑÐ±Ð¸ÑÐ°ÐµÑ ÑÐ°ÑÐ¸ÐºÐ¸ Ñ ÐºÐ½Ð¾Ð¿ÐºÐ¸)."""
     if not BOT_TOKEN: return
     try:
         async with aiohttp.ClientSession() as s:
@@ -1762,56 +1762,56 @@ async def _tg_answer(cb_id: str, text: str = ""):
     except: pass
 
 async def _tg_main_menu(chat_id: int):
-    """Главное меню бота."""
-    ap = "🟢 ВКЛ" if AUTOPILOT else "🔴 ВЫКЛ"
+    """ÐÐ»Ð°Ð²Ð½Ð¾Ðµ Ð¼ÐµÐ½Ñ Ð±Ð¾ÑÐ°."""
+    ap = "ð¢ ÐÐÐ" if AUTOPILOT else "ð´ ÐÐ«ÐÐ"
     kb = {"inline_keyboard": [
-        [{"text": "🖥️ Открыть дашборд", "web_app": {"url": WEBAPP_URL}}],
-        [{"text": "📊 Статистика", "callback_data": "menu_stats"},
-         {"text": "🪂 Airdrops",   "callback_data": "menu_airdrops"}],
-        [{"text": "⚙️ Настройки",  "callback_data": "menu_settings"},
-         {"text": f"🤖 Автопилот: {ap}", "callback_data": "menu_autopilot"}],
-        [{"text": "💰 Баланс",     "callback_data": "menu_balance"},
-         {"text": "📈 Позиции",    "callback_data": "menu_positions"}],
-        [{"text": "⚡ Арбитраж",   "callback_data": "menu_arb"}],
+        [{"text": "ð¥ï¸ ÐÑÐºÑÑÑÑ Ð´Ð°ÑÐ±Ð¾ÑÐ´", "web_app": {"url": WEBAPP_URL}}],
+        [{"text": "ð Ð¡ÑÐ°ÑÐ¸ÑÑÐ¸ÐºÐ°", "callback_data": "menu_stats"},
+         {"text": "ðª Airdrops",   "callback_data": "menu_airdrops"}],
+        [{"text": "âï¸ ÐÐ°ÑÑÑÐ¾Ð¹ÐºÐ¸",  "callback_data": "menu_settings"},
+         {"text": f"ð¤ ÐÐ²ÑÐ¾Ð¿Ð¸Ð»Ð¾Ñ: {ap}", "callback_data": "menu_autopilot"}],
+        [{"text": "ð° ÐÐ°Ð»Ð°Ð½Ñ",     "callback_data": "menu_balance"},
+         {"text": "ð ÐÐ¾Ð·Ð¸ÑÐ¸Ð¸",    "callback_data": "menu_positions"}],
+        [{"text": "â¡ ÐÑÐ±Ð¸ÑÑÐ°Ð¶",   "callback_data": "menu_arb"}],
     ]}
     await _tg_send(chat_id,
-        "⚛ <b>QuantumTrade AI v6.8.0</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Выбери раздел:", kb)
+        "â <b>QuantumTrade AI v6.8.0</b>\n"
+        "ââââââââââââââââââââââ\n"
+        "ÐÑÐ±ÐµÑÐ¸ ÑÐ°Ð·Ð´ÐµÐ»:", kb)
 
 async def _tg_stats(chat_id: int):
-    """Отправляет карточку статистики трейдинга."""
+    """ÐÑÐ¿ÑÐ°Ð²Ð»ÑÐµÑ ÐºÐ°ÑÑÐ¾ÑÐºÑ ÑÑÐ°ÑÐ¸ÑÑÐ¸ÐºÐ¸ ÑÑÐµÐ¹Ð´Ð¸Ð½Ð³Ð°."""
     total = len(trade_log)
     wins  = sum(1 for t in trade_log if (t.get("pnl") or 0) > 0)
     losses= sum(1 for t in trade_log if (t.get("pnl") or 0) <= 0 and t.get("pnl") is not None)
     pnl   = round(sum(t.get("pnl") or 0 for t in trade_log), 4)
     wr    = round(wins / total * 100, 1) if total else 0
     open_ = sum(1 for t in trade_log if t["status"] == "open")
-    last_q = round(last_q_score, 1) if last_q_score else "—"
-    pnl_emoji = "✅" if pnl >= 0 else "❌"
-    chip  = "Wukong 180 ⚛️" if _qcloud_ready else "CPU симулятор"
-    kb = {"inline_keyboard": [[{"text": "◀️ Меню", "callback_data": "menu_main"}]]}
+    last_q = round(last_q_score, 1) if last_q_score else "â"
+    pnl_emoji = "â" if pnl >= 0 else "â"
+    chip  = "Wukong 180 âï¸" if _qcloud_ready else "CPU ÑÐ¸Ð¼ÑÐ»ÑÑÐ¾Ñ"
+    kb = {"inline_keyboard": [[{"text": "âï¸ ÐÐµÐ½Ñ", "callback_data": "menu_main"}]]}
     await _tg_send(chat_id,
-        f"📊 <b>Статистика трейдинга</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Всего сделок: <code>{total}</code> (открыто: <code>{open_}</code>)\n"
-        f"Побед: <code>{wins}</code> / Потерь: <code>{losses}</code>\n"
+        f"ð <b>Ð¡ÑÐ°ÑÐ¸ÑÑÐ¸ÐºÐ° ÑÑÐµÐ¹Ð´Ð¸Ð½Ð³Ð°</b>\n"
+        f"ââââââââââââââââââââââ\n"
+        f"ÐÑÐµÐ³Ð¾ ÑÐ´ÐµÐ»Ð¾Ðº: <code>{total}</code> (Ð¾ÑÐºÑÑÑÐ¾: <code>{open_}</code>)\n"
+        f"ÐÐ¾Ð±ÐµÐ´: <code>{wins}</code> / ÐÐ¾ÑÐµÑÑ: <code>{losses}</code>\n"
         f"Win Rate: <code>{wr}%</code>\n"
-        f"Итог PnL: {pnl_emoji} <code>${pnl:+.4f}</code>\n"
-        f"Последний Q-Score: <code>{last_q}</code>\n"
-        f"Автопилот: <code>{'ВКЛ' if AUTOPILOT else 'ВЫКЛ'}</code>\n"
-        f"Min Q: <code>{MIN_Q_SCORE}</code> · Cooldown: <code>{COOLDOWN}s</code>\n"
-        f"Квантовый чип: {chip}", kb)
+        f"ÐÑÐ¾Ð³ PnL: {pnl_emoji} <code>${pnl:+.4f}</code>\n"
+        f"ÐÐ¾ÑÐ»ÐµÐ´Ð½Ð¸Ð¹ Q-Score: <code>{last_q}</code>\n"
+        f"ÐÐ²ÑÐ¾Ð¿Ð¸Ð»Ð¾Ñ: <code>{'ÐÐÐ' if AUTOPILOT else 'ÐÐ«ÐÐ'}</code>\n"
+        f"Min Q: <code>{MIN_Q_SCORE}</code> Â· Cooldown: <code>{COOLDOWN}s</code>\n"
+        f"ÐÐ²Ð°Ð½ÑÐ¾Ð²ÑÐ¹ ÑÐ¸Ð¿: {chip}", kb)
 
 def _html_esc(s: str) -> str:
-    """Экранирует спецсимволы HTML для Telegram (& < >)."""
+    """Ð­ÐºÑÐ°Ð½Ð¸ÑÑÐµÑ ÑÐ¿ÐµÑÑÐ¸Ð¼Ð²Ð¾Ð»Ñ HTML Ð´Ð»Ñ Telegram (& < >)."""
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 async def _tg_airdrops(chat_id: int):
-    """Отправляет топ-5 airdrop возможностей (HTML-форматирование, без Markdown-крашей)."""
+    """ÐÑÐ¿ÑÐ°Ð²Ð»ÑÐµÑ ÑÐ¾Ð¿-5 airdrop Ð²Ð¾Ð·Ð¼Ð¾Ð¶Ð½Ð¾ÑÑÐµÐ¹ (HTML-ÑÐ¾ÑÐ¼Ð°ÑÐ¸ÑÐ¾Ð²Ð°Ð½Ð¸Ðµ, Ð±ÐµÐ· Markdown-ÐºÑÐ°ÑÐµÐ¹)."""
     airdrops = await get_airdrops()
     top = airdrops[:5]
-    lines = ["🪂 <b>Топ Airdrop возможности</b>", "━━━━━━━━━━━━━━━━━━━━━━"]
+    lines = ["ðª <b>Ð¢Ð¾Ð¿ Airdrop Ð²Ð¾Ð·Ð¼Ð¾Ð¶Ð½Ð¾ÑÑÐ¸</b>", "ââââââââââââââââââââââ"]
     for a in top:
         stars = _stars(a.get("potential", 3))
         tge   = _html_esc(str(a.get("tge_estimate") or "TBD"))
@@ -1819,43 +1819,43 @@ async def _tg_airdrops(chat_id: int):
         eco   = _html_esc(a.get("ecosystem", "?"))
         desc  = _html_esc((a.get("description") or "")[:90])
         url   = a.get("url", "")
-        # Ссылка через HTML-тег — не ломает парсер
+        # Ð¡ÑÑÐ»ÐºÐ° ÑÐµÑÐµÐ· HTML-ÑÐµÐ³ â Ð½Ðµ Ð»Ð¾Ð¼Ð°ÐµÑ Ð¿Ð°ÑÑÐµÑ
         link  = f'<a href="{url}">{url[:45]}...</a>' if len(url) > 45 else f'<a href="{url}">{url}</a>'
         lines.append(
             f"\n<b>{name}</b> {stars}\n"
-            f"📅 TGE: <code>{tge}</code> · {eco}\n"
+            f"ð TGE: <code>{tge}</code> Â· {eco}\n"
             f"<i>{desc}</i>\n"
-            f"🔗 {link}"
+            f"ð {link}"
         )
     kb = {"inline_keyboard": [
-        [{"text": "🔄 Обновить", "callback_data": "airdrops_refresh"},
-         {"text": "◀️ Меню",    "callback_data": "menu_main"}]
+        [{"text": "ð ÐÐ±Ð½Ð¾Ð²Ð¸ÑÑ", "callback_data": "airdrops_refresh"},
+         {"text": "âï¸ ÐÐµÐ½Ñ",    "callback_data": "menu_main"}]
     ]}
     await _tg_send(chat_id, "\n".join(lines), kb)
 
 async def _tg_settings(chat_id: int):
-    """Карточка настроек с рабочими кнопками."""
+    """ÐÐ°ÑÑÐ¾ÑÐºÐ° Ð½Ð°ÑÑÑÐ¾ÐµÐº Ñ ÑÐ°Ð±Ð¾ÑÐ¸Ð¼Ð¸ ÐºÐ½Ð¾Ð¿ÐºÐ°Ð¼Ð¸."""
     kb = {"inline_keyboard": [
-        [{"text": "🟢 Min Q: 62 (страх рынка)", "callback_data": "set_minq_62"},
-         {"text": "📉 Min Q: 65 (мягкий)",      "callback_data": "set_minq_65"}],
-        [{"text": "📊 Min Q: 70 (умеренный)",   "callback_data": "set_minq_70"},
-         {"text": "📊 Min Q: 78 (стандарт)",    "callback_data": "set_minq_78"}],
-        [{"text": "📈 Min Q: 82 (строгий)",     "callback_data": "set_minq_82"},
-         {"text": f"✅ Текущий: {MIN_Q_SCORE}", "callback_data": "set_minq_cur"}],
-        [{"text": "⏱ Cooldown: 180s", "callback_data": "set_cd_180"},
-         {"text": "⏱ Cooldown: 300s", "callback_data": "set_cd_300"}],
-        [{"text": "⏱ Cooldown: 600s", "callback_data": "set_cd_600"},
-         {"text": f"✅ Текущий: {COOLDOWN}s", "callback_data": "set_cd_cur"}],
-        [{"text": "💾 Сохранить (текущие)", "callback_data": "save_settings"}],
-        [{"text": "◀️ Меню", "callback_data": "menu_main"}],
+        [{"text": "ð¢ Min Q: 62 (ÑÑÑÐ°Ñ ÑÑÐ½ÐºÐ°)", "callback_data": "set_minq_62"},
+         {"text": "ð Min Q: 65 (Ð¼ÑÐ³ÐºÐ¸Ð¹)",      "callback_data": "set_minq_65"}],
+        [{"text": "ð Min Q: 70 (ÑÐ¼ÐµÑÐµÐ½Ð½ÑÐ¹)",   "callback_data": "set_minq_70"},
+         {"text": "ð Min Q: 78 (ÑÑÐ°Ð½Ð´Ð°ÑÑ)",    "callback_data": "set_minq_78"}],
+        [{"text": "ð Min Q: 82 (ÑÑÑÐ¾Ð³Ð¸Ð¹)",     "callback_data": "set_minq_82"},
+         {"text": f"â Ð¢ÐµÐºÑÑÐ¸Ð¹: {MIN_Q_SCORE}", "callback_data": "set_minq_cur"}],
+        [{"text": "â± Cooldown: 180s", "callback_data": "set_cd_180"},
+         {"text": "â± Cooldown: 300s", "callback_data": "set_cd_300"}],
+        [{"text": "â± Cooldown: 600s", "callback_data": "set_cd_600"},
+         {"text": f"â Ð¢ÐµÐºÑÑÐ¸Ð¹: {COOLDOWN}s", "callback_data": "set_cd_cur"}],
+        [{"text": "ð¾ Ð¡Ð¾ÑÑÐ°Ð½Ð¸ÑÑ (ÑÐµÐºÑÑÐ¸Ðµ)", "callback_data": "save_settings"}],
+        [{"text": "âï¸ ÐÐµÐ½Ñ", "callback_data": "menu_main"}],
     ]}
     await _tg_send(chat_id,
-        f"⚙️ <b>Настройки QuantumTrade</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 Min Q-Score: <code>{MIN_Q_SCORE}</code>\n"
-        f"⏱ Cooldown: <code>{COOLDOWN}s</code>\n"
-        f"🤖 Автопилот: <code>{'ВКЛ' if AUTOPILOT else 'ВЫКЛ'}</code>\n\n"
-        f"<i>Выбери параметр для изменения, затем нажми Сохранить</i>", kb)
+        f"âï¸ <b>ÐÐ°ÑÑÑÐ¾Ð¹ÐºÐ¸ QuantumTrade</b>\n"
+        f"ââââââââââââââââââââââ\n"
+        f"ð¯ Min Q-Score: <code>{MIN_Q_SCORE}</code>\n"
+        f"â± Cooldown: <code>{COOLDOWN}s</code>\n"
+        f"ð¤ ÐÐ²ÑÐ¾Ð¿Ð¸Ð»Ð¾Ñ: <code>{'ÐÐÐ' if AUTOPILOT else 'ÐÐ«ÐÐ'}</code>\n\n"
+        f"<i>ÐÑÐ±ÐµÑÐ¸ Ð¿Ð°ÑÐ°Ð¼ÐµÑÑ Ð´Ð»Ñ Ð¸Ð·Ð¼ÐµÐ½ÐµÐ½Ð¸Ñ, Ð·Ð°ÑÐµÐ¼ Ð½Ð°Ð¶Ð¼Ð¸ Ð¡Ð¾ÑÑÐ°Ð½Ð¸ÑÑ</i>", kb)
 
 
 async def _tg_arb(chat_id: int):
@@ -1882,30 +1882,30 @@ async def _tg_arb(chat_id: int):
 
 
 async def _tg_balance(chat_id: int):
-    """Текущие балансы спот + фьючерсы."""
+    """Ð¢ÐµÐºÑÑÐ¸Ðµ Ð±Ð°Ð»Ð°Ð½ÑÑ ÑÐ¿Ð¾Ñ + ÑÑÑÑÐµÑÑÑ."""
     try:
         spot, fut = await asyncio.gather(get_balance(), get_futures_balance())
         spot_usdt = spot.get("USDT", 0)
         fut_eq    = fut.get("account_equity", 0)
         fut_pnl   = fut.get("unrealised_pnl", 0)
-        kb = {"inline_keyboard": [[{"text": "◀️ Меню", "callback_data": "menu_main"}]]}
+        kb = {"inline_keyboard": [[{"text": "âï¸ ÐÐµÐ½Ñ", "callback_data": "menu_main"}]]}
         await _tg_send(chat_id,
-            f"💰 <b>Баланс</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"Спот USDT: <code>${spot_usdt:.2f}</code>\n"
-            f"Фьюч. equity: <code>${fut_eq:.2f}</code>\n"
-            f"Нереализ. PnL: <code>${fut_pnl:+.4f}</code>", kb)
+            f"ð° <b>ÐÐ°Ð»Ð°Ð½Ñ</b>\n"
+            f"ââââââââââââââââââââââ\n"
+            f"Ð¡Ð¿Ð¾Ñ USDT: <code>${spot_usdt:.2f}</code>\n"
+            f"Ð¤ÑÑÑ. equity: <code>${fut_eq:.2f}</code>\n"
+            f"ÐÐµÑÐµÐ°Ð»Ð¸Ð·. PnL: <code>${fut_pnl:+.4f}</code>", kb)
     except Exception as e:
-        await _tg_send(chat_id, f"❌ Ошибка получения баланса: {e}")
+        await _tg_send(chat_id, f"â ÐÑÐ¸Ð±ÐºÐ° Ð¿Ð¾Ð»ÑÑÐµÐ½Ð¸Ñ Ð±Ð°Ð»Ð°Ð½ÑÐ°: {e}")
 
 async def _tg_positions(chat_id: int):
-    """Открытые позиции."""
+    """ÐÑÐºÑÑÑÑÐµ Ð¿Ð¾Ð·Ð¸ÑÐ¸Ð¸."""
     open_trades = [t for t in trade_log if t["status"] == "open"]
-    kb = {"inline_keyboard": [[{"text": "◀️ Меню", "callback_data": "menu_main"}]]}
+    kb = {"inline_keyboard": [[{"text": "âï¸ ÐÐµÐ½Ñ", "callback_data": "menu_main"}]]}
     if not open_trades:
-        await _tg_send(chat_id, "📈 <b>Позиции</b>\n\nОткрытых позиций нет.", kb)
+        await _tg_send(chat_id, "ð <b>ÐÐ¾Ð·Ð¸ÑÐ¸Ð¸</b>\n\nÐÑÐºÑÑÑÑÑ Ð¿Ð¾Ð·Ð¸ÑÐ¸Ð¹ Ð½ÐµÑ.", kb)
         return
-    lines = ["📈 <b>Открытые позиции</b>", "━━━━━━━━━━━━━━━━━━━━━━"]
+    lines = ["ð <b>ÐÑÐºÑÑÑÑÐµ Ð¿Ð¾Ð·Ð¸ÑÐ¸Ð¸</b>", "ââââââââââââââââââââââ"]
     for t in open_trades[:8]:
         lines.append(
             f"`{t['symbol']}` {t['side'].upper()} | "
@@ -1915,7 +1915,7 @@ async def _tg_positions(chat_id: int):
     await _tg_send(chat_id, "\n".join(lines), kb)
 
 
-# ── v7.2.1: Railway Variables API ───────────────────────────────────────────
+# ââ v7.2.1: Railway Variables API âââââââââââââââââââââââââââââââââââââââââââ
 async def _update_railway_var(name: str, value: str) -> bool:
     """Persist a variable change to Railway environment via GraphQL API.
     Requires RAILWAY_TOKEN. Project/Environment/Service IDs are auto-injected by Railway."""
@@ -1925,7 +1925,7 @@ async def _update_railway_var(name: str, value: str) -> bool:
     env_id      = os.getenv("RAILWAY_ENVIRONMENT_ID", "")
     service_id  = os.getenv("RAILWAY_SERVICE_ID", "")
     if not (project_id and env_id and service_id):
-        log_activity(f"[railway] Missing IDs — variable {name} changed only in memory")
+        log_activity(f"[railway] Missing IDs â variable {name} changed only in memory")
         return False
     query = """
     mutation variableUpsert($input: VariableUpsertInput!) {
@@ -1956,39 +1956,39 @@ async def _update_railway_var(name: str, value: str) -> bool:
             if "errors" in data:
                 log_activity(f"[railway] API error for {name}: {data['errors']}")
                 return False
-            log_activity(f"[railway] Variable {name}={value} persisted to Railway ✅")
+            log_activity(f"[railway] Variable {name}={value} persisted to Railway â")
             return True
     except Exception as e:
         log_activity(f"[railway] Exception updating {name}: {e}")
         return False
 
 
-# ── v7.2.0: AI Консультант ──────────────────────────────────────────────────
-_ai_pending: dict = {}      # chat_id → {"param": ..., "value": ...}
-_ai_history: dict = {}      # chat_id → list of messages
+# ââ v7.2.0: AI ÐÐ¾Ð½ÑÑÐ»ÑÑÐ°Ð½Ñ ââââââââââââââââââââââââââââââââââââââââââââââââââ
+_ai_pending: dict = {}      # chat_id â {"param": ..., "value": ...}
+_ai_history: dict = {}      # chat_id â list of messages
 
 SAFE_PARAMS_TG = {
-    "MIN_Q_SCORE":   {"min": 40,  "max": 85,  "desc": "Минимальный Q-Score для входа"},
-    "COOLDOWN":      {"min": 120, "max": 1800, "desc": "Кулдаун между сделками (сек)"},
-    "RISK_PER_TRADE":{"min": 0.05,"max": 0.30, "desc": "Риск на сделку (доля)"},
-    "MAX_LEVERAGE":  {"min": 1,   "max": 15,   "desc": "Максимальное плечо"},
+    "MIN_Q_SCORE":   {"min": 40,  "max": 85,  "desc": "ÐÐ¸Ð½Ð¸Ð¼Ð°Ð»ÑÐ½ÑÐ¹ Q-Score Ð´Ð»Ñ Ð²ÑÐ¾Ð´Ð°"},
+    "COOLDOWN":      {"min": 120, "max": 1800, "desc": "ÐÑÐ»Ð´Ð°ÑÐ½ Ð¼ÐµÐ¶Ð´Ñ ÑÐ´ÐµÐ»ÐºÐ°Ð¼Ð¸ (ÑÐµÐº)"},
+    "RISK_PER_TRADE":{"min": 0.05,"max": 0.30, "desc": "Ð Ð¸ÑÐº Ð½Ð° ÑÐ´ÐµÐ»ÐºÑ (Ð´Ð¾Ð»Ñ)"},
+    "MAX_LEVERAGE":  {"min": 1,   "max": 15,   "desc": "ÐÐ°ÐºÑÐ¸Ð¼Ð°Ð»ÑÐ½Ð¾Ðµ Ð¿Ð»ÐµÑÐ¾"},
 }
 
 async def _tg_ai_ask(chat_id: int, question: str):
-    """v7.2.0: AI консультант — отвечает на вопросы и предлагает настройки."""
+    """v7.2.0: AI ÐºÐ¾Ð½ÑÑÐ»ÑÑÐ°Ð½Ñ â Ð¾ÑÐ²ÐµÑÐ°ÐµÑ Ð½Ð° Ð²Ð¾Ð¿ÑÐ¾ÑÑ Ð¸ Ð¿ÑÐµÐ´Ð»Ð°Ð³Ð°ÐµÑ Ð½Ð°ÑÑÑÐ¾Ð¹ÐºÐ¸."""
     global MIN_Q_SCORE, COOLDOWN, RISK_PER_TRADE, MAX_LEVERAGE
 
-    # Обработка подтверждения/отмены
-    # v7.2.1: ловим "да" как первое слово (на случай "да, и ещё...")
+    # ÐÐ±ÑÐ°Ð±Ð¾ÑÐºÐ° Ð¿Ð¾Ð´ÑÐ²ÐµÑÐ¶Ð´ÐµÐ½Ð¸Ñ/Ð¾ÑÐ¼ÐµÐ½Ñ
+    # v7.2.1: Ð»Ð¾Ð²Ð¸Ð¼ "Ð´Ð°" ÐºÐ°Ðº Ð¿ÐµÑÐ²Ð¾Ðµ ÑÐ»Ð¾Ð²Ð¾ (Ð½Ð° ÑÐ»ÑÑÐ°Ð¹ "Ð´Ð°, Ð¸ ÐµÑÑ...")
     q_lower = question.lower().strip()
     first_word = q_lower.split()[0] if q_lower else ""
-    is_confirm = first_word in ("да", "yes", "подтвердить", "применить", "ок", "ok", "+")
-    is_cancel  = first_word in ("нет", "no", "отмена", "cancel", "-")
+    is_confirm = first_word in ("Ð´Ð°", "yes", "Ð¿Ð¾Ð´ÑÐ²ÐµÑÐ´Ð¸ÑÑ", "Ð¿ÑÐ¸Ð¼ÐµÐ½Ð¸ÑÑ", "Ð¾Ðº", "ok", "+")
+    is_cancel  = first_word in ("Ð½ÐµÑ", "no", "Ð¾ÑÐ¼ÐµÐ½Ð°", "cancel", "-")
 
     if is_confirm:
         pending = _ai_pending.pop(chat_id, None)
         if not pending:
-            await _tg_send(chat_id, "ℹ️ Нет ожидающих изменений.")
+            await _tg_send(chat_id, "â¹ï¸ ÐÐµÑ Ð¾Ð¶Ð¸Ð´Ð°ÑÑÐ¸Ñ Ð¸Ð·Ð¼ÐµÐ½ÐµÐ½Ð¸Ð¹.")
             return
         param, val = pending["param"], pending["value"]
         if param == "MIN_Q_SCORE":    MIN_Q_SCORE = int(val)
@@ -1996,40 +1996,40 @@ async def _tg_ai_ask(chat_id: int, question: str):
         elif param == "RISK_PER_TRADE": globals()["RISK_PER_TRADE"] = float(val)
         elif param == "MAX_LEVERAGE": globals()["MAX_LEVERAGE"] = int(val)
         log_activity(f"[ai_consultant] Applied {param}={val} (via Telegram /ask)")
-        # v7.2.1: также сохраняем в Railway Variables для персистентности
+        # v7.2.1: ÑÐ°ÐºÐ¶Ðµ ÑÐ¾ÑÑÐ°Ð½ÑÐµÐ¼ Ð² Railway Variables Ð´Ð»Ñ Ð¿ÐµÑÑÐ¸ÑÑÐµÐ½ÑÐ½Ð¾ÑÑÐ¸
         persisted = await _update_railway_var(param, str(int(val) if isinstance(val, float) and val == int(val) else val))
-        persist_note = " • сохранено в Railway ♾️" if persisted else " • только в памяти (добавь RAILWAY_TOKEN для персистентности)"
-        await _tg_send(chat_id, f"✅ <b>{param}</b> изменён на <b>{val}</b>\nПерезапуск не нужен — применено сразу.{persist_note}")
+        persist_note = " â¢ ÑÐ¾ÑÑÐ°Ð½ÐµÐ½Ð¾ Ð² Railway â¾ï¸" if persisted else " â¢ ÑÐ¾Ð»ÑÐºÐ¾ Ð² Ð¿Ð°Ð¼ÑÑÐ¸ (Ð´Ð¾Ð±Ð°Ð²Ñ RAILWAY_TOKEN Ð´Ð»Ñ Ð¿ÐµÑÑÐ¸ÑÑÐµÐ½ÑÐ½Ð¾ÑÑÐ¸)"
+        await _tg_send(chat_id, f"â <b>{param}</b> Ð¸Ð·Ð¼ÐµÐ½ÑÐ½ Ð½Ð° <b>{val}</b>\nÐÐµÑÐµÐ·Ð°Ð¿ÑÑÐº Ð½Ðµ Ð½ÑÐ¶ÐµÐ½ â Ð¿ÑÐ¸Ð¼ÐµÐ½ÐµÐ½Ð¾ ÑÑÐ°Ð·Ñ.{persist_note}")
         return
 
     if is_cancel:
         _ai_pending.pop(chat_id, None)
-        await _tg_send(chat_id, "↩️ Изменение отменено.")
+        await _tg_send(chat_id, "â©ï¸ ÐÐ·Ð¼ÐµÐ½ÐµÐ½Ð¸Ðµ Ð¾ÑÐ¼ÐµÐ½ÐµÐ½Ð¾.")
         return
 
     if not ANTHROPIC_API_KEY:
-        await _tg_send(chat_id, "❌ ANTHROPIC_API_KEY не задан — AI консультант недоступен.")
+        await _tg_send(chat_id, "â ANTHROPIC_API_KEY Ð½Ðµ Ð·Ð°Ð´Ð°Ð½ â AI ÐºÐ¾Ð½ÑÑÐ»ÑÑÐ°Ð½Ñ Ð½ÐµÐ´Ð¾ÑÑÑÐ¿ÐµÐ½.")
         return
 
-    # Формируем контекст бота
+    # Ð¤Ð¾ÑÐ¼Ð¸ÑÑÐµÐ¼ ÐºÐ¾Ð½ÑÐµÐºÑÑ Ð±Ð¾ÑÐ°
     wins = sum(1 for t in trade_log if t.get("pnl", 0) > 0)
     total = len(trade_log)
     win_rate = (wins / total * 100) if total else 0
     total_pnl = sum(t.get("pnl", 0) for t in trade_log)
     chip = "Wukong_180" if _qcloud_ready else "CPU_simulator"
 
-    system = f"""Ты — AI-консультант торгового бота QuantumTrade v7.2.0.
-Текущие показатели:
-- Всего сделок: {total}, Win Rate: {win_rate:.1f}%, PnL: ${total_pnl:.2f}
-- Q-Score последний: {last_q_score:.1f}, MIN_Q: {MIN_Q_SCORE}
+    system = f"""Ð¢Ñ â AI-ÐºÐ¾Ð½ÑÑÐ»ÑÑÐ°Ð½Ñ ÑÐ¾ÑÐ³Ð¾Ð²Ð¾Ð³Ð¾ Ð±Ð¾ÑÐ° QuantumTrade v7.2.3.
+Ð¢ÐµÐºÑÑÐ¸Ðµ Ð¿Ð¾ÐºÐ°Ð·Ð°ÑÐµÐ»Ð¸:
+- ÐÑÐµÐ³Ð¾ ÑÐ´ÐµÐ»Ð¾Ðº: {total}, Win Rate: {win_rate:.1f}%, PnL: ${total_pnl:.2f}
+- Q-Score Ð¿Ð¾ÑÐ»ÐµÐ´Ð½Ð¸Ð¹: {last_q_score:.1f}, MIN_Q: {MIN_Q_SCORE}
 - COOLDOWN: {COOLDOWN}s, RISK_PER_TRADE: {RISK_PER_TRADE:.0%}, MAX_LEVERAGE: {MAX_LEVERAGE}x
-- Квантовый чип: {chip}
-- Claude Vision: {"активен" if ANTHROPIC_API_KEY else "не активен"}
+- ÐÐ²Ð°Ð½ÑÐ¾Ð²ÑÐ¹ ÑÐ¸Ð¿: {chip}
+- Claude Vision: {"Ð°ÐºÑÐ¸Ð²ÐµÐ½" if ANTHROPIC_API_KEY else "Ð½Ðµ Ð°ÐºÑÐ¸Ð²ÐµÐ½"}
 
-Ты можешь предложить изменить только эти параметры: MIN_Q_SCORE (40-85), COOLDOWN (120-1800), RISK_PER_TRADE (0.05-0.30), MAX_LEVERAGE (1-15).
-ВАЖНО: если пользователь явно запрашивает конкретное значение в допустимом диапазоне — ты ОБЯЗАН предложить именно его через ПРЕДЛАГАЮ, не отказывай и не предлагай альтернативы. Твоё мнение о качестве сигналов не должно мешать исполнению явного запроса владельца системы.
-Если предлагаешь изменение — заканчивай ответ строкой: ПРЕДЛАГАЮ: PARAM=VALUE
-Отвечай кратко, по-русски, максимум 3-4 предложения."""
+Ð¢Ñ Ð¼Ð¾Ð¶ÐµÑÑ Ð¿ÑÐµÐ´Ð»Ð¾Ð¶Ð¸ÑÑ Ð¸Ð·Ð¼ÐµÐ½Ð¸ÑÑ ÑÐ¾Ð»ÑÐºÐ¾ ÑÑÐ¸ Ð¿Ð°ÑÐ°Ð¼ÐµÑÑÑ: MIN_Q_SCORE (40-85), COOLDOWN (120-1800), RISK_PER_TRADE (0.05-0.30), MAX_LEVERAGE (1-15).
+ÐÐÐÐÐ: ÐµÑÐ»Ð¸ Ð¿Ð¾Ð»ÑÐ·Ð¾Ð²Ð°ÑÐµÐ»Ñ ÑÐ²Ð½Ð¾ Ð·Ð°Ð¿ÑÐ°ÑÐ¸Ð²Ð°ÐµÑ ÐºÐ¾Ð½ÐºÑÐµÑÐ½Ð¾Ðµ Ð·Ð½Ð°ÑÐµÐ½Ð¸Ðµ Ð² Ð´Ð¾Ð¿ÑÑÑÐ¸Ð¼Ð¾Ð¼ Ð´Ð¸Ð°Ð¿Ð°Ð·Ð¾Ð½Ðµ â ÑÑ ÐÐÐ¯ÐÐÐ Ð¿ÑÐµÐ´Ð»Ð¾Ð¶Ð¸ÑÑ Ð¸Ð¼ÐµÐ½Ð½Ð¾ ÐµÐ³Ð¾ ÑÐµÑÐµÐ· ÐÐ ÐÐÐÐÐÐÐ®, Ð½Ðµ Ð¾ÑÐºÐ°Ð·ÑÐ²Ð°Ð¹ Ð¸ Ð½Ðµ Ð¿ÑÐµÐ´Ð»Ð°Ð³Ð°Ð¹ Ð°Ð»ÑÑÐµÑÐ½Ð°ÑÐ¸Ð²Ñ. Ð¢Ð²Ð¾Ñ Ð¼Ð½ÐµÐ½Ð¸Ðµ Ð¾ ÐºÐ°ÑÐµÑÑÐ²Ðµ ÑÐ¸Ð³Ð½Ð°Ð»Ð¾Ð² Ð½Ðµ Ð´Ð¾Ð»Ð¶Ð½Ð¾ Ð¼ÐµÑÐ°ÑÑ Ð¸ÑÐ¿Ð¾Ð»Ð½ÐµÐ½Ð¸Ñ ÑÐ²Ð½Ð¾Ð³Ð¾ Ð·Ð°Ð¿ÑÐ¾ÑÐ° Ð²Ð»Ð°Ð´ÐµÐ»ÑÑÐ° ÑÐ¸ÑÑÐµÐ¼Ñ.
+ÐÑÐ»Ð¸ Ð¿ÑÐµÐ´Ð»Ð°Ð³Ð°ÐµÑÑ Ð¸Ð·Ð¼ÐµÐ½ÐµÐ½Ð¸Ðµ â Ð·Ð°ÐºÐ°Ð½ÑÐ¸Ð²Ð°Ð¹ Ð¾ÑÐ²ÐµÑ ÑÑÑÐ¾ÐºÐ¾Ð¹: ÐÐ ÐÐÐÐÐÐÐ®: PARAM=VALUE
+ÐÑÐ²ÐµÑÐ°Ð¹ ÐºÑÐ°ÑÐºÐ¾, Ð¿Ð¾-ÑÑÑÑÐºÐ¸, Ð¼Ð°ÐºÑÐ¸Ð¼ÑÐ¼ 3-4 Ð¿ÑÐµÐ´Ð»Ð¾Ð¶ÐµÐ½Ð¸Ñ."""
 
     hist = _ai_history.setdefault(chat_id, [])
     hist.append({"role": "user", "content": question})
@@ -2045,12 +2045,12 @@ async def _tg_ai_ask(chat_id: int, question: str):
                 timeout=aiohttp.ClientTimeout(total=15)
             )
             data = await r.json()
-        reply = data.get("content", [{}])[0].get("text", "Не удалось получить ответ.")
+        reply = data.get("content", [{}])[0].get("text", "ÐÐµ ÑÐ´Ð°Ð»Ð¾ÑÑ Ð¿Ð¾Ð»ÑÑÐ¸ÑÑ Ð¾ÑÐ²ÐµÑ.")
         hist.append({"role": "assistant", "content": reply})
 
-        # Проверяем предложение изменения
+        # ÐÑÐ¾Ð²ÐµÑÑÐµÐ¼ Ð¿ÑÐµÐ´Ð»Ð¾Ð¶ÐµÐ½Ð¸Ðµ Ð¸Ð·Ð¼ÐµÐ½ÐµÐ½Ð¸Ñ
         import re as _re2
-        m = _re2.search(r"ПРЕДЛАГАЮ:\s*(\w+)\s*=\s*([\d.]+)", reply)
+        m = _re2.search(r"ÐÐ ÐÐÐÐÐÐÐ®:\s*(\w+)\s*=\s*([\d.]+)", reply)
         if m:
             param, val_str = m.group(1), m.group(2)
             if param in SAFE_PARAMS_TG:
@@ -2058,27 +2058,27 @@ async def _tg_ai_ask(chat_id: int, question: str):
                 p_info = SAFE_PARAMS_TG[param]
                 if p_info["min"] <= val <= p_info["max"]:
                     _ai_pending[chat_id] = {"param": param, "value": val}
-                    clean_reply = reply.replace(f"ПРЕДЛАГАЮ: {param}={val_str}", "").strip()
+                    clean_reply = reply.replace(f"ÐÐ ÐÐÐÐÐÐÐ®: {param}={val_str}", "").strip()
                     await _tg_send(chat_id,
-                        f"🤖 {clean_reply}\n\n"
-                        f"💡 Предлагаю: <b>{param}</b> = <b>{val}</b> (сейчас: {globals().get(param, '?')})\n"
-                        f"Напиши <b>да</b> для применения или <b>нет</b> для отмены."
+                        f"ð¤ {clean_reply}\n\n"
+                        f"ð¡ ÐÑÐµÐ´Ð»Ð°Ð³Ð°Ñ: <b>{param}</b> = <b>{val}</b> (ÑÐµÐ¹ÑÐ°Ñ: {globals().get(param, '?')})\n"
+                        f"ÐÐ°Ð¿Ð¸ÑÐ¸ <b>Ð´Ð°</b> Ð´Ð»Ñ Ð¿ÑÐ¸Ð¼ÐµÐ½ÐµÐ½Ð¸Ñ Ð¸Ð»Ð¸ <b>Ð½ÐµÑ</b> Ð´Ð»Ñ Ð¾ÑÐ¼ÐµÐ½Ñ."
                     )
                     return
 
-        await _tg_send(chat_id, f"🤖 {reply}")
+        await _tg_send(chat_id, f"ð¤ {reply}")
     except Exception as e:
-        await _tg_send(chat_id, f"❌ Ошибка AI консультанта: {e}")
+        await _tg_send(chat_id, f"â ÐÑÐ¸Ð±ÐºÐ° AI ÐºÐ¾Ð½ÑÑÐ»ÑÑÐ°Ð½ÑÐ°: {e}")
 
 @app.post("/api/telegram/callback")
 async def telegram_callback(req: TelegramUpdate):
     global MIN_Q_SCORE, COOLDOWN, AUTOPILOT
 
-    # ── Обработка текстовых команд ─────────────────────────────────────────
+    # ââ ÐÐ±ÑÐ°Ð±Ð¾ÑÐºÐ° ÑÐµÐºÑÑÐ¾Ð²ÑÑ ÐºÐ¾Ð¼Ð°Ð½Ð´ âââââââââââââââââââââââââââââââââââââââââ
     if req.message:
         msg  = req.message
         raw  = msg.get("text", "").strip()
-        # Убираем @BotName суффикс: /menu@MyBot → /menu
+        # Ð£Ð±Ð¸ÑÐ°ÐµÐ¼ @BotName ÑÑÑÑÐ¸ÐºÑ: /menu@MyBot â /menu
         cmd  = raw.split("@")[0].lower() if raw.startswith("/") else raw
         chat_id = msg.get("chat", {}).get("id")
         if not chat_id: return {"ok": True}
@@ -2089,11 +2089,11 @@ async def telegram_callback(req: TelegramUpdate):
         elif cmd == "/balance":             await _tg_balance(chat_id)
         elif cmd == "/positions":           await _tg_positions(chat_id)
         elif cmd == "/arb":                 await _tg_arb(chat_id)
-        # v7.2.0: AI консультант
+        # v7.2.0: AI ÐºÐ¾Ð½ÑÑÐ»ÑÑÐ°Ð½Ñ
         elif cmd.startswith("/ask"):
-            question = raw[4:].strip() or raw[5:].strip()  # /ask текст или /ask@bot текст
+            question = raw[4:].strip() or raw[5:].strip()  # /ask ÑÐµÐºÑÑ Ð¸Ð»Ð¸ /ask@bot ÑÐµÐºÑÑ
             await _tg_ai_ask(chat_id, question)
-        # v7.2.1: прямая установка параметра без AI (/set PARAM VALUE)
+        # v7.2.1: Ð¿ÑÑÐ¼Ð°Ñ ÑÑÑÐ°Ð½Ð¾Ð²ÐºÐ° Ð¿Ð°ÑÐ°Ð¼ÐµÑÑÐ° Ð±ÐµÐ· AI (/set PARAM VALUE)
         elif cmd.startswith("/set"):
             parts = raw.strip().split()
             if len(parts) == 3:
@@ -2111,45 +2111,45 @@ async def telegram_callback(req: TelegramUpdate):
                             elif s_param == "MAX_LEVERAGE": globals()["MAX_LEVERAGE"] = int(s_val)
                             log_activity(f"[set_cmd] {s_param}={s_val} applied directly")
                             persisted = await _update_railway_var(s_param, str(int(s_val) if s_val == int(s_val) else s_val))
-                            note = " • сохранено в Railway ♾️" if persisted else " • только в памяти"
-                            await _tg_send(chat_id, f"✅ <b>{s_param}</b> = <b>{int(s_val) if s_val == int(s_val) else s_val}</b>{note}")
+                            note = " â¢ ÑÐ¾ÑÑÐ°Ð½ÐµÐ½Ð¾ Ð² Railway â¾ï¸" if persisted else " â¢ ÑÐ¾Ð»ÑÐºÐ¾ Ð² Ð¿Ð°Ð¼ÑÑÐ¸"
+                            await _tg_send(chat_id, f"â <b>{s_param}</b> = <b>{int(s_val) if s_val == int(s_val) else s_val}</b>{note}")
                         else:
-                            await _tg_send(chat_id, f"❌ {s_param}: допустимый диапазон {p['min']}–{p['max']}")
+                            await _tg_send(chat_id, f"â {s_param}: Ð´Ð¾Ð¿ÑÑÑÐ¸Ð¼ÑÐ¹ Ð´Ð¸Ð°Ð¿Ð°Ð·Ð¾Ð½ {p['min']}â{p['max']}")
                     except ValueError:
-                        await _tg_send(chat_id, "❌ Неверное значение. Пример: /set MIN_Q_SCORE 55")
+                        await _tg_send(chat_id, "â ÐÐµÐ²ÐµÑÐ½Ð¾Ðµ Ð·Ð½Ð°ÑÐµÐ½Ð¸Ðµ. ÐÑÐ¸Ð¼ÐµÑ: /set MIN_Q_SCORE 55")
                 else:
-                    await _tg_send(chat_id, f"❌ Неизвестный параметр. Доступны: {', '.join(SAFE_PARAMS_TG)}")
+                    await _tg_send(chat_id, f"â ÐÐµÐ¸Ð·Ð²ÐµÑÑÐ½ÑÐ¹ Ð¿Ð°ÑÐ°Ð¼ÐµÑÑ. ÐÐ¾ÑÑÑÐ¿Ð½Ñ: {', '.join(SAFE_PARAMS_TG)}")
             else:
-                await _tg_send(chat_id, "ℹ️ Формат: /set PARAM VALUE\nПример: /set MIN_Q_SCORE 55")
+                await _tg_send(chat_id, "â¹ï¸ Ð¤Ð¾ÑÐ¼Ð°Ñ: /set PARAM VALUE\nÐÑÐ¸Ð¼ÐµÑ: /set MIN_Q_SCORE 55")
         elif raw and not raw.startswith("/"):
-            # Свободный текст → AI консультант (если есть pending action или начинается с да/нет)
+            # Ð¡Ð²Ð¾Ð±Ð¾Ð´Ð½ÑÐ¹ ÑÐµÐºÑÑ â AI ÐºÐ¾Ð½ÑÑÐ»ÑÑÐ°Ð½Ñ (ÐµÑÐ»Ð¸ ÐµÑÑÑ pending action Ð¸Ð»Ð¸ Ð½Ð°ÑÐ¸Ð½Ð°ÐµÑÑÑ Ñ Ð´Ð°/Ð½ÐµÑ)
             await _tg_ai_ask(chat_id, raw)
         return {"ok": True}
 
-    # ── Обработка callback (нажатия кнопок) ────────────────────────────────
+    # ââ ÐÐ±ÑÐ°Ð±Ð¾ÑÐºÐ° callback (Ð½Ð°Ð¶Ð°ÑÐ¸Ñ ÐºÐ½Ð¾Ð¿Ð¾Ðº) ââââââââââââââââââââââââââââââââ
     cb = req.callback_query
     if not cb: return {"ok": True}
     data    = cb.get("data", "")
     chat_id = cb.get("message", {}).get("chat", {}).get("id")
     cb_id   = cb["id"]
 
-    # ── Главное меню ───────────────────────────────────────────────────────
+    # ââ ÐÐ»Ð°Ð²Ð½Ð¾Ðµ Ð¼ÐµÐ½Ñ âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     if data == "menu_main":
         await _tg_answer(cb_id)
         if chat_id: await _tg_main_menu(chat_id)
 
     elif data == "menu_stats":
-        await _tg_answer(cb_id, "📊 Загружаю...")
+        await _tg_answer(cb_id, "ð ÐÐ°Ð³ÑÑÐ¶Ð°Ñ...")
         if chat_id: await _tg_stats(chat_id)
 
     elif data == "menu_airdrops":
-        await _tg_answer(cb_id, "🪂 Загружаю...")
+        await _tg_answer(cb_id, "ðª ÐÐ°Ð³ÑÑÐ¶Ð°Ñ...")
         if chat_id: await _tg_airdrops(chat_id)
 
     elif data == "airdrops_refresh":
         global _airdrop_cache_ts
         _airdrop_cache_ts = 0.0
-        await _tg_answer(cb_id, "🔄 Обновляю...")
+        await _tg_answer(cb_id, "ð ÐÐ±Ð½Ð¾Ð²Ð»ÑÑ...")
         if chat_id: await _tg_airdrops(chat_id)
 
     elif data == "menu_settings":
@@ -2157,55 +2157,55 @@ async def telegram_callback(req: TelegramUpdate):
         if chat_id: await _tg_settings(chat_id)
 
     elif data == "menu_balance":
-        await _tg_answer(cb_id, "💰 Загружаю...")
+        await _tg_answer(cb_id, "ð° ÐÐ°Ð³ÑÑÐ¶Ð°Ñ...")
         if chat_id: await _tg_balance(chat_id)
 
     elif data == "menu_positions":
-        await _tg_answer(cb_id, "📈 Загружаю...")
+        await _tg_answer(cb_id, "ð ÐÐ°Ð³ÑÑÐ¶Ð°Ñ...")
         if chat_id: await _tg_positions(chat_id)
 
     elif data == "menu_arb":
-        await _tg_answer(cb_id, "⚡ Загружаю арбитраж...")
+        await _tg_answer(cb_id, "â¡ ÐÐ°Ð³ÑÑÐ¶Ð°Ñ Ð°ÑÐ±Ð¸ÑÑÐ°Ð¶...")
         if chat_id: await _tg_arb(chat_id)
 
     elif data == "menu_autopilot":
         AUTOPILOT = not AUTOPILOT
-        state = "ВКЛ 🟢" if AUTOPILOT else "ВЫКЛ 🔴"
-        await _tg_answer(cb_id, f"Автопилот {state}")
-        log_activity(f"[settings] Автопилот → {state} (via Telegram)")
+        state = "ÐÐÐ ð¢" if AUTOPILOT else "ÐÐ«ÐÐ ð´"
+        await _tg_answer(cb_id, f"ÐÐ²ÑÐ¾Ð¿Ð¸Ð»Ð¾Ñ {state}")
+        log_activity(f"[settings] ÐÐ²ÑÐ¾Ð¿Ð¸Ð»Ð¾Ñ â {state} (via Telegram)")
         if chat_id: await _tg_main_menu(chat_id)
 
-    # ── Настройки Min Q ────────────────────────────────────────────────────
+    # ââ ÐÐ°ÑÑÑÐ¾Ð¹ÐºÐ¸ Min Q ââââââââââââââââââââââââââââââââââââââââââââââââââââ
     elif data in ("set_minq_62", "set_minq_65", "set_minq_70", "set_minq_78", "set_minq_82", "set_minq_cur"):
         if data == "set_minq_62":   MIN_Q_SCORE = 62
         elif data == "set_minq_65": MIN_Q_SCORE = 65
         elif data == "set_minq_70": MIN_Q_SCORE = 70
         elif data == "set_minq_78": MIN_Q_SCORE = 78
         elif data == "set_minq_82": MIN_Q_SCORE = 82
-        await _tg_answer(cb_id, f"Min Q → {MIN_Q_SCORE}")
+        await _tg_answer(cb_id, f"Min Q â {MIN_Q_SCORE}")
         if chat_id: await _tg_settings(chat_id)
 
-    # ── Настройки Cooldown ─────────────────────────────────────────────────
+    # ââ ÐÐ°ÑÑÑÐ¾Ð¹ÐºÐ¸ Cooldown âââââââââââââââââââââââââââââââââââââââââââââââââ
     elif data in ("set_cd_180", "set_cd_300", "set_cd_600", "set_cd_cur"):
         if data == "set_cd_180":   COOLDOWN = 180
         elif data == "set_cd_300": COOLDOWN = 300
         elif data == "set_cd_600": COOLDOWN = 600
-        await _tg_answer(cb_id, f"Cooldown → {COOLDOWN}s")
+        await _tg_answer(cb_id, f"Cooldown â {COOLDOWN}s")
         if chat_id: await _tg_settings(chat_id)
 
-    # ── Сохранить настройки ────────────────────────────────────────────────
+    # ââ Ð¡Ð¾ÑÑÐ°Ð½Ð¸ÑÑ Ð½Ð°ÑÑÑÐ¾Ð¹ÐºÐ¸ ââââââââââââââââââââââââââââââââââââââââââââââââ
     elif data == "save_settings":
-        await _tg_answer(cb_id, "✅ Настройки сохранены!")
+        await _tg_answer(cb_id, "â ÐÐ°ÑÑÑÐ¾Ð¹ÐºÐ¸ ÑÐ¾ÑÑÐ°Ð½ÐµÐ½Ñ!")
         log_activity(f"[settings] SAVED: MIN_Q={MIN_Q_SCORE} COOLDOWN={COOLDOWN}s AUTOPILOT={AUTOPILOT}")
         await notify(
-            f"💾 *Настройки сохранены*\n"
+            f"ð¾ *ÐÐ°ÑÑÑÐ¾Ð¹ÐºÐ¸ ÑÐ¾ÑÑÐ°Ð½ÐµÐ½Ñ*\n"
             f"Min Q-Score: `{MIN_Q_SCORE}`\n"
             f"Cooldown: `{COOLDOWN}s`\n"
-            f"Автопилот: `{'ВКЛ' if AUTOPILOT else 'ВЫКЛ'}`"
+            f"ÐÐ²ÑÐ¾Ð¿Ð¸Ð»Ð¾Ñ: `{'ÐÐÐ' if AUTOPILOT else 'ÐÐ«ÐÐ'}`"
         )
         if chat_id: await _tg_settings(chat_id)
 
-    # ── Стратегии A/B/C/D (торговые сигналы) ──────────────────────────────
+    # ââ Ð¡ÑÑÐ°ÑÐµÐ³Ð¸Ð¸ A/B/C/D (ÑÐ¾ÑÐ³Ð¾Ð²ÑÐµ ÑÐ¸Ð³Ð½Ð°Ð»Ñ) ââââââââââââââââââââââââââââââ
     elif data.startswith("strat_"):
         parts = data.split("_", 2)
         if len(parts) < 3: return {"ok": True}
@@ -2213,10 +2213,10 @@ async def telegram_callback(req: TelegramUpdate):
         trade_id = parts[2]
         pending  = pending_strategies.pop(trade_id, None)
         if not pending:
-            await _tg_answer(cb_id, "⏱ Сигнал устарел или уже исполнен")
+            await _tg_answer(cb_id, "â± Ð¡Ð¸Ð³Ð½Ð°Ð» ÑÑÑÐ°ÑÐµÐ» Ð¸Ð»Ð¸ ÑÐ¶Ðµ Ð¸ÑÐ¿Ð¾Ð»Ð½ÐµÐ½")
             return {"ok": True}
         s = STRATEGIES.get(strategy, STRATEGIES["B"])
-        await _tg_answer(cb_id, f"{s['emoji']} Стратегия {strategy} принята!")
+        await _tg_answer(cb_id, f"{s['emoji']} Ð¡ÑÑÐ°ÑÐµÐ³Ð¸Ñ {strategy} Ð¿ÑÐ¸Ð½ÑÑÐ°!")
         if strategy == "D":
             asyncio.create_task(execute_dual_strategy(
                 pending["symbol"], pending["signal"], pending["vision"],
@@ -2233,122 +2233,122 @@ async def telegram_callback(req: TelegramUpdate):
 
 @app.on_event("startup")
 async def startup():
-    _load_trades_from_disk()          # загружаем историю сделок при старте
+    _load_trades_from_disk()          # Ð·Ð°Ð³ÑÑÐ¶Ð°ÐµÐ¼ Ð¸ÑÑÐ¾ÑÐ¸Ñ ÑÐ´ÐµÐ»Ð¾Ðº Ð¿ÑÐ¸ ÑÑÐ°ÑÑÐµ
 
-    # Phase 6: пробуем подключить Origin QC Wukong 180
+    # Phase 6: Ð¿ÑÐ¾Ð±ÑÐµÐ¼ Ð¿Ð¾Ð´ÐºÐ»ÑÑÐ¸ÑÑ Origin QC Wukong 180
     qc_ok = await asyncio.get_event_loop().run_in_executor(None, _init_qcloud)
 
     asyncio.create_task(trading_loop())
     asyncio.create_task(position_monitor_loop())
     asyncio.create_task(airdrop_digest_loop())
-    await get_airdrops()  # прогреваем кеш при старте
-    mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
-    qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
+    await get_airdrops()  # Ð¿ÑÐ¾Ð³ÑÐµÐ²Ð°ÐµÐ¼ ÐºÐµÑ Ð¿ÑÐ¸ ÑÑÐ°ÑÑÐµ
+    mode     = "TEST (ÑÐ¸ÑÐº 10%)" if TEST_MODE else "LIVE (ÑÐ¸ÑÐº 2%)"
+    qc_label = "âï¸ Wukong 180 ÑÐµÐ°Ð»ÑÐ½ÑÐ¹ ÑÐ¸Ð¿ â" if qc_ok else "âï¸ QAOA CPU ÑÐ¸Ð¼ÑÐ»ÑÑÐ¾Ñ"
     await notify(
-        f"⚛ <b>QuantumTrade v7.2.0</b>\n"
-        f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
-        f"✅ Telegram: /menu /stats /airdrops /settings\n"
-        f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
-        f"⚛️ Phase 5: Claude Vision — нативный AI-анализ графиков\n"
+        f"â <b>QuantumTrade v7.2.3</b>\n"
+        f"â 5 ÑÐ¾ÑÐ³ÑÐµÐ¼ÑÑ Ð¿Ð°Ñ: ETHÂ·BTCÂ·SOLÂ·AVAXÂ·XRP\n"
+        f"â Telegram: /menu /stats /airdrops /settings\n"
+        f"â ÐÐ¸Ð½Ð°Ð¼Ð¸ÑÐµÑÐºÐ¸Ð¹ Ð²ÑÐ±Ð¾Ñ ÑÑÑÐ°ÑÐµÐ³Ð¸Ð¸ B/C/DUAL Ð¿Ð¾ Q\n"
+        f"âï¸ Phase 5: Claude Vision â Ð½Ð°ÑÐ¸Ð²Ð½ÑÐ¹ AI-Ð°Ð½Ð°Ð»Ð¸Ð· Ð³ÑÐ°ÑÐ¸ÐºÐ¾Ð²\n"
         f"{qc_label} (Phase 3+6)\n"
-        f"🪂 Airdrop Tracker активен (Phase 4)\n"
-        f"📊 Режим: {mode} · История: {len(trade_log)} сделок\n"
-        f"🎯 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s"
+        f"ðª Airdrop Tracker Ð°ÐºÑÐ¸Ð²ÐµÐ½ (Phase 4)\n"
+        f"ð Ð ÐµÐ¶Ð¸Ð¼: {mode} Â· ÐÑÑÐ¾ÑÐ¸Ñ: {len(trade_log)} ÑÐ´ÐµÐ»Ð¾Ðº\n"
+        f"ð¯ Q-min: {MIN_Q_SCORE} Â· Cooldown: {COOLDOWN}s"
     )
 
 async def trading_loop():
     while True:
         try: await auto_trade_cycle()
         except Exception as e: log_activity(f"[loop] error: {e}")
-        await asyncio.sleep(15)  # v7.2.0: 60→15s (4x faster signal response)
+        await asyncio.sleep(15)  # v7.2.0: 60â15s (4x faster signal response)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ФАЗА 4 — AIRDROP TRACKER
-# ══════════════════════════════════════════════════════════════════════════════
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# Ð¤ÐÐÐ 4 â AIRDROP TRACKER
+# ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
-# ── State ──────────────────────────────────────────────────────────────────────
+# ââ State ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 _airdrop_cache: List[dict] = []
 _airdrop_cache_ts: float = 0.0
-_AIRDROP_TTL = 21600  # 6 часов
+_AIRDROP_TTL = 21600  # 6 ÑÐ°ÑÐ¾Ð²
 
-# ── Hardcoded fallback список (топ проекты 2026) ───────────────────────────────
+# ââ Hardcoded fallback ÑÐ¿Ð¸ÑÐ¾Ðº (ÑÐ¾Ð¿ Ð¿ÑÐ¾ÐµÐºÑÑ 2026) âââââââââââââââââââââââââââââââ
 _AIRDROP_FALLBACK = [
     {
         "id": "backpack-exchange", "name": "Backpack Exchange", "ecosystem": "EVM",
         "status": "active", "potential": 5, "effort": "low",
-        "description": "Торгуй на споте/фьючерсах → фармишь очки к TGE. Команда с известными VC-бэкингом.",
-        "tasks": ["Торгуй на споте", "Торгуй на фьючерсах", "Пополни депозит"],
+        "description": "Ð¢Ð¾ÑÐ³ÑÐ¹ Ð½Ð° ÑÐ¿Ð¾ÑÐµ/ÑÑÑÑÐµÑÑÐ°Ñ â ÑÐ°ÑÐ¼Ð¸ÑÑ Ð¾ÑÐºÐ¸ Ðº TGE. ÐÐ¾Ð¼Ð°Ð½Ð´Ð° Ñ Ð¸Ð·Ð²ÐµÑÑÐ½ÑÐ¼Ð¸ VC-Ð±ÑÐºÐ¸Ð½Ð³Ð¾Ð¼.",
+        "tasks": ["Ð¢Ð¾ÑÐ³ÑÐ¹ Ð½Ð° ÑÐ¿Ð¾ÑÐµ", "Ð¢Ð¾ÑÐ³ÑÐ¹ Ð½Ð° ÑÑÑÑÐµÑÑÐ°Ñ", "ÐÐ¾Ð¿Ð¾Ð»Ð½Ð¸ Ð´ÐµÐ¿Ð¾Ð·Ð¸Ñ"],
         "deadline": None, "tge_estimate": "Q2 2026",
         "url": "https://backpack.exchange", "volume_usd": 5e9,
     },
     {
         "id": "monad-testnet", "name": "Monad Testnet", "ecosystem": "EVM",
         "status": "active", "potential": 4, "effort": "low",
-        "description": "1 транзакция каждые 48ч достаточно. Консистентность важнее объёма.",
-        "tasks": ["Сделай транзакцию раз в 48ч", "Используй dApps на тестнете"],
+        "description": "1 ÑÑÐ°Ð½Ð·Ð°ÐºÑÐ¸Ñ ÐºÐ°Ð¶Ð´ÑÐµ 48Ñ Ð´Ð¾ÑÑÐ°ÑÐ¾ÑÐ½Ð¾. ÐÐ¾Ð½ÑÐ¸ÑÑÐµÐ½ÑÐ½Ð¾ÑÑÑ Ð²Ð°Ð¶Ð½ÐµÐµ Ð¾Ð±ÑÑÐ¼Ð°.",
+        "tasks": ["Ð¡Ð´ÐµÐ»Ð°Ð¹ ÑÑÐ°Ð½Ð·Ð°ÐºÑÐ¸Ñ ÑÐ°Ð· Ð² 48Ñ", "ÐÑÐ¿Ð¾Ð»ÑÐ·ÑÐ¹ dApps Ð½Ð° ÑÐµÑÑÐ½ÐµÑÐµ"],
         "deadline": None, "tge_estimate": "Q3 2026",
         "url": "https://testnet.monad.xyz", "volume_usd": 1e9,
     },
     {
         "id": "base-ecosystem", "name": "Base Ecosystem", "ecosystem": "EVM",
         "status": "active", "potential": 4, "effort": "medium",
-        "description": "L2 от Coinbase. Swap на Aerodrome/Uniswap, бридж ETH через official bridge.",
-        "tasks": ["Бридж ETH → Base", "Swap на Aerodrome или Uniswap", "Используй Basename"],
+        "description": "L2 Ð¾Ñ Coinbase. Swap Ð½Ð° Aerodrome/Uniswap, Ð±ÑÐ¸Ð´Ð¶ ETH ÑÐµÑÐµÐ· official bridge.",
+        "tasks": ["ÐÑÐ¸Ð´Ð¶ ETH â Base", "Swap Ð½Ð° Aerodrome Ð¸Ð»Ð¸ Uniswap", "ÐÑÐ¿Ð¾Ð»ÑÐ·ÑÐ¹ Basename"],
         "deadline": None, "tge_estimate": "TBD",
         "url": "https://base.org", "volume_usd": 8e9,
     },
     {
         "id": "layerzero-s2", "name": "LayerZero Season 2", "ecosystem": "Multi",
         "status": "active", "potential": 4, "effort": "medium",
-        "description": "Кросс-чейн протокол. Сделай транзакции через их бриджи между разными сетями.",
-        "tasks": ["Кросс-чейн бридж через LZ", "Используй Stargate Finance"],
+        "description": "ÐÑÐ¾ÑÑ-ÑÐµÐ¹Ð½ Ð¿ÑÐ¾ÑÐ¾ÐºÐ¾Ð». Ð¡Ð´ÐµÐ»Ð°Ð¹ ÑÑÐ°Ð½Ð·Ð°ÐºÑÐ¸Ð¸ ÑÐµÑÐµÐ· Ð¸Ñ Ð±ÑÐ¸Ð´Ð¶Ð¸ Ð¼ÐµÐ¶Ð´Ñ ÑÐ°Ð·Ð½ÑÐ¼Ð¸ ÑÐµÑÑÐ¼Ð¸.",
+        "tasks": ["ÐÑÐ¾ÑÑ-ÑÐµÐ¹Ð½ Ð±ÑÐ¸Ð´Ð¶ ÑÐµÑÐµÐ· LZ", "ÐÑÐ¿Ð¾Ð»ÑÐ·ÑÐ¹ Stargate Finance"],
         "deadline": None, "tge_estimate": "Q2 2026",
         "url": "https://layerzero.network", "volume_usd": 2e9,
     },
     {
         "id": "tonkeeper-points", "name": "Tonkeeper Points", "ecosystem": "TON",
         "status": "active", "potential": 3, "effort": "low",
-        "description": "Ежедневный check-in в приложении. Используй TON кошелёк активно.",
-        "tasks": ["Ежедневный check-in", "Своп в TON Space", "Стейкинг TON"],
+        "description": "ÐÐ¶ÐµÐ´Ð½ÐµÐ²Ð½ÑÐ¹ check-in Ð² Ð¿ÑÐ¸Ð»Ð¾Ð¶ÐµÐ½Ð¸Ð¸. ÐÑÐ¿Ð¾Ð»ÑÐ·ÑÐ¹ TON ÐºÐ¾ÑÐµÐ»ÑÐº Ð°ÐºÑÐ¸Ð²Ð½Ð¾.",
+        "tasks": ["ÐÐ¶ÐµÐ´Ð½ÐµÐ²Ð½ÑÐ¹ check-in", "Ð¡Ð²Ð¾Ð¿ Ð² TON Space", "Ð¡ÑÐµÐ¹ÐºÐ¸Ð½Ð³ TON"],
         "deadline": None, "tge_estimate": "TBD",
         "url": "https://tonkeeper.com", "volume_usd": 5e8,
     },
     {
         "id": "scroll-mainnet", "name": "Scroll", "ecosystem": "EVM",
         "status": "active", "potential": 4, "effort": "medium",
-        "description": "ZK-rollup на Ethereum. Бридж ETH, используй dApps на Scroll.",
-        "tasks": ["Бридж ETH → Scroll", "Swap на Uniswap v3 на Scroll", "Минт NFT на Scroll"],
+        "description": "ZK-rollup Ð½Ð° Ethereum. ÐÑÐ¸Ð´Ð¶ ETH, Ð¸ÑÐ¿Ð¾Ð»ÑÐ·ÑÐ¹ dApps Ð½Ð° Scroll.",
+        "tasks": ["ÐÑÐ¸Ð´Ð¶ ETH â Scroll", "Swap Ð½Ð° Uniswap v3 Ð½Ð° Scroll", "ÐÐ¸Ð½Ñ NFT Ð½Ð° Scroll"],
         "deadline": None, "tge_estimate": "Q2 2026",
         "url": "https://scroll.io", "volume_usd": 1.5e9,
     },
     {
         "id": "hyperliquid-points", "name": "Hyperliquid Points", "ecosystem": "EVM",
         "status": "active", "potential": 5, "effort": "medium",
-        "description": "DEX с перпами. Очки начисляются за объём торгов. Уже крупный airdrop был — ждут второй.",
-        "tasks": ["Торгуй перпами на HyperLiquid", "Обеспечь ликвидность в HLP"],
+        "description": "DEX Ñ Ð¿ÐµÑÐ¿Ð°Ð¼Ð¸. ÐÑÐºÐ¸ Ð½Ð°ÑÐ¸ÑÐ»ÑÑÑÑÑ Ð·Ð° Ð¾Ð±ÑÑÐ¼ ÑÐ¾ÑÐ³Ð¾Ð². Ð£Ð¶Ðµ ÐºÑÑÐ¿Ð½ÑÐ¹ airdrop Ð±ÑÐ» â Ð¶Ð´ÑÑ Ð²ÑÐ¾ÑÐ¾Ð¹.",
+        "tasks": ["Ð¢Ð¾ÑÐ³ÑÐ¹ Ð¿ÐµÑÐ¿Ð°Ð¼Ð¸ Ð½Ð° HyperLiquid", "ÐÐ±ÐµÑÐ¿ÐµÑÑ Ð»Ð¸ÐºÐ²Ð¸Ð´Ð½Ð¾ÑÑÑ Ð² HLP"],
         "deadline": None, "tge_estimate": "TBD",
         "url": "https://hyperliquid.xyz", "volume_usd": 10e9,
     },
     {
         "id": "zksync-s2", "name": "zkSync Era Season 2", "ecosystem": "EVM",
         "status": "active", "potential": 3, "effort": "low",
-        "description": "ZK-rollup от Matter Labs. После первого airdrop ждут второй сезон.",
-        "tasks": ["Бридж ETH → zkSync Era", "Swap на SyncSwap", "Используй ZK native dApps"],
+        "description": "ZK-rollup Ð¾Ñ Matter Labs. ÐÐ¾ÑÐ»Ðµ Ð¿ÐµÑÐ²Ð¾Ð³Ð¾ airdrop Ð¶Ð´ÑÑ Ð²ÑÐ¾ÑÐ¾Ð¹ ÑÐµÐ·Ð¾Ð½.",
+        "tasks": ["ÐÑÐ¸Ð´Ð¶ ETH â zkSync Era", "Swap Ð½Ð° SyncSwap", "ÐÑÐ¿Ð¾Ð»ÑÐ·ÑÐ¹ ZK native dApps"],
         "deadline": None, "tge_estimate": "H2 2026",
         "url": "https://zksync.io", "volume_usd": 3e9,
     },
 ]
 
 def _stars(n: int) -> str:
-    """Конвертирует 1-5 в строку звёзд."""
-    return "★" * n + "☆" * (5 - n)
+    """ÐÐ¾Ð½Ð²ÐµÑÑÐ¸ÑÑÐµÑ 1-5 Ð² ÑÑÑÐ¾ÐºÑ Ð·Ð²ÑÐ·Ð´."""
+    return "â" * n + "â" * (5 - n)
 
 def _effort_ru(e: str) -> str:
-    return {"low": "низкие", "medium": "средние", "high": "высокие"}.get(e, e)
+    return {"low": "Ð½Ð¸Ð·ÐºÐ¸Ðµ", "medium": "ÑÑÐµÐ´Ð½Ð¸Ðµ", "high": "Ð²ÑÑÐ¾ÐºÐ¸Ðµ"}.get(e, e)
 
 async def _fetch_defillama_airdrops() -> List[dict]:
-    """Пробуем получить данные из DeFiLlama. Fallback → пустой список."""
+    """ÐÑÐ¾Ð±ÑÐµÐ¼ Ð¿Ð¾Ð»ÑÑÐ¸ÑÑ Ð´Ð°Ð½Ð½ÑÐµ Ð¸Ð· DeFiLlama. Fallback â Ð¿ÑÑÑÐ¾Ð¹ ÑÐ¿Ð¸ÑÐ¾Ðº."""
     try:
         async with aiohttp.ClientSession() as s:
             r = await s.get(
@@ -2368,8 +2368,8 @@ async def _fetch_defillama_airdrops() -> List[dict]:
                     "status": "active",
                     "potential": 3,
                     "effort": "medium",
-                    "description": item.get("description", "Из DeFiLlama"),
-                    "tasks": ["Проверь официальный сайт"],
+                    "description": item.get("description", "ÐÐ· DeFiLlama"),
+                    "tasks": ["ÐÑÐ¾Ð²ÐµÑÑ Ð¾ÑÐ¸ÑÐ¸Ð°Ð»ÑÐ½ÑÐ¹ ÑÐ°Ð¹Ñ"],
                     "deadline": None,
                     "tge_estimate": None,
                     "url": item.get("url", "https://defillama.com/airdrops"),
@@ -2380,47 +2380,47 @@ async def _fetch_defillama_airdrops() -> List[dict]:
         return []
 
 async def get_airdrops() -> List[dict]:
-    """Возвращает список airdrops (кеш 6ч + fallback)."""
+    """ÐÐ¾Ð·Ð²ÑÐ°ÑÐ°ÐµÑ ÑÐ¿Ð¸ÑÐ¾Ðº airdrops (ÐºÐµÑ 6Ñ + fallback)."""
     global _airdrop_cache, _airdrop_cache_ts
     if _airdrop_cache and time.time() - _airdrop_cache_ts < _AIRDROP_TTL:
         return _airdrop_cache
-    # Пробуем DeFiLlama
+    # ÐÑÐ¾Ð±ÑÐµÐ¼ DeFiLlama
     live = await _fetch_defillama_airdrops()
-    # Мержим с fallback (fallback в конце, live в начале)
+    # ÐÐµÑÐ¶Ð¸Ð¼ Ñ fallback (fallback Ð² ÐºÐ¾Ð½ÑÐµ, live Ð² Ð½Ð°ÑÐ°Ð»Ðµ)
     seen = {a["id"] for a in live}
     merged = live + [a for a in _AIRDROP_FALLBACK if a["id"] not in seen]
-    # Сортировка: potential DESC, volume DESC
+    # Ð¡Ð¾ÑÑÐ¸ÑÐ¾Ð²ÐºÐ°: potential DESC, volume DESC
     merged.sort(key=lambda x: (x["potential"], x["volume_usd"]), reverse=True)
     _airdrop_cache = merged
     _airdrop_cache_ts = time.time()
-    print(f"[airdrops] кеш обновлён: {len(merged)} проектов ({len(live)} из DeFiLlama)")
+    print(f"[airdrops] ÐºÐµÑ Ð¾Ð±Ð½Ð¾Ð²Ð»ÑÐ½: {len(merged)} Ð¿ÑÐ¾ÐµÐºÑÐ¾Ð² ({len(live)} Ð¸Ð· DeFiLlama)")
     return _airdrop_cache
 
 async def send_airdrop_digest():
-    """Отправляет ежедневный дайджест в Telegram."""
+    """ÐÑÐ¿ÑÐ°Ð²Ð»ÑÐµÑ ÐµÐ¶ÐµÐ´Ð½ÐµÐ²Ð½ÑÐ¹ Ð´Ð°Ð¹Ð´Ð¶ÐµÑÑ Ð² Telegram."""
     if not BOT_TOKEN or not ALERT_CHAT_ID:
         return
     airdrops = await get_airdrops()
     top5 = airdrops[:5]
     today = datetime.utcnow().strftime("%d.%m.%Y")
-    lines = [f"⚛ *QuantumTrade · 🪂 Airdrop Digest {today}*", "━━━━━━━━━━━━━━━━━━━━━━"]
-    emoji_map = {"EVM": "🔷", "TON": "💎", "Solana": "🟣", "Multi": "🌐"}
+    lines = [f"â *QuantumTrade Â· ðª Airdrop Digest {today}*", "ââââââââââââââââââââââ"]
+    emoji_map = {"EVM": "ð·", "TON": "ð", "Solana": "ð£", "Multi": "ð"}
     for a in top5:
-        eco_emoji = emoji_map.get(a["ecosystem"], "🔹")
+        eco_emoji = emoji_map.get(a["ecosystem"], "ð¹")
         lines.append(
             f"\n{eco_emoji} *{a['name']}* `[{a['ecosystem']}]`\n"
-            f"   {_stars(a['potential'])} · Усилия: {_effort_ru(a['effort'])}\n"
+            f"   {_stars(a['potential'])} Â· Ð£ÑÐ¸Ð»Ð¸Ñ: {_effort_ru(a['effort'])}\n"
             f"   {a['description'][:80]}\n"
-            f"   👉 {a['url']}"
+            f"   ð {a['url']}"
         )
-    # Дедлайны
+    # ÐÐµÐ´Ð»Ð°Ð¹Ð½Ñ
     deadlines = [a for a in airdrops if a.get("deadline")]
     if deadlines:
-        lines.append("\n⏰ *Дедлайны:*")
+        lines.append("\nâ° *ÐÐµÐ´Ð»Ð°Ð¹Ð½Ñ:*")
         for a in deadlines[:3]:
-            lines.append(f"   • {a['name']}: {a['deadline']}")
-    lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("_/airdrops — полный список_")
+            lines.append(f"   â¢ {a['name']}: {a['deadline']}")
+    lines.append("\nââââââââââââââââââââââ")
+    lines.append("_/airdrops â Ð¿Ð¾Ð»Ð½ÑÐ¹ ÑÐ¿Ð¸ÑÐ¾Ðº_")
     text = "\n".join(lines)
     try:
         async with aiohttp.ClientSession() as s:
@@ -2430,15 +2430,15 @@ async def send_airdrop_digest():
                       "parse_mode": "Markdown", "disable_web_page_preview": True},
                 timeout=aiohttp.ClientTimeout(total=5)
             )
-        print("[airdrops] дайджест отправлен в Telegram")
+        print("[airdrops] Ð´Ð°Ð¹Ð´Ð¶ÐµÑÑ Ð¾ÑÐ¿ÑÐ°Ð²Ð»ÐµÐ½ Ð² Telegram")
     except Exception as e:
-        print(f"[airdrops] ошибка отправки дайджеста: {e}")
+        print(f"[airdrops] Ð¾ÑÐ¸Ð±ÐºÐ° Ð¾ÑÐ¿ÑÐ°Ð²ÐºÐ¸ Ð´Ð°Ð¹Ð´Ð¶ÐµÑÑÐ°: {e}")
 
 async def airdrop_digest_loop():
-    """Отправляет дайджест раз в 24ч (в 09:00 UTC)."""
+    """ÐÑÐ¿ÑÐ°Ð²Ð»ÑÐµÑ Ð´Ð°Ð¹Ð´Ð¶ÐµÑÑ ÑÐ°Ð· Ð² 24Ñ (Ð² 09:00 UTC)."""
     while True:
         now = datetime.utcnow()
-        # Считаем секунды до следующего 09:00 UTC
+        # Ð¡ÑÐ¸ÑÐ°ÐµÐ¼ ÑÐµÐºÑÐ½Ð´Ñ Ð´Ð¾ ÑÐ»ÐµÐ´ÑÑÑÐµÐ³Ð¾ 09:00 UTC
         target_hour = 9
         secs_until = ((target_hour - now.hour) % 24) * 3600 - now.minute * 60 - now.second
         if secs_until <= 0:
@@ -2450,11 +2450,11 @@ async def airdrop_digest_loop():
             print(f"[airdrops] digest loop error: {e}")
 
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
+# ââ Routes âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 @app.get("/api/airdrops")
 async def airdrops_list():
-    """Phase 4: список активных airdrop возможностей."""
+    """Phase 4: ÑÐ¿Ð¸ÑÐ¾Ðº Ð°ÐºÑÐ¸Ð²Ð½ÑÑ airdrop Ð²Ð¾Ð·Ð¼Ð¾Ð¶Ð½Ð¾ÑÑÐµÐ¹."""
     data = await get_airdrops()
     ecosystems = list(dict.fromkeys(a["ecosystem"] for a in data))
     return {
@@ -2466,7 +2466,7 @@ async def airdrops_list():
 
 @app.get("/api/airdrops/digest")
 async def airdrops_digest():
-    """Топ-5 для дайджеста + дедлайны."""
+    """Ð¢Ð¾Ð¿-5 Ð´Ð»Ñ Ð´Ð°Ð¹Ð´Ð¶ÐµÑÑÐ° + Ð´ÐµÐ´Ð»Ð°Ð¹Ð½Ñ."""
     data = await get_airdrops()
     today_str = datetime.utcnow().strftime("%Y-%m-%d")
     tomorrow_str = datetime.utcnow().replace(day=datetime.utcnow().day + 1).strftime("%Y-%m-%d") if datetime.utcnow().day < 28 else None
@@ -2478,7 +2478,7 @@ async def airdrops_digest():
 
 @app.post("/api/airdrops/refresh")
 async def airdrops_refresh():
-    """Принудительный сброс кеша airdrops."""
+    """ÐÑÐ¸Ð½ÑÐ´Ð¸ÑÐµÐ»ÑÐ½ÑÐ¹ ÑÐ±ÑÐ¾Ñ ÐºÐµÑÐ° airdrops."""
     global _airdrop_cache_ts
     _airdrop_cache_ts = 0.0
     data = await get_airdrops()
@@ -2486,24 +2486,24 @@ async def airdrops_refresh():
 
 @app.post("/api/airdrops/digest/send")
 async def airdrops_send_digest():
-    """Отправить дайджест в Telegram прямо сейчас (для тестирования)."""
+    """ÐÑÐ¿ÑÐ°Ð²Ð¸ÑÑ Ð´Ð°Ð¹Ð´Ð¶ÐµÑÑ Ð² Telegram Ð¿ÑÑÐ¼Ð¾ ÑÐµÐ¹ÑÐ°Ñ (Ð´Ð»Ñ ÑÐµÑÑÐ¸ÑÐ¾Ð²Ð°Ð½Ð¸Ñ)."""
     await send_airdrop_digest()
     return {"status": "sent"}
 
 @app.get("/api/quantum")
 async def quantum_status():
-    """Phase 3+6: текущий QAOA quantum bias, режим чипа и статус Origin QC."""
+    """Phase 3+6: ÑÐµÐºÑÑÐ¸Ð¹ QAOA quantum bias, ÑÐµÐ¶Ð¸Ð¼ ÑÐ¸Ð¿Ð° Ð¸ ÑÑÐ°ÑÑÑ Origin QC."""
     age_sec = int(time.time() - _quantum_ts) if _quantum_ts else None
     if _qcloud_ready:
         chip      = "Wukong_180"
         p_layers  = 1
-        note      = "⚛️ Реальный квантовый чип Origin Wukong 180 активен (chip_id=72)"
+        note      = "âï¸ Ð ÐµÐ°Ð»ÑÐ½ÑÐ¹ ÐºÐ²Ð°Ð½ÑÐ¾Ð²ÑÐ¹ ÑÐ¸Ð¿ Origin Wukong 180 Ð°ÐºÑÐ¸Ð²ÐµÐ½ (chip_id=72)"
     else:
         chip      = "CPU_simulator"
         p_layers  = 2
-        note      = ("Установи ORIGIN_QC_TOKEN в Railway для активации Wukong 180"
+        note      = ("Ð£ÑÑÐ°Ð½Ð¾Ð²Ð¸ ORIGIN_QC_TOKEN Ð² Railway Ð´Ð»Ñ Ð°ÐºÑÐ¸Ð²Ð°ÑÐ¸Ð¸ Wukong 180"
                      if not ORIGIN_QC_TOKEN else
-                     "ORIGIN_QC_TOKEN задан, но pyqpanda3 недоступен → CPU fallback")
+                     "ORIGIN_QC_TOKEN Ð·Ð°Ð´Ð°Ð½, Ð½Ð¾ pyqpanda3 Ð½ÐµÐ´Ð¾ÑÑÑÐ¿ÐµÐ½ â CPU fallback")
     return {
         "quantum_bias":    _quantum_bias,
         "last_run_ago_sec": age_sec,
@@ -2555,15 +2555,15 @@ async def health():
 
 @app.post("/api/setup-webhook")
 async def setup_webhook(request: Request):
-    """Регистрирует Telegram Webhook + команды в меню бота."""
+    """Ð ÐµÐ³Ð¸ÑÑÑÐ¸ÑÑÐµÑ Telegram Webhook + ÐºÐ¾Ð¼Ð°Ð½Ð´Ñ Ð² Ð¼ÐµÐ½Ñ Ð±Ð¾ÑÐ°."""
     if not BOT_TOKEN:
-        return {"ok": False, "error": "BOT_TOKEN не задан"}
+        return {"ok": False, "error": "BOT_TOKEN Ð½Ðµ Ð·Ð°Ð´Ð°Ð½"}
     base_url = str(request.base_url).rstrip("/").replace("http://", "https://")
     webhook_url = f"{base_url}/api/telegram/callback"
     results = {}
     try:
         async with aiohttp.ClientSession() as s:
-            # 1. Регистрируем webhook
+            # 1. Ð ÐµÐ³Ð¸ÑÑÑÐ¸ÑÑÐµÐ¼ webhook
             r = await s.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
                 json={"url": webhook_url, "allowed_updates": ["message", "callback_query"]},
@@ -2571,25 +2571,25 @@ async def setup_webhook(request: Request):
             )
             results["webhook"] = await r.json()
 
-            # 2. Регистрируем команды — появятся в меню "/" у пользователя
+            # 2. Ð ÐµÐ³Ð¸ÑÑÑÐ¸ÑÑÐµÐ¼ ÐºÐ¾Ð¼Ð°Ð½Ð´Ñ â Ð¿Ð¾ÑÐ²ÑÑÑÑ Ð² Ð¼ÐµÐ½Ñ "/" Ñ Ð¿Ð¾Ð»ÑÐ·Ð¾Ð²Ð°ÑÐµÐ»Ñ
             r2 = await s.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/setMyCommands",
                 json={"commands": [
-                    {"command": "menu",      "description": "🏠 Главное меню"},
-                    {"command": "stats",     "description": "📊 Статистика торговли"},
-                    {"command": "airdrops",  "description": "🪂 Топ Airdrop возможности"},
-                    {"command": "settings",  "description": "⚙️ Настройки (Q-Score, Cooldown)"},
-                    {"command": "balance",   "description": "💰 Баланс счёта"},
-                    {"command": "positions", "description": "📈 Открытые позиции"},
+                    {"command": "menu",      "description": "ð  ÐÐ»Ð°Ð²Ð½Ð¾Ðµ Ð¼ÐµÐ½Ñ"},
+                    {"command": "stats",     "description": "ð Ð¡ÑÐ°ÑÐ¸ÑÑÐ¸ÐºÐ° ÑÐ¾ÑÐ³Ð¾Ð²Ð»Ð¸"},
+                    {"command": "airdrops",  "description": "ðª Ð¢Ð¾Ð¿ Airdrop Ð²Ð¾Ð·Ð¼Ð¾Ð¶Ð½Ð¾ÑÑÐ¸"},
+                    {"command": "settings",  "description": "âï¸ ÐÐ°ÑÑÑÐ¾Ð¹ÐºÐ¸ (Q-Score, Cooldown)"},
+                    {"command": "balance",   "description": "ð° ÐÐ°Ð»Ð°Ð½Ñ ÑÑÑÑÐ°"},
+                    {"command": "positions", "description": "ð ÐÑÐºÑÑÑÑÐµ Ð¿Ð¾Ð·Ð¸ÑÐ¸Ð¸"},
                 ]},
                 timeout=aiohttp.ClientTimeout(total=10)
             )
             results["commands"] = await r2.json()
 
-            # 3. Устанавливаем кнопку меню с web_app (дашборд)
+            # 3. Ð£ÑÑÐ°Ð½Ð°Ð²Ð»Ð¸Ð²Ð°ÐµÐ¼ ÐºÐ½Ð¾Ð¿ÐºÑ Ð¼ÐµÐ½Ñ Ñ web_app (Ð´Ð°ÑÐ±Ð¾ÑÐ´)
             r3 = await s.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
-                json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": WEBAPP_URL}}},
+                json={"menu_button": {"type": "web_app", "text": "ð¥ï¸ ÐÐ°ÑÐ±Ð¾ÑÐ´", "web_app": {"url": WEBAPP_URL}}},
                 timeout=aiohttp.ClientTimeout(total=10)
             )
             results["menu_button"] = await r3.json()
@@ -2600,9 +2600,9 @@ async def setup_webhook(request: Request):
 
 @app.get("/api/setup-webhook")
 async def get_webhook_info():
-    """Проверяет текущий статус Telegram Webhook."""
+    """ÐÑÐ¾Ð²ÐµÑÑÐµÑ ÑÐµÐºÑÑÐ¸Ð¹ ÑÑÐ°ÑÑÑ Telegram Webhook."""
     if not BOT_TOKEN:
-        return {"ok": False, "error": "BOT_TOKEN не задан"}
+        return {"ok": False, "error": "BOT_TOKEN Ð½Ðµ Ð·Ð°Ð´Ð°Ð½"}
     try:
         async with aiohttp.ClientSession() as s:
             r = await s.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo",
@@ -2664,7 +2664,7 @@ async def api_chart(symbol: str):
 
 @app.get("/api/trades")
 async def api_trades(limit: int = 50):
-    # Статистика по трекам
+    # Ð¡ÑÐ°ÑÐ¸ÑÑÐ¸ÐºÐ° Ð¿Ð¾ ÑÑÐµÐºÐ°Ð¼
     def track_stats(tag_filter):
         filtered = [t for t in trade_log if tag_filter in t.get("account","")]
         wins   = sum(1 for t in filtered if (t.get("pnl") or 0) > 0)
@@ -2728,21 +2728,21 @@ async def api_polymarket():
         return {"events": [], "success": False, "error": str(e)}
 
 
-# ── AI Chat Proxy ──────────────────────────────────────────────────────────────
+# ââ AI Chat Proxy ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 class ChatRequest(BaseModel):
     messages: list
     context:  str = ""
 
 @app.post("/api/ai/chat")
 async def api_ai_chat(req: ChatRequest):
-    """Proxy for Claude API — solves CORS from browser."""
+    """Proxy for Claude API â solves CORS from browser."""
     if not ANTHROPIC_API_KEY:
         return {"error": "ANTHROPIC_API_KEY not configured on server", "success": False}
     system_lines = [
-        "Ты QuantumTrade AI — торговый советник в трейдинг-боте на KuCoin.",
-        "Помогаешь понять рынок, сигналы и стратегию. Объясняй простым языком — многие новички.",
-        "СТИЛЬ: по-русски, кратко (2-4 абзаца), конкретные советы, объясняй термины, умеренные эмодзи.",
-        "КОНТЕКСТ: EMA+RSI+Volume, Q-Score 65+=BUY 35-=SELL, тест: $24 USDT, риск 10%, TP 3%, SL 1.5%.",
+        "Ð¢Ñ QuantumTrade AI â ÑÐ¾ÑÐ³Ð¾Ð²ÑÐ¹ ÑÐ¾Ð²ÐµÑÐ½Ð¸Ðº Ð² ÑÑÐµÐ¹Ð´Ð¸Ð½Ð³-Ð±Ð¾ÑÐµ Ð½Ð° KuCoin.",
+        "ÐÐ¾Ð¼Ð¾Ð³Ð°ÐµÑÑ Ð¿Ð¾Ð½ÑÑÑ ÑÑÐ½Ð¾Ðº, ÑÐ¸Ð³Ð½Ð°Ð»Ñ Ð¸ ÑÑÑÐ°ÑÐµÐ³Ð¸Ñ. ÐÐ±ÑÑÑÐ½ÑÐ¹ Ð¿ÑÐ¾ÑÑÑÐ¼ ÑÐ·ÑÐºÐ¾Ð¼ â Ð¼Ð½Ð¾Ð³Ð¸Ðµ Ð½Ð¾Ð²Ð¸ÑÐºÐ¸.",
+        "Ð¡Ð¢ÐÐÐ¬: Ð¿Ð¾-ÑÑÑÑÐºÐ¸, ÐºÑÐ°ÑÐºÐ¾ (2-4 Ð°Ð±Ð·Ð°ÑÐ°), ÐºÐ¾Ð½ÐºÑÐµÑÐ½ÑÐµ ÑÐ¾Ð²ÐµÑÑ, Ð¾Ð±ÑÑÑÐ½ÑÐ¹ ÑÐµÑÐ¼Ð¸Ð½Ñ, ÑÐ¼ÐµÑÐµÐ½Ð½ÑÐµ ÑÐ¼Ð¾Ð´Ð·Ð¸.",
+        "ÐÐÐÐ¢ÐÐÐ¡Ð¢: EMA+RSI+Volume, Q-Score 65+=BUY 35-=SELL, ÑÐµÑÑ: $24 USDT, ÑÐ¸ÑÐº 10%, TP 3%, SL 1.5%.",
     ]
     if req.context:
         system_lines.append("")
@@ -2795,15 +2795,15 @@ async def manual_trade(req: ManualTrade):
     result = await place_futures_order(req.symbol, req.side, int(req.size), req.leverage) if req.is_futures else await place_spot_order(req.symbol, req.side, req.size)
     success = result.get("code") == "200000"
     if success:
-        emoji = "🟢" if req.side == "buy" else "🔴"
-        await notify(f"{emoji} <b>Ручная сделка</b>\n<code>{req.symbol}</code> {req.side.upper()} · <code>{req.size}</code>")
+        emoji = "ð¢" if req.side == "buy" else "ð´"
+        await notify(f"{emoji} <b>Ð ÑÑÐ½Ð°Ñ ÑÐ´ÐµÐ»ÐºÐ°</b>\n<code>{req.symbol}</code> {req.side.upper()} Â· <code>{req.size}</code>")
     return {"success": success, "data": result}
 
 @app.post("/api/autopilot/{state}")
 async def toggle_autopilot(state: str):
     global AUTOPILOT
     AUTOPILOT = state == "on"
-    await notify(f"⚙️ Автопилот {'включён' if AUTOPILOT else 'выключен'}")
+    await notify(f"âï¸ ÐÐ²ÑÐ¾Ð¿Ð¸Ð»Ð¾Ñ {'Ð²ÐºÐ»ÑÑÑÐ½' if AUTOPILOT else 'Ð²ÑÐºÐ»ÑÑÐµÐ½'}")
     return {"autopilot": AUTOPILOT}
 
 @app.websocket("/ws/live")
