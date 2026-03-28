@@ -1,0 +1,107 @@
+name: Security Review
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      # ── Встроенный security scanner от Anthropic ──────────────────────────
+      - uses: anthropics/claude-code-security-review@main
+        with:
+          comment-pr: true
+          claude-api-key: ${{ secrets.CLAUDE_API_KEY }}
+
+      # ── Python dependency audit ───────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Audit Python dependencies
+        run: |
+          if [ -f requirements.txt ]; then
+            pip-audit -r requirements.txt --format json > audit-report.json || true
+            echo "=== Dependency Audit Results ==="
+            pip-audit -r requirements.txt || true
+          else
+            echo "No requirements.txt found — skipping dependency audit"
+          fi
+
+      # ── Hardcoded secrets scan ────────────────────────────────────────────
+      - name: Scan for hardcoded secrets
+        run: |
+          echo "=== Scanning for potential hardcoded secrets ==="
+          # Проверяем что нет реальных ключей в коде (только os.getenv)
+          if grep -rn --include="*.py" \
+            -E "(api_key|secret|password|token)\s*=\s*['\"][a-zA-Z0-9_\-]{16,}['\"]" \
+            --exclude-dir=".git" . ; then
+            echo "⚠️  WARNING: Possible hardcoded secrets found!"
+            exit 1
+          else
+            echo "✅ No hardcoded secrets detected"
+          fi
+
+      # ── CORS check ────────────────────────────────────────────────────────
+      - name: Check CORS configuration
+        run: |
+          echo "=== Checking CORS configuration ==="
+          if grep -n 'allow_origins=\["\*"\]' server.py; then
+            echo "❌ CRITICAL: CORS allows all origins! Fix required."
+            exit 1
+          else
+            echo "✅ CORS is properly restricted"
+          fi
+
+      # ── Auth coverage check ───────────────────────────────────────────────
+      - name: Check auth on sensitive endpoints
+        run: |
+          echo "=== Checking authentication on sensitive endpoints ==="
+          MISSING_AUTH=0
+
+          # Проверяем что критические эндпоинты имеют auth
+          for endpoint in \
+            "/api/trade/manual" \
+            "/api/settings" \
+            "/api/autopilot" \
+            "/api/debug" \
+            "/api/balance" \
+            "/api/trades" \
+            "/api/dashboard"; do
+
+            # Ищем строку с декоратором и проверяем наличие verify_api_key в следующих 3 строках
+            LINE=$(grep -n "\"${endpoint}" server.py | head -1 | cut -d: -f1)
+            if [ -n "$LINE" ]; then
+              CONTEXT=$(sed -n "$((LINE-1)),$((LINE+2))p" server.py)
+              if echo "$CONTEXT" | grep -q "verify_api_key"; then
+                echo "✅ ${endpoint} — protected"
+              else
+                echo "❌ ${endpoint} — MISSING AUTH"
+                MISSING_AUTH=1
+              fi
+            fi
+          done
+
+          if [ $MISSING_AUTH -eq 1 ]; then
+            echo ""
+            echo "⚠️  Some endpoints are missing authentication!"
+            exit 1
+          else
+            echo ""
+            echo "✅ All sensitive endpoints are properly authenticated"
+          fi
