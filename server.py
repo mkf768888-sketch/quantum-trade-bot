@@ -646,8 +646,8 @@ async def get_ticker(symbol: str) -> float:
             data = await r.json()
             if data.get("code") == "200000":
                 return float(data["data"].get("price", 0))
-    except:
-        pass
+    except Exception as e:
+        log_activity(f"[get_ticker] {symbol} error: {e}")
     return 0.0
 
 async def get_kucoin_chart(symbol: str, interval: str = "1hour") -> list:
@@ -658,8 +658,8 @@ async def get_kucoin_chart(symbol: str, interval: str = "1hour") -> list:
             data = await r.json()
             if data.get("code") == "200000":
                 return data.get("data", [])
-    except:
-        pass
+    except Exception as e:
+        log_activity(f"[get_kucoin_chart] {symbol} error: {e}")
     return []
 
 async def place_spot_order(symbol: str, side: str, size: float) -> dict:
@@ -1532,10 +1532,10 @@ async def auto_trade_cycle():
                             pr = m.get("outcomePrices", "[]")
                             if isinstance(pr, str):
                                 try: pr = json.loads(pr)
-                                except: continue
+                                except Exception: continue
                             if not pr: continue
                             try: yp = round(float(pr[0]) * 100, 1)
-                            except: continue
+                            except Exception: continue
                             if yp in (0.0, 100.0): continue  # resolved/degenerate
                             vol = float(m.get("volume", 0))
                             if vol < 1000: continue
@@ -1977,7 +1977,8 @@ async def _tg_answer(cb_id: str, text: str = ""):
             await s.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
                          json={"callback_query_id": cb_id, "text": text},
                          timeout=aiohttp.ClientTimeout(total=3))
-    except: pass
+    except Exception as e:
+        log_activity(f"[_tg_answer] error: {e}")
 
 async def _tg_main_menu(chat_id: int):
     """Главное меню бота."""
@@ -2922,7 +2923,7 @@ async def api_polymarket():
         if isinstance(raw, list): return raw
         if isinstance(raw, str):
             try: return json.loads(raw)
-            except: return []
+            except Exception: return []
         return []
     try:
         async with aiohttp.ClientSession() as s:
@@ -2933,7 +2934,7 @@ async def api_polymarket():
                     r = await s.get(url, timeout=aiohttp.ClientTimeout(total=10))
                     data = await r.json()
                     if isinstance(data, list) and data: events = data; break
-                except: continue
+                except Exception: continue
             result = []
             for e in events:
                 title = e.get("title", "")
@@ -2943,7 +2944,7 @@ async def api_polymarket():
                 prices_raw = parse_prices(markets[0].get("outcomePrices", "[]"))
                 if not prices_raw: continue
                 try: yes_prob = round(float(prices_raw[0]) * 100, 1)
-                except: continue
+                except Exception: continue
                 if yes_prob in (0.0, 100.0): continue
                 volume = float(e.get("volume", 0))
                 if volume < 1000: continue
@@ -3054,7 +3055,8 @@ async def ws_live(websocket: WebSocket):
             signal = calc_signal(btc_change, vision)
             await websocket.send_json({"type": "update", "prices": prices, "signal": signal, "vision": vision, "timestamp": datetime.utcnow().isoformat()})
             await asyncio.sleep(15)
-    except: pass
+    except Exception as e:
+        log_activity(f"[websocket] connection closed: {e}")
 
 if __name__ == "__main__":
     import uvicorn
