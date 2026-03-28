@@ -19,12 +19,22 @@ import random
 from datetime import datetime
 from typing import Optional, List, Dict
 import aiohttp
-from fastapi import FastAPI, WebSocket, Request
+from fastapi import FastAPI, WebSocket, Request, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="7.2.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="QuantumTrade AI", version="7.3.3")
+_ALLOWED_ORIGINS = [
+    "https://mkf768888-sketch.github.io",  # v7.3.3: GitHub Pages frontend
+    "http://localhost:3000",               # v7.3.3: local dev
+    "http://localhost:8080",
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_ALLOWED_ORIGINS,        # v7.3.3: было ["*"] — ИСПРАВЛЕНО
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
 KUCOIN_SECRET     = os.getenv("KUCOIN_SECRET", "")
@@ -44,6 +54,23 @@ BRAKET_S3_BUCKET   = os.getenv("BRAKET_S3_BUCKET",   "")   # v7.3.1: S3 баке
 BRAKET_DEVICE_ARN  = os.getenv("BRAKET_DEVICE_ARN",  "arn:aws:braket:us-east-1::device/qpu/ionq/Harmony")  # v7.3.1
 RAILWAY_TOKEN     = os.getenv("RAILWAY_TOKEN", "")       # v7.2.1: Railway API — persist variable changes
 WEBAPP_URL        = os.getenv("WEBAPP_URL", "https://mkf768888-sketch.github.io/quantum-trade-ui/")  # v7.2.2: GitHub Pages frontend
+API_SECRET        = os.getenv("API_SECRET", "")          # v7.3.3: защита приватных эндпоинтов
+
+# ── v7.3.3: API-аутентификация ──────────────────────────────────────────────
+async def verify_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
+    """Проверяет X-API-Key заголовок на всех приватных эндпоинтах.
+    Если API_SECRET задан в Railway env — требуем совпадения.
+    Если API_SECRET не задан — выкидываем ошибку (секрет обязателен для приватных маршрутов).
+    """
+    if not API_SECRET:
+        raise HTTPException(status_code=503, detail="API_SECRET not configured on server")
+    if x_api_key != API_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
+
+# ── v7.3.3: Rate Limiting для AI Chat (защита бюджета Claude API) ────────────
+_ai_chat_rl: dict = {}   # ip → (count, window_start_ts)
+_AI_CHAT_LIMIT = 20      # макс 20 запросов
+_AI_CHAT_WINDOW = 60     # в минуту с одного IP
 
 RISK_PER_TRADE = 0.25  # v6.9: Strategy C (25% of balance)
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
@@ -1977,7 +2004,7 @@ async def _tg_stats(chat_id: int):
     losses= sum(1 for t in trade_log if (t.get("pnl") or 0) <= 0 and t.get("pnl") is not None)
     pnl   = round(sum(t.get("pnl") or 0 for t in trade_log), 4)
     wr    = round(wins / total * 100, 1) if total else 0
-    open_ = sum(1 for t in trade_log if t["status"] == "open")
+    open_ = sum(1 for t in trade_log if t.get("status", "") == "open")
     last_q = round(last_q_score, 1) if last_q_score else "—"
     pnl_emoji = "✅" if pnl >= 0 else "❌"
     chip  = "Wukong 180 ⚛️" if _qcloud_ready else "CPU симулятор"
@@ -2091,7 +2118,7 @@ async def _tg_balance(chat_id: int):
 
 async def _tg_positions(chat_id: int):
     """Открытые позиции."""
-    open_trades = [t for t in trade_log if t["status"] == "open"]
+    open_trades = [t for t in trade_log if t.get("status", "") == "open"]
     kb = {"inline_keyboard": [[{"text": "◀️ Меню", "callback_data": "menu_main"}]]}
     if not open_trades:
         await _tg_send(chat_id, "📈 <b>Позиции</b>\n\nОткрытых позиций нет.", kb)
@@ -2263,6 +2290,14 @@ async def _tg_ai_ask(chat_id: int, question: str):
 
 @app.post("/api/telegram/callback")
 async def telegram_callback(req: TelegramUpdate):
+    global MIN_Q_SCORE, COOLDOWN, AUTOPILOT
+    try:
+     return await _telegram_callback_inner(req)
+    except Exception as _tg_err:
+        log_activity(f"[telegram_callback] unhandled error: {_tg_err}")
+        return {"ok": True}
+
+async def _telegram_callback_inner(req: TelegramUpdate):
     global MIN_Q_SCORE, COOLDOWN, AUTOPILOT
 
     # ── Обработка текстовых команд ─────────────────────────────────────────
@@ -2706,7 +2741,7 @@ async def quantum_status():
     }
 
 @app.post("/api/settings")
-async def update_settings(body: dict):
+async def update_settings(body: dict, _auth=Depends(verify_api_key)):  # v7.3.3: auth required
     """v6.7: runtime settings update without restart."""
     global MIN_Q_SCORE, COOLDOWN, AUTOPILOT, TEST_MODE, RISK_PER_TRADE, MAX_LEVERAGE
     changed = {}
@@ -2735,14 +2770,14 @@ async def update_settings(body: dict):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "7.3.1", "auto_trading": AUTOPILOT, "test_mode": TEST_MODE,
-            "risk_per_trade": RISK_PER_TRADE, "last_qscore": last_q_score, "min_confidence": MIN_CONFIDENCE,
-            "min_q_score": MIN_Q_SCORE, "max_leverage": MAX_LEVERAGE, "tp_pct": TP_PCT, "sl_pct": SL_PCT,
-            "trades_logged": len(trade_log), "yandex_vision": bool(YANDEX_VISION_KEY),
-            "claude_vision": bool(ANTHROPIC_API_KEY), "ai_chat": bool(ANTHROPIC_API_KEY),
-            "quantum_chip": "Wukong_180" if _qcloud_ready else "CPU_simulator",
-            "origin_qc_token": bool(ORIGIN_QC_TOKEN), "braket_ready": _braket_ready, "braket_last_run": round(time.time()-_braket_ts) if _braket_ts else None,
-            "timestamp": datetime.utcnow().isoformat()}
+    # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
+    return {
+        "status": "ok",
+        "version": "7.3.3",
+        "auto_trading": AUTOPILOT,
+        "quantum_chip": "Wukong_180" if _qcloud_ready else "CPU_simulator",
+        "timestamp": datetime.utcnow().isoformat(),
+    }
 
 @app.post("/api/setup-webhook")
 async def setup_webhook(request: Request):
@@ -2803,16 +2838,16 @@ async def get_webhook_info():
         return {"ok": False, "error": str(e)}
 
 @app.get("/api/balance")
-async def api_balance(): return await get_balance()
+async def api_balance(_auth=Depends(verify_api_key)): return await get_balance()  # v7.3.3: auth
 
 @app.get("/api/futures/balance")
-async def api_futures_balance(): return await get_futures_balance()
+async def api_futures_balance(_auth=Depends(verify_api_key)): return await get_futures_balance()  # v7.3.3
 
 @app.get("/api/futures/positions")
-async def api_futures_positions(): return await get_futures_positions()
+async def api_futures_positions(_auth=Depends(verify_api_key)): return await get_futures_positions()  # v7.3.3
 
 @app.get("/api/combined/balance")
-async def api_combined_balance():
+async def api_combined_balance(_auth=Depends(verify_api_key)):  # v7.3.3: auth
     spot, futures = await asyncio.gather(get_balance(), get_futures_balance())
     total = spot.get("total_usdt", 0) + futures.get("available_balance", 0)
     return {"spot_usdt": spot.get("total_usdt", 0), "futures_usdt": futures.get("available_balance", 0),
@@ -2834,7 +2869,7 @@ async def api_signal(symbol: str):
     return signal
 
 @app.get("/api/dashboard")
-async def api_dashboard():
+async def api_dashboard(_auth=Depends(verify_api_key)):  # v7.3.3: auth
     balance, prices, fut_bal = await asyncio.gather(get_balance(), get_all_prices(), get_futures_balance())
     btc_change = prices["prices"].get("BTC-USDT", {}).get("change", 0)
     candles = await get_kucoin_chart("BTC-USDT")
@@ -2854,7 +2889,7 @@ async def api_chart(symbol: str):
     return {"symbol": symbol, "candles_count": len(candles), "vision_analysis": vision, "timestamp": datetime.utcnow().isoformat()}
 
 @app.get("/api/trades")
-async def api_trades(limit: int = 50):
+async def api_trades(limit: int = 50, _auth=Depends(verify_api_key)):  # v7.3.3: auth
     # Статистика по трекам
     def track_stats(tag_filter):
         filtered = [t for t in trade_log if tag_filter in t.get("account","")]
@@ -2925,8 +2960,18 @@ class ChatRequest(BaseModel):
     context:  str = ""
 
 @app.post("/api/ai/chat")
-async def api_ai_chat(req: ChatRequest):
+async def api_ai_chat(req: ChatRequest, request: Request):
     """Proxy for Claude API — solves CORS from browser."""
+    # v7.3.3: Rate limiting — защита бюджета Claude API
+    client_ip = request.client.host if request.client else "unknown"
+    now_ts = time.time()
+    rl = _ai_chat_rl.get(client_ip, (0, now_ts))
+    if now_ts - rl[1] > _AI_CHAT_WINDOW:
+        _ai_chat_rl[client_ip] = (1, now_ts)   # новое окно
+    else:
+        if rl[0] >= _AI_CHAT_LIMIT:
+            raise HTTPException(status_code=429, detail="Rate limit exceeded. Max 20 requests/min.")
+        _ai_chat_rl[client_ip] = (rl[0] + 1, rl[1])
     if not ANTHROPIC_API_KEY:
         return {"error": "ANTHROPIC_API_KEY not configured on server", "success": False}
     system_lines = [
@@ -2967,7 +3012,7 @@ def log_activity(msg: str):
     if len(activity_log) > 100: activity_log.pop(0)
 
 @app.get("/api/debug")
-async def api_debug():
+async def api_debug(_auth=Depends(verify_api_key)):  # v7.3.3: auth required
     """Returns last known state for debugging."""
     return {
         "last_signals":  last_signals,
@@ -2982,7 +3027,7 @@ async def api_debug():
     }
 
 @app.post("/api/trade/manual")
-async def manual_trade(req: ManualTrade):
+async def manual_trade(req: ManualTrade, _auth=Depends(verify_api_key)):  # v7.3.3: auth required
     result = await place_futures_order(req.symbol, req.side, int(req.size), req.leverage) if req.is_futures else await place_spot_order(req.symbol, req.side, req.size)
     success = result.get("code") == "200000"
     if success:
@@ -2991,7 +3036,7 @@ async def manual_trade(req: ManualTrade):
     return {"success": success, "data": result}
 
 @app.post("/api/autopilot/{state}")
-async def toggle_autopilot(state: str):
+async def toggle_autopilot(state: str, _auth=Depends(verify_api_key)):  # v7.3.3: auth required
     global AUTOPILOT
     AUTOPILOT = state == "on"
     await notify(f"⚙️ Автопилот {'включён' if AUTOPILOT else 'выключен'}")
