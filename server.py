@@ -23,7 +23,7 @@ from fastapi import FastAPI, WebSocket, Request, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="7.3.5")
+app = FastAPI(title="QuantumTrade AI", version="7.3.6")
 _ALLOWED_ORIGINS = [
     "https://mkf768888-sketch.github.io",  # v7.3.3: GitHub Pages frontend
     "http://localhost:3000",               # v7.3.3: local dev
@@ -1847,114 +1847,181 @@ async def _notify_arb(opp: dict):
     await notify(msg)
 
 
-# ── v7.3.5: Triangular Arb EXECUTION ─────────────────────────────────────────
-ARB_EXEC_USDT    = float(os.getenv("ARB_EXEC_USDT", "30"))   # USDT per arb trade
-ARB_EXEC_ENABLED = os.getenv("ARB_EXEC_ENABLED", "true").lower() == "true"
-_arb_stats: dict  = {"total": 0, "success": 0, "total_pnl": 0.0}
-_arb_last_exec: dict = {}  # symbol -> timestamp, cooldown per triangle
+# ── v7.3.6: Triangular Arb EXECUTION (safe) ───────────────────────────────────
+ARB_EXEC_USDT     = float(os.getenv("ARB_EXEC_USDT", "20"))    # USDT per arb cycle
+ARB_EXEC_ENABLED  = os.getenv("ARB_EXEC_ENABLED", "false").lower() == "true"  # OFF by default
+ARB_MIN_PROFIT_PCT = 0.6   # minimum profit % to actually execute (after fees)
+_arb_stats: dict   = {"total": 0, "success": 0, "failed": 0, "total_pnl": 0.0}
+_arb_last_exec: dict = {}   # path_key → timestamp
+_arb_executing: bool = False  # global lock — only ONE arb at a time
+
+def _order_ok(r: dict) -> bool:
+    """True if KuCoin returned a valid orderId (order accepted)."""
+    return bool(r.get("code") == "200000" and r.get("data", {}).get("orderId"))
+
+async def _spot_buy_funds(symbol: str, funds: float) -> dict:
+    """Market BUY using quote-currency amount (funds=USDT). Safer than size for buys."""
+    endpoint = "/api/v1/orders"
+    body = json.dumps({
+        "clientOid": f"qt_{int(time.time()*1000)}",
+        "side": "buy", "symbol": symbol,
+        "type": "market", "funds": str(round(funds, 4))
+    })
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(KUCOIN_BASE_URL + endpoint,
+                             headers=kucoin_headers("POST", endpoint, body),
+                             data=body, timeout=aiohttp.ClientTimeout(total=10))
+            return await r.json()
+    except Exception as e:
+        return {"code": "error", "msg": str(e)}
 
 async def execute_triangular_arb(opp: dict) -> dict:
-    """Execute a triangular arbitrage opportunity via 3 sequential spot market orders.
+    """Safe triangular arb: 3 legs with abort + emergency sell-back on failure.
 
-    Direction 1 (USDT→A→cross→B→USDT):
-        leg1: buy  a_sym  (spend USDT, get A)
-        leg2: sell cross  (spend A, get B)  — sell cross = sell A for BTC equiv
-        leg3: sell b_sym  (spend B, get USDT)
+    Direction 1 (USDT→A→BTC→USDT):
+        leg1: buy  a_sym  with USDT (funds-based buy)
+        leg2: sell cross  (sell A for BTC via cross pair, e.g. ETH-BTC)
+        leg3: sell b_sym  (sell BTC back to USDT)
 
-    Direction 2 (USDT→B→cross→A→USDT):
-        leg1: buy  b_sym  (spend USDT, get B)
-        leg2: buy  cross  (spend B, get A)  — buy cross = buy A with BTC equiv
-        leg3: sell a_sym  (spend A, get USDT)
+    Direction 2 (USDT→BTC→A→USDT):
+        leg1: buy  b_sym  with USDT (funds-based buy)
+        leg2: buy  cross  (buy A with BTC)
+        leg3: sell a_sym  (sell A back to USDT)
 
-    size is always calculated in base currency from ARB_EXEC_USDT.
+    Abort logic: if leg2 or leg3 fails → emergency sell-back of intermediate crypto.
+    Global lock: only one triangle executes at a time.
     """
+    global _arb_executing
+
     if not ARB_EXEC_ENABLED:
         return {"executed": False, "reason": "ARB_EXEC_ENABLED=false"}
 
+    # Global lock — prevent concurrent arb executions
+    if _arb_executing:
+        return {"executed": False, "reason": "another arb in progress"}
+
     path_key = opp.get("path", "")
     now = time.time()
-    last = _arb_last_exec.get(path_key, 0)
-    if now - last < ARB_COOLDOWN_SEC:
-        remaining = int(ARB_COOLDOWN_SEC - (now - last))
+
+    # Cooldown per triangle path
+    if now - _arb_last_exec.get(path_key, 0) < ARB_COOLDOWN_SEC:
+        remaining = int(ARB_COOLDOWN_SEC - (now - _arb_last_exec.get(path_key, 0)))
         return {"executed": False, "reason": f"cooldown {remaining}s"}
+
+    # Profit threshold — must be above fees + slippage
+    profit_pct = opp.get("profit_pct", 0)
+    if profit_pct < ARB_MIN_PROFIT_PCT:
+        return {"executed": False, "reason": f"profit {profit_pct:.3f}% < min {ARB_MIN_PROFIT_PCT}%"}
 
     # Check spot USDT balance
     bal = await get_balance()
-    if not bal.get("success") or bal.get("total_usdt", 0) < ARB_EXEC_USDT * 0.9:
-        return {"executed": False, "reason": f"insufficient spot balance ({bal.get('total_usdt', 0):.2f} USDT)"}
+    spot_usdt = bal.get("total_usdt", 0)
+    if not bal.get("success") or spot_usdt < ARB_EXEC_USDT * 0.95:
+        return {"executed": False, "reason": f"low spot USDT {spot_usdt:.2f} < {ARB_EXEC_USDT*0.95:.2f}"}
 
-    a_sym   = opp["a_sym"]       # e.g. ETH-USDT
-    b_sym   = opp["b_sym"]       # e.g. BTC-USDT
-    cross   = opp["cross_sym"]   # e.g. ETH-BTC
+    _arb_executing = True
+    _arb_last_exec[path_key] = now
+
+    a_sym   = opp["a_sym"]      # e.g. ETH-USDT
+    b_sym   = opp["b_sym"]      # e.g. BTC-USDT
+    cross   = opp["cross_sym"]  # e.g. ETH-BTC
     d       = opp["direction"]
-    price_a = opp["price_a"]     # price of a_sym in USDT
-    price_b = opp["price_b"]     # price of b_sym in USDT
+    price_a = opp["price_a"]
+    price_b = opp["price_b"]
+    actual  = opp["actual"]     # actual cross rate (A/B or B/A)
 
-    results = []
+    FEE = 0.997  # 0.3% KuCoin taker fee buffer per leg
+
     try:
         if d == 1:
-            # USDT→A: buy a_sym, size in A units
-            size_a = round(ARB_EXEC_USDT / price_a, 6)
-            r1 = await place_spot_order(a_sym, "buy", size_a)
-            results.append(("buy", a_sym, size_a, r1))
-            await asyncio.sleep(0.15)
+            # ── Leg 1: spend USDT, get A (ETH/XRP/etc) ──────────────────
+            r1 = await _spot_buy_funds(a_sym, ARB_EXEC_USDT)
+            if not _order_ok(r1):
+                log_activity(f"[arb] leg1 FAILED {a_sym}: {r1.get('msg','?')}")
+                _arb_stats["failed"] += 1
+                return {"executed": False, "reason": f"leg1 failed: {r1.get('msg')}"}
 
-            # A→cross: sell cross (A is base), size in A units
+            size_a = round((ARB_EXEC_USDT / price_a) * FEE, 6)  # conservative A received
+            await asyncio.sleep(0.5)
+
+            # ── Leg 2: sell A for BTC via cross pair ──────────────────────
             r2 = await place_spot_order(cross, "sell", size_a)
-            results.append(("sell", cross, size_a, r2))
-            await asyncio.sleep(0.15)
+            if not _order_ok(r2):
+                log_activity(f"[arb] leg2 FAILED {cross} — emergency sell {a_sym}")
+                await place_spot_order(a_sym, "sell", size_a)  # sell A back to USDT
+                _arb_stats["failed"] += 1
+                await notify(f"⚠️ Арб {path_key}: leg2 провалился, {a_sym} продан обратно")
+                return {"executed": False, "reason": "leg2 failed, emergency sell done"}
 
-            # B→USDT: sell b_sym — get BTC amount from cross price
-            btc_received = size_a * opp["actual"]   # A * (A/B rate) = B units
-            r3 = await place_spot_order(b_sym, "sell", round(btc_received, 8))
-            results.append(("sell", b_sym, round(btc_received, 8), r3))
+            btc_received = round(size_a * actual * FEE, 8)  # conservative BTC received
+            await asyncio.sleep(0.5)
+
+            # ── Leg 3: sell BTC → USDT ────────────────────────────────────
+            r3 = await place_spot_order(b_sym, "sell", btc_received)
+            if not _order_ok(r3):
+                log_activity(f"[arb] leg3 FAILED {b_sym} — BTC {btc_received} stuck in spot")
+                _arb_stats["failed"] += 1
+                await notify(f"⚠️ Арб {path_key}: leg3 провалился, {btc_received} BTC на споте")
+                return {"executed": False, "reason": "leg3 failed, BTC in spot account"}
 
         else:
-            # USDT→B: buy b_sym, size in B units
-            size_b = round(ARB_EXEC_USDT / price_b, 8)
-            r1 = await place_spot_order(b_sym, "buy", size_b)
-            results.append(("buy", b_sym, size_b, r1))
-            await asyncio.sleep(0.15)
+            # ── Leg 1: spend USDT, get BTC ───────────────────────────────
+            r1 = await _spot_buy_funds(b_sym, ARB_EXEC_USDT)
+            if not _order_ok(r1):
+                log_activity(f"[arb] leg1 FAILED {b_sym}: {r1.get('msg','?')}")
+                _arb_stats["failed"] += 1
+                return {"executed": False, "reason": f"leg1 failed: {r1.get('msg')}"}
 
-            # B→cross: buy cross (B is quote), size in A units via implied rate
-            size_a = round(ARB_EXEC_USDT / price_a, 6)
+            size_b = round((ARB_EXEC_USDT / price_b) * FEE, 8)
+            await asyncio.sleep(0.5)
+
+            # ── Leg 2: buy A with BTC via cross pair ──────────────────────
+            size_a = round(size_b * actual * FEE, 6)
             r2 = await place_spot_order(cross, "buy", size_a)
-            results.append(("buy", cross, size_a, r2))
-            await asyncio.sleep(0.15)
+            if not _order_ok(r2):
+                log_activity(f"[arb] leg2 FAILED {cross} — emergency sell {b_sym}")
+                await place_spot_order(b_sym, "sell", size_b)
+                _arb_stats["failed"] += 1
+                await notify(f"⚠️ Арб {path_key}: leg2 провалился, {b_sym} продан обратно")
+                return {"executed": False, "reason": "leg2 failed, emergency sell done"}
 
-            # A→USDT: sell a_sym
+            await asyncio.sleep(0.5)
+
+            # ── Leg 3: sell A → USDT ─────────────────────────────────────
             r3 = await place_spot_order(a_sym, "sell", size_a)
-            results.append(("sell", a_sym, size_a, r3))
+            if not _order_ok(r3):
+                log_activity(f"[arb] leg3 FAILED {a_sym} — {size_a} stuck in spot")
+                _arb_stats["failed"] += 1
+                await notify(f"⚠️ Арб {path_key}: leg3 провалился, {size_a} {a_sym} на споте")
+                return {"executed": False, "reason": "leg3 failed"}
 
-        # Evaluate success: all 3 orders got orderId back
-        all_ok = all(r.get("data", {}).get("orderId") or r.get("code") == "200000" for _, _, _, r in results)
-        estimated_pnl = round(ARB_EXEC_USDT * opp["profit_pct"] / 100, 4)
-
-        _arb_last_exec[path_key] = time.time()
+        # ── All 3 legs OK ─────────────────────────────────────────────────
+        estimated_pnl = round(ARB_EXEC_USDT * profit_pct / 100, 4)
         _arb_stats["total"] += 1
-        if all_ok:
-            _arb_stats["success"] += 1
-            _arb_stats["total_pnl"] = round(_arb_stats["total_pnl"] + estimated_pnl, 4)
+        _arb_stats["success"] += 1
+        _arb_stats["total_pnl"] = round(_arb_stats["total_pnl"] + estimated_pnl, 4)
+        log_activity(f"[arb] ✅ {path_key} profit≈{estimated_pnl:+.4f} USDT")
 
-        status = "✅ OK" if all_ok else "⚠️ PARTIAL"
-        log_activity(f"[arb_exec] {path_key} {status} profit≈{estimated_pnl:+.4f} USDT")
-
-        # Telegram notification with result
-        legs_info = "\n".join(f"  leg{i+1}: {side} {sym} qty={qty}" for i, (side, sym, qty, _) in enumerate(results))
         msg = (
-            f"{'✅' if all_ok else '⚠️'} <b>Арбитраж исполнен!</b>\n"
+            f"✅ <b>Арбитраж завершён!</b>\n"
             f"<code>{path_key}</code>\n\n"
-            f"{legs_info}\n\n"
             f"💰 Прибыль ≈ <code>{estimated_pnl:+.4f} USDT</code>\n"
-            f"📊 Всего арб: {_arb_stats['total']} | Успешных: {_arb_stats['success']} | PnL: {_arb_stats['total_pnl']:+.4f} USDT"
+            f"📊 Успешных: {_arb_stats['success']} | "
+            f"Ошибок: {_arb_stats['failed']} | "
+            f"PnL: {_arb_stats['total_pnl']:+.4f} USDT"
         )
         await notify(msg)
-        return {"executed": True, "success": all_ok, "pnl": estimated_pnl, "legs": len(results)}
+        return {"executed": True, "success": True, "pnl": estimated_pnl}
 
     except Exception as e:
-        log_activity(f"[arb_exec] ERROR {path_key}: {e}")
+        log_activity(f"[arb_exec] EXCEPTION {path_key}: {e}")
+        _arb_stats["failed"] += 1
         await notify(f"❌ <b>Арбитраж ошибка</b>: {e}\n<code>{path_key}</code>")
         return {"executed": False, "reason": str(e)}
+
+    finally:
+        _arb_executing = False  # always release lock
 
 
 async def position_monitor_loop():
@@ -2584,7 +2651,7 @@ async def startup():
     mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
     await notify(
-        f"⚛ <b>QuantumTrade v7.3.5</b>\n"
+        f"⚛ <b>QuantumTrade v7.3.6</b>\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
         f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
@@ -2886,7 +2953,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "7.3.5",
+        "version": "7.3.6",
         "auto_trading": AUTOPILOT,
         "quantum_chip": "Wukong_180" if _qcloud_ready else "CPU_simulator",
         "timestamp": datetime.utcnow().isoformat(),
