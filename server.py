@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v7.3.1
+QuantumTrade AI - FastAPI Backend v7.3.2
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
 Phase3: Origin QC QAOA — квантовая оптимизация портфеля (CPU симулятор + Wukong 180 реальный чип)
 Phase5: Claude Vision — AI-анализ графиков
@@ -51,7 +51,7 @@ MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "55"))  # v7.2.2: 65→55 (dead zo
 # v7.2.2: per-pair Q thresholds = MIN_Q_SCORE - 1, чтобы не блокировать торговлю при изменении MIN_Q_SCORE
 PAIR_Q_THRESHOLDS: dict = {"BTC-USDT": 54, "ETH-USDT": 54, "SOL-USDT": 54,
                             "BNB-USDT": 54, "XRP-USDT": 54, "AVAX-USDT": 54}
-COOLDOWN       = int(os.getenv("COOLDOWN", "450"))   # v7.2.2: 600→450s (баланс частоты и качества)
+COOLDOWN       = int(os.getenv("COOLDOWN_STD", os.getenv("COOLDOWN", "450")))  # v7.3.2: читает COOLDOWN_STD из Railway
 MAX_LEVERAGE   = int(os.getenv("MAX_LEVERAGE", "5"))   # v6.9: Strategy C default
 # v7.2.3: TP/SL ratio улучшен до 3:1 (было 2:1) — исправляет асимметрию убытков
 TP_PCT         = 0.06   # v7.2.3: 6% (было 5%)
@@ -549,10 +549,11 @@ async def get_futures_balance() -> dict:
     except Exception as e:
         return {"available_balance": 0, "success": False, "error": str(e)}
 
-async def get_recent_futures_fills(symbol: str, since_ts: float) -> Optional[float]:
-    """v7.2.3: Возвращает реальную среднюю цену закрытия позиции из fills KuCoin Futures.
-    Используется в position_monitor вместо price_now для точного PnL."""
+async def get_recent_futures_fills(symbol: str, since_ts: float, trade_side: str = "buy") -> Optional[float]:
+    """v7.3.2: Возвращает цену ЗАКРЫТИЯ позиции из fills KuCoin Futures.
+    Фильтрует только fills противоположной стороны (closing fills), исключая fills открытия."""
     endpoint = f"/api/v1/fills?symbol={symbol}&type=trade&pageSize=20"
+    close_side = "sell" if trade_side == "buy" else "buy"  # для BUY-позиции закрытие = sell
     try:
         async with aiohttp.ClientSession() as s:
             r = await s.get(
@@ -563,10 +564,11 @@ async def get_recent_futures_fills(symbol: str, since_ts: float) -> Optional[flo
             data = await r.json()
             if data.get("code") == "200000":
                 items = data["data"].get("items", [])
-                # Берём fills ПОСЛЕ открытия позиции (createdAt в миллисекундах)
+                # v7.3.2: берём только closing fills (противоположная сторона) ПОСЛЕ открытия позиции
                 close_fills = [
                     f for f in items
                     if float(f.get("createdAt", 0)) / 1000 > since_ts
+                    and f.get("side") == close_side
                 ]
                 if close_fills:
                     total_qty = sum(float(f.get("size", 1)) for f in close_fills)
@@ -575,7 +577,7 @@ async def get_recent_futures_fills(symbol: str, since_ts: float) -> Optional[flo
                             float(f["price"]) * float(f.get("size", 1))
                             for f in close_fills
                         ) / total_qty
-                        print(f"[fills] {symbol}: реальная цена закрытия ${avg_price:,.4f} ({len(close_fills)} fills)", flush=True)
+                        print(f"[fills] {symbol}: цена закрытия ${avg_price:,.4f} ({len(close_fills)} closing fills)", flush=True)
                         return avg_price
     except Exception as e:
         print(f"[fills] {symbol}: ошибка получения fills — {e}", flush=True)
@@ -903,7 +905,7 @@ async def analyze_chart_with_vision(symbol: str, candles: list) -> dict:
         if ANTHROPIC_API_KEY:
             img_b64 = _render_candles_png_b64(candles)
             if img_b64:
-                cv = _cache_get(f"claude_vision_{symbol}", 180)
+                cv = _cache_get(f"claude_vision_{symbol}", 600)  # v7.3.2: 180→600s экономия API
                 if not cv:
                     cv = await _analyze_chart_claude_vision(img_b64, symbol, result)
                     _cache_set(f"claude_vision_{symbol}", cv)
@@ -1389,8 +1391,13 @@ async def execute_with_strategy(strategy: str, symbol: str, signal: dict,
     tp = round(price * (1 + s["tp"] if side == "buy" else 1 - s["tp"]), 4)
     sl = round(price * (1 - s["sl"] if side == "buy" else 1 + s["sl"]), 4)
     close_side = "sell" if side == "buy" else "buy"
-    await place_futures_stop_order(fut_symbol, close_side, n_contracts, tp, "up" if side == "buy" else "down")
-    await place_futures_stop_order(fut_symbol, close_side, n_contracts, sl, "down" if side == "buy" else "up")
+    tp_res = await place_futures_stop_order(fut_symbol, close_side, n_contracts, tp, "up" if side == "buy" else "down")
+    sl_res = await place_futures_stop_order(fut_symbol, close_side, n_contracts, sl, "down" if side == "buy" else "up")
+    tp_ok = tp_res.get("code") == "200000"
+    sl_ok = sl_res.get("code") == "200000"
+    log_activity(f"[strategy] {fut_symbol} СТОПЫ: TP={'✅' if tp_ok else '❌ '+str(tp_res.get('msg','?'))} SL={'✅' if sl_ok else '❌ '+str(sl_res.get('msg','?'))}")
+    if not tp_ok or not sl_ok:
+        print(f"[WARN] {fut_symbol} стоп-ордер не выставлен! TP={tp_res} SL={sl_res}", flush=True)
     log_trade(fut_symbol, side, price, n_contracts, tp, sl,
               signal["confidence"], signal["q_score"], vision.get("pattern","?"), f"futures_{strategy}")
     last_signals[f"FUT_{symbol}"] = {"action": signal["action"], "ts": time.time()}
@@ -1825,6 +1832,11 @@ async def position_monitor_loop():
             open_trades = [t for t in trade_log if t.get("status") == "open"]
             if open_trades:
                 pos_data   = await get_futures_positions()
+                # v7.3.2: если API не ответил — пропускаем итерацию, не закрываем позиции ошибочно
+                if not pos_data.get("success"):
+                    log_activity("[monitor] get_futures_positions FAILED — пропускаем проверку")
+                    await asyncio.sleep(30)
+                    continue
                 open_syms  = {p.get("symbol") for p in pos_data.get("positions", [])}
                 for trade in open_trades:
                     # v7.2.0: мин 5 мин до закрытия — защита от race condition
@@ -1855,8 +1867,8 @@ async def position_monitor_loop():
                         entry         = trade["price"]
                         contract_size = CONTRACT_SIZES.get(trade["symbol"], 0.01)
                         open_ts       = trade.get("open_ts", time.time() - 400)
-                        # v7.2.3: сначала пробуем реальную цену из KuCoin fills
-                        real_close = await get_recent_futures_fills(trade["symbol"], open_ts)
+                        # v7.3.2: реальная цена из closing fills (только противоположная сторона)
+                        real_close = await get_recent_futures_fills(trade["symbol"], open_ts, trade.get("side", "buy"))
                         price_now  = real_close if real_close else await get_ticker(base_sym)
                         price_source = "fills" if real_close else "ticker"
                         if trade["side"] == "sell":
@@ -2424,7 +2436,7 @@ async def startup():
     mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
     await notify(
-        f"⚛ <b>QuantumTrade v7.3.1</b>\n"
+        f"⚛ <b>QuantumTrade v7.3.2</b>\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
         f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
