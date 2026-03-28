@@ -23,7 +23,7 @@ from fastapi import FastAPI, WebSocket, Request, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="7.3.3")
+app = FastAPI(title="QuantumTrade AI", version="7.3.4")
 _ALLOWED_ORIGINS = [
     "https://mkf768888-sketch.github.io",  # v7.3.3: GitHub Pages frontend
     "http://localhost:3000",               # v7.3.3: local dev
@@ -2471,7 +2471,7 @@ async def startup():
     mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
     await notify(
-        f"⚛ <b>QuantumTrade v7.3.2</b>\n"
+        f"⚛ <b>QuantumTrade v7.3.4</b>\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
         f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
@@ -2773,7 +2773,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "7.3.3",
+        "version": "7.3.4",
         "auto_trading": AUTOPILOT,
         "quantum_chip": "Wukong_180" if _qcloud_ready else "CPU_simulator",
         "timestamp": datetime.utcnow().isoformat(),
