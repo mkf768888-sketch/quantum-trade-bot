@@ -23,7 +23,7 @@ from fastapi import FastAPI, WebSocket, Request, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="7.3.4")
+app = FastAPI(title="QuantumTrade AI", version="7.3.5")
 _ALLOWED_ORIGINS = [
     "https://mkf768888-sketch.github.io",  # v7.3.3: GitHub Pages frontend
     "http://localhost:3000",               # v7.3.3: local dev
@@ -1847,6 +1847,116 @@ async def _notify_arb(opp: dict):
     await notify(msg)
 
 
+# ── v7.3.5: Triangular Arb EXECUTION ─────────────────────────────────────────
+ARB_EXEC_USDT    = float(os.getenv("ARB_EXEC_USDT", "30"))   # USDT per arb trade
+ARB_EXEC_ENABLED = os.getenv("ARB_EXEC_ENABLED", "true").lower() == "true"
+_arb_stats: dict  = {"total": 0, "success": 0, "total_pnl": 0.0}
+_arb_last_exec: dict = {}  # symbol -> timestamp, cooldown per triangle
+
+async def execute_triangular_arb(opp: dict) -> dict:
+    """Execute a triangular arbitrage opportunity via 3 sequential spot market orders.
+
+    Direction 1 (USDT→A→cross→B→USDT):
+        leg1: buy  a_sym  (spend USDT, get A)
+        leg2: sell cross  (spend A, get B)  — sell cross = sell A for BTC equiv
+        leg3: sell b_sym  (spend B, get USDT)
+
+    Direction 2 (USDT→B→cross→A→USDT):
+        leg1: buy  b_sym  (spend USDT, get B)
+        leg2: buy  cross  (spend B, get A)  — buy cross = buy A with BTC equiv
+        leg3: sell a_sym  (spend A, get USDT)
+
+    size is always calculated in base currency from ARB_EXEC_USDT.
+    """
+    if not ARB_EXEC_ENABLED:
+        return {"executed": False, "reason": "ARB_EXEC_ENABLED=false"}
+
+    path_key = opp.get("path", "")
+    now = time.time()
+    last = _arb_last_exec.get(path_key, 0)
+    if now - last < ARB_COOLDOWN_SEC:
+        remaining = int(ARB_COOLDOWN_SEC - (now - last))
+        return {"executed": False, "reason": f"cooldown {remaining}s"}
+
+    # Check spot USDT balance
+    bal = await get_balance()
+    if not bal.get("success") or bal.get("total_usdt", 0) < ARB_EXEC_USDT * 0.9:
+        return {"executed": False, "reason": f"insufficient spot balance ({bal.get('total_usdt', 0):.2f} USDT)"}
+
+    a_sym   = opp["a_sym"]       # e.g. ETH-USDT
+    b_sym   = opp["b_sym"]       # e.g. BTC-USDT
+    cross   = opp["cross_sym"]   # e.g. ETH-BTC
+    d       = opp["direction"]
+    price_a = opp["price_a"]     # price of a_sym in USDT
+    price_b = opp["price_b"]     # price of b_sym in USDT
+
+    results = []
+    try:
+        if d == 1:
+            # USDT→A: buy a_sym, size in A units
+            size_a = round(ARB_EXEC_USDT / price_a, 6)
+            r1 = await place_spot_order(a_sym, "buy", size_a)
+            results.append(("buy", a_sym, size_a, r1))
+            await asyncio.sleep(0.15)
+
+            # A→cross: sell cross (A is base), size in A units
+            r2 = await place_spot_order(cross, "sell", size_a)
+            results.append(("sell", cross, size_a, r2))
+            await asyncio.sleep(0.15)
+
+            # B→USDT: sell b_sym — get BTC amount from cross price
+            btc_received = size_a * opp["actual"]   # A * (A/B rate) = B units
+            r3 = await place_spot_order(b_sym, "sell", round(btc_received, 8))
+            results.append(("sell", b_sym, round(btc_received, 8), r3))
+
+        else:
+            # USDT→B: buy b_sym, size in B units
+            size_b = round(ARB_EXEC_USDT / price_b, 8)
+            r1 = await place_spot_order(b_sym, "buy", size_b)
+            results.append(("buy", b_sym, size_b, r1))
+            await asyncio.sleep(0.15)
+
+            # B→cross: buy cross (B is quote), size in A units via implied rate
+            size_a = round(ARB_EXEC_USDT / price_a, 6)
+            r2 = await place_spot_order(cross, "buy", size_a)
+            results.append(("buy", cross, size_a, r2))
+            await asyncio.sleep(0.15)
+
+            # A→USDT: sell a_sym
+            r3 = await place_spot_order(a_sym, "sell", size_a)
+            results.append(("sell", a_sym, size_a, r3))
+
+        # Evaluate success: all 3 orders got orderId back
+        all_ok = all(r.get("data", {}).get("orderId") or r.get("code") == "200000" for _, _, _, r in results)
+        estimated_pnl = round(ARB_EXEC_USDT * opp["profit_pct"] / 100, 4)
+
+        _arb_last_exec[path_key] = time.time()
+        _arb_stats["total"] += 1
+        if all_ok:
+            _arb_stats["success"] += 1
+            _arb_stats["total_pnl"] = round(_arb_stats["total_pnl"] + estimated_pnl, 4)
+
+        status = "✅ OK" if all_ok else "⚠️ PARTIAL"
+        log_activity(f"[arb_exec] {path_key} {status} profit≈{estimated_pnl:+.4f} USDT")
+
+        # Telegram notification with result
+        legs_info = "\n".join(f"  leg{i+1}: {side} {sym} qty={qty}" for i, (side, sym, qty, _) in enumerate(results))
+        msg = (
+            f"{'✅' if all_ok else '⚠️'} <b>Арбитраж исполнен!</b>\n"
+            f"<code>{path_key}</code>\n\n"
+            f"{legs_info}\n\n"
+            f"💰 Прибыль ≈ <code>{estimated_pnl:+.4f} USDT</code>\n"
+            f"📊 Всего арб: {_arb_stats['total']} | Успешных: {_arb_stats['success']} | PnL: {_arb_stats['total_pnl']:+.4f} USDT"
+        )
+        await notify(msg)
+        return {"executed": True, "success": all_ok, "pnl": estimated_pnl, "legs": len(results)}
+
+    except Exception as e:
+        log_activity(f"[arb_exec] ERROR {path_key}: {e}")
+        await notify(f"❌ <b>Арбитраж ошибка</b>: {e}\n<code>{path_key}</code>")
+        return {"executed": False, "reason": str(e)}
+
+
 async def position_monitor_loop():
     """Каждые 30 сек проверяет открытые позиции — закрылись ли по TP/SL."""
     await asyncio.sleep(30)
@@ -1938,6 +2048,8 @@ async def position_monitor_loop():
                     arb_opps = await check_triangular_arb(prices_snap.get("prices", {}))
                     for opp in arb_opps:
                         await _notify_arb(opp)
+                        if ARB_EXEC_ENABLED:
+                            await execute_triangular_arb(opp)
         except Exception as e:
             log_activity(f"[arb] monitor error: {e}")
 
@@ -2472,7 +2584,7 @@ async def startup():
     mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
     await notify(
-        f"⚛ <b>QuantumTrade v7.3.4</b>\n"
+        f"⚛ <b>QuantumTrade v7.3.5</b>\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
         f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
@@ -2774,7 +2886,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "7.3.4",
+        "version": "7.3.5",
         "auto_trading": AUTOPILOT,
         "quantum_chip": "Wukong_180" if _qcloud_ready else "CPU_simulator",
         "timestamp": datetime.utcnow().isoformat(),
