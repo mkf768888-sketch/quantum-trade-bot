@@ -29,16 +29,25 @@ _ALLOWED_ORIGINS = ["*"]   # v7.3.9: open for Mini App (Telegram WebApp origin v
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "OPTIONS"],  # v7.4.3: OPTIONS for CORS preflight
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_mini_app():
-    """Serve the Telegram Mini App frontend."""
+    """v7.4.3: Serve the Telegram Mini App — no-cache headers to avoid stale version."""
     try:
         with open("index.html", "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
+            content = f.read()
+        return HTMLResponse(
+            content=content,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            }
+        )
     except FileNotFoundError:
         return HTMLResponse(content="<h1>QuantumTrade AI</h1><p>index.html not found</p>", status_code=404)
 
@@ -2711,10 +2720,10 @@ async def startup():
     mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
     await notify(
-        f"⚛ <b>QuantumTrade v7.4.0</b>\n"
+        f"⚛ <b>QuantumTrade v7.4.3</b>\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
-        f"✅ Mini App → Railway URL (авто-регистрация)\n"
+        f"✅ Mini App: Баланс + Автопилот без API ключа\n"
         f"⚛️ Phase 5: Claude Vision — нативный AI-анализ графиков\n"
         f"{qc_label} (Phase 3+6)\n"
         f"🪂 Airdrop Tracker активен (Phase 4)\n"
@@ -3406,11 +3415,12 @@ async def manual_trade(req: ManualTrade, _auth=Depends(verify_api_key)):  # v7.3
     return {"success": success, "data": result}
 
 @app.post("/api/autopilot/{state}")
-async def toggle_autopilot(state: str, _auth=Depends(verify_api_key)):  # v7.3.3: auth required
+async def toggle_autopilot(state: str):  # v7.4.3: no auth — toggle from Mini App
     global AUTOPILOT
-    AUTOPILOT = state == "on"
-    await notify(f"⚙️ Автопилот {'включён' if AUTOPILOT else 'выключен'}")
-    return {"autopilot": AUTOPILOT}
+    # Accept: "on"/"true"/1 → True; "off"/"false"/0 → False
+    AUTOPILOT = state.lower() in ("on", "true", "1", "yes")
+    await notify(f"⚙️ Автопилот {'включён ✅' if AUTOPILOT else 'выключен 🔴'} (Mini App)")
+    return {"autopilot": AUTOPILOT, "ok": True}
 
 @app.websocket("/ws/live")
 async def ws_live(websocket: WebSocket):
