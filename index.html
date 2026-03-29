@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-<title>QuantumTrade AI v8.0</title>
+<title>QuantumTrade AI v8.1</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -259,7 +259,7 @@
         <div class="card">
           <div class="card-header">
             <div class="card-title">Общая прибыль</div>
-            <div class="badge badge-p" id="versionBadge">v8.0</div>
+            <div class="badge badge-p" id="versionBadge">v8.1</div>
           </div>
           <div id="pnlBlock"><div class="empty-state">Подключитесь для просмотра P&L</div></div>
         </div>
@@ -560,7 +560,8 @@ const tg = window.Telegram?.WebApp;
 if(tg){tg.ready();tg.expand();try{tg.setHeaderColor('#0a0b10');tg.setBackgroundColor('#0a0b10');}catch(e){}}
 
 // ── Config ──
-let BASE_URL = localStorage.getItem('qt_url') || '';
+// Auto-detect API URL: same origin as Mini App (served from same Railway server)
+let BASE_URL = localStorage.getItem('qt_url') || window.location.origin || '';
 let API_KEY  = localStorage.getItem('qt_key') || '';
 let _state   = { autopilot: false, arb: false };
 
@@ -618,7 +619,9 @@ function escHtml(s){const d=document.createElement('div');d.textContent=s;return
 async function loadData(){
   if(!BASE_URL){document.getElementById('setupScreen').style.display='flex';return;}
   try{
-    const stats=await fetch(BASE_URL+'/api/public/stats',{signal:AbortSignal.timeout(15000)}).then(r=>{if(!r.ok)throw new Error(r.status);return r.json();});
+    console.log('[QT] loadData → '+BASE_URL+'/api/public/stats');
+    const stats=await fetch(BASE_URL+'/api/public/stats',{signal:AbortSignal.timeout(15000)}).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.json();});
+    console.log('[QT] stats OK, autopilot='+stats.autopilot);
     const trades=await apiGet('/api/trades?limit=20').catch(()=>null);
     renderDashboard(stats);
     renderTrades(trades,stats);
@@ -632,7 +635,10 @@ async function loadData(){
     const sp=document.getElementById('dashBalSpot');if(sp)sp.textContent=fmt(b.spot_usdt);
     const fu=document.getElementById('dashBalFut');if(fu)fu.textContent=fmt(b.futures_equity);
     const to=document.getElementById('dashBalTotal');if(to)to.textContent=fmt(b.total_usdt);
-  }catch(e){setStatus('offline');}
+  }catch(e){
+    console.error('[QT] loadData error:',e.message||e);
+    setStatus('offline');
+  }
 }
 
 // ── Dashboard ──
@@ -890,7 +896,7 @@ function showToast(msg){
 }
 
 // ── Init ──
-if(!BASE_URL||!API_KEY){document.getElementById('setupScreen').style.display='flex';}
+if(!BASE_URL){document.getElementById('setupScreen').style.display='flex';}
 else{loadData();setInterval(loadData,30000);}
 </script>
 </body>
