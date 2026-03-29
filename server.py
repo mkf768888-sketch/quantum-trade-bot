@@ -3113,14 +3113,70 @@ async def api_signal(symbol: str):
     signal["symbol"] = symbol; signal["price"] = price; signal["vision"] = vision
     return signal
 
+async def _get_prices_with_fallback() -> dict:
+    """v7.4.2: Try KuCoin first, fallback to CoinGecko if empty."""
+    kucoin_result = await get_all_prices()
+    if kucoin_result.get("success") and kucoin_result.get("prices"):
+        return kucoin_result
+    # Fallback: CoinGecko free API (no key needed)
+    try:
+        ids = "bitcoin,ethereum,solana,binancecoin,ripple,avalanche-2"
+        sym_map = {"bitcoin": "BTC-USDT", "ethereum": "ETH-USDT", "solana": "SOL-USDT",
+                   "binancecoin": "BNB-USDT", "ripple": "XRP-USDT", "avalanche-2": "AVAX-USDT"}
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(
+                f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd&include_24hr_change=true",
+                timeout=aiohttp.ClientTimeout(total=8),
+                headers={"Accept": "application/json"}
+            )
+            data = await r.json()
+            prices = {}
+            for cg_id, kucoin_sym in sym_map.items():
+                if cg_id in data:
+                    prices[kucoin_sym] = {
+                        "price": data[cg_id].get("usd", 0),
+                        "change": data[cg_id].get("usd_24h_change", 0),
+                    }
+            return {"prices": prices, "success": True, "source": "coingecko"}
+    except Exception as e:
+        return {"prices": {}, "success": False, "error": f"kucoin+coingecko failed: {e}"}
+
+@app.get("/api/public/balance")
+async def api_public_balance():
+    """v7.4.2: Public balance endpoint — no auth required. For Mini App balance tab."""
+    spot, futures = await asyncio.gather(get_balance(), get_futures_balance(), return_exceptions=True)
+    spot_data = spot if isinstance(spot, dict) else {"total_usdt": 0, "accounts": [], "success": False}
+    fut_data  = futures if isinstance(futures, dict) else {"available_balance": 0, "account_equity": 0, "unrealised_pnl": 0, "success": False}
+    total = spot_data.get("total_usdt", 0) + fut_data.get("account_equity", 0)
+    return {
+        "spot_usdt":          spot_data.get("total_usdt", 0),
+        "spot_accounts":      spot_data.get("accounts", []),
+        "spot_success":       spot_data.get("success", False),
+        "futures_equity":     fut_data.get("account_equity", 0),
+        "futures_available":  fut_data.get("available_balance", 0),
+        "futures_unrealised": fut_data.get("unrealised_pnl", 0),
+        "futures_success":    fut_data.get("success", False),
+        "total_usdt":         round(total, 2),
+    }
+
+@app.get("/api/public/positions")
+async def api_public_positions():
+    """v7.4.2: Public futures positions — no auth required. For Mini App balance tab."""
+    try:
+        result = await get_futures_positions()
+        return result
+    except Exception as e:
+        return {"positions": [], "error": str(e)}
+
 @app.get("/api/public/stats")
 async def api_public_stats():
-    """Public read-only stats for Mini App — no auth required. v7.3.9: +whales +polymarket +fear&greed"""
-    # Fetch in parallel: prices, fear&greed, whale signals for main pairs, polymarket
+    """Public read-only stats for Mini App — no auth required. v7.4.2: +price fallback +balance summary"""
+    # Fetch in parallel: prices (with fallback), fear&greed, whale signals, balance
     MAIN_PAIRS = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT"]
-    prices_data, fg_data, *whale_results = await asyncio.gather(
-        get_all_prices(),
+    prices_data, fg_data, balance_data, *whale_results = await asyncio.gather(
+        _get_prices_with_fallback(),
         get_fear_greed(),
+        api_public_balance(),
         *[get_whale_signal(sym) for sym in MAIN_PAIRS],
         return_exceptions=True
     )
@@ -3154,6 +3210,12 @@ async def api_public_stats():
     poly_events = [{"title": e.get("title"), "yes_prob": e.get("yes_prob"), "volume": e.get("volume")}
                    for e in poly_cached[:6]]
 
+    # v7.4.2: balance summary included in public stats
+    bal = balance_data if isinstance(balance_data, dict) else {}
+
+    # v7.4.2: safe price extraction (prices_data might be exception)
+    raw_prices = prices_data.get("prices", {}) if isinstance(prices_data, dict) else {}
+
     return {
         "autopilot": AUTOPILOT,
         "arb": arb_info,
@@ -3162,13 +3224,18 @@ async def api_public_stats():
         "settings": {"min_q_score": MIN_Q_SCORE, "cooldown": COOLDOWN,
                      "risk_pct": RISK_PER_TRADE},
         "prices":   {sym: {"price": v.get("price"), "change": v.get("change")}
-                     for sym, v in prices_data.get("prices", {}).items()},
+                     for sym, v in raw_prices.items()},
         "recent_trades": safe_trades,
         "whales":    whales,
         "fear_greed": fg,
         "polymarket": poly_events,
+        "balance": {
+            "spot_usdt":     bal.get("spot_usdt", 0),
+            "futures_equity": bal.get("futures_equity", 0),
+            "total_usdt":    bal.get("total_usdt", 0),
+        },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "7.3.9",
+        "version": "7.4.2",
     }
 
 @app.get("/api/dashboard")

@@ -262,7 +262,7 @@
       <div class="card">
         <div class="card-header">
           <div class="card-title">Общая прибыль</div>
-          <div class="card-badge badge-purple" id="versionBadge">v7.3.8</div>
+          <div class="card-badge badge-purple" id="versionBadge">v7.4.2</div>
         </div>
         <div id="pnlBlock"><div class="loading"><div class="spin"></div> Загружаю...</div></div>
       </div>
@@ -629,7 +629,7 @@
           </div>
           <div class="metric">
             <div class="metric-label">Версия</div>
-            <div class="metric-value val-purple" id="cfgVersion" style="font-size:14px">7.3.8</div>
+            <div class="metric-value val-purple" id="cfgVersion" style="font-size:14px">7.4.2</div>
           </div>
         </div>
         <div style="margin-top:12px;font-size:12px;color:var(--text3)">Для изменения используй Telegram-бот: <code style="color:var(--accent2)">/settings</code></div>
@@ -731,15 +731,12 @@ async function loadData() {
     renderTicker(stats.prices||{});
     document.getElementById('lastRefresh').textContent = '🕐 ' + new Date().toLocaleTimeString('ru');
     setStatus('online');
-    // v7.4.1: load balance summary for dashboard widget
-    if(BASE_URL&&API_KEY) {
-      apiGet('/api/combined/balance').then(c=>{
-        const fmt=v=>'$'+(v||0).toLocaleString('ru',{minimumFractionDigits:0,maximumFractionDigits:0});
-        const sp=document.getElementById('dashBalSpot'); if(sp) sp.textContent=fmt(c.spot_usdt);
-        const fu=document.getElementById('dashBalFut');  if(fu) fu.textContent=fmt(c.futures_equity);
-        const to=document.getElementById('dashBalTotal');if(to) to.textContent=fmt(c.total_usdt);
-      }).catch(()=>{});
-    }
+    // v7.4.2: balance summary from public/stats (no auth needed)
+    const b = stats.balance||{};
+    const fmt = v=>'$'+(v||0).toLocaleString('ru',{minimumFractionDigits:0,maximumFractionDigits:0});
+    const sp=document.getElementById('dashBalSpot');  if(sp) sp.textContent=fmt(b.spot_usdt);
+    const fu=document.getElementById('dashBalFut');   if(fu) fu.textContent=fmt(b.futures_equity);
+    const to=document.getElementById('dashBalTotal'); if(to) to.textContent=fmt(b.total_usdt);
   } catch(e) { setStatus('offline'); }
 }
 
@@ -915,18 +912,29 @@ function renderEvents(s) {
 
 // ── Balance page ──────────────────────────────────────────────────────────────
 async function renderBalance() {
-  if(!BASE_URL||!API_KEY){
-    document.getElementById('balSpotList').innerHTML='<div style="padding:16px;text-align:center;color:var(--text3)">⚠️ Требуется API ключ — настрой в ⚙️ Настройки</div>';
+  if(!BASE_URL){
+    document.getElementById('balSpotList').innerHTML='<div style="padding:16px;text-align:center;color:var(--text3)">⚠️ Настрой подключение в ⚙️ Настройки</div>';
     document.getElementById('balPosList').innerHTML='';
     return;
   }
+  // Show loading state
+  document.getElementById('balTotal').textContent='...';
+  document.getElementById('balSpot').textContent='...';
+  document.getElementById('balFutures').textContent='...';
+  document.getElementById('balSpotList').innerHTML='<div class="loading"><div class="spin"></div> Загружаю...</div>';
+  document.getElementById('balPosList').innerHTML='<div class="loading"><div class="spin"></div></div>';
+
   try {
-    // Parallel: combined balance + spot accounts + futures positions
-    const [combined, spotFull, positions] = await Promise.allSettled([
-      apiGet('/api/combined/balance'),
-      apiGet('/api/balance'),
-      apiGet('/api/futures/positions'),
+    // v7.4.2: use public endpoints — no API key required
+    const [balRes, posRes] = await Promise.allSettled([
+      fetch(BASE_URL + '/api/public/balance').then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); }),
+      fetch(BASE_URL + '/api/public/positions').then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); }),
     ]);
+
+    // Remap to expected format for backward compat
+    const combined = { status: balRes.status, value: balRes.status==='fulfilled' ? balRes.value : null };
+    const spotFull  = { status: balRes.status, value: balRes.status==='fulfilled' ? { accounts: balRes.value.spot_accounts||[] } : null };
+    const positions = { status: posRes.status, value: posRes.status==='fulfilled' ? posRes.value : null };
 
     // ── Total portfolio ────────────────────────────────────────────────────────
     if(combined.status==='fulfilled'&&combined.value){
@@ -934,8 +942,8 @@ async function renderBalance() {
       const total = c.total_usdt||0;
       const spot  = c.spot_usdt||0;
       const futEq = c.futures_equity||0;
-      const futAv = c.futures_usdt||0;
-      const pnl   = c.futures_unrealised_pnl||0;
+      const futAv = c.futures_available||c.futures_usdt||0;
+      const pnl   = c.futures_unrealised||c.futures_unrealised_pnl||0;
       document.getElementById('balTotal').textContent   = '$'+total.toLocaleString('ru',{minimumFractionDigits:2,maximumFractionDigits:2});
       document.getElementById('balSpot').textContent    = '$'+spot.toLocaleString('ru',{minimumFractionDigits:2,maximumFractionDigits:2});
       const futEl=document.getElementById('balFutures');
