@@ -1,100 +1,71 @@
 # QuantumTrade AI — CLAUDE.md
-> AI configuration file · Spec-First Methodology · max 120 lines
+> Главный конфиг для AI-агентов. Читать при каждом запуске. Макс 120 строк.
+> v7.4.4 · 2026-03-29 · github.com/mkf768888-sketch/quantum-trade-bot
 
-## Overview
-Multi-layer crypto trading bot with quantum optimization, airdrop tracking, and arbitrage detection.
-Deployed on Railway. Telegram notifications. KuCoin futures/spot trading.
+## Стек и архитектура
+- **Бэкенд:** Python 3.11, FastAPI, Railway Cloud → один файл: `server.py` (~3600 строк)
+- **Фронтенд:** `index.html` — Telegram Mini App (WebApp), 6 табов
+- **Деплой:** git push → Railway autodeploy → вызвать GET /api/setup-webhook
 
-## Stack
-- **Backend**: FastAPI + Python 3.11, Railway (auto-deploy from GitHub main)
-- **Trading**: KuCoin API (spot + futures, cross-margin, 3x leverage)
-- **AI**: Anthropic Claude API (chat), Yandex Vision (chart OCR) → Kimi K2.5 (Phase 5)
-- **Quantum**: pyqpanda3 CPU simulator → Origin QC Wukong 180 (Phase 6)
-- **Notifications**: Telegram Bot API (inline keyboards, webhooks)
-- **Monitoring**: UptimeRobot (5 min ping), /health endpoint
-
-## Architecture — 6 Analytical Layers
+## Railway Variables (все обязательны)
 ```
-Layer 1  KuCoin candles → EMA/RSI/Volume → pattern
-Layer 2  Yandex Vision → chart PNG → OCR → vision_bonus ±8
-Layer 3  Fear&Greed (alternative.me) → contrarian signal ±3
-Layer 4  Polymarket events → crypto sentiment ±5
-Layer 5  Whale tracker (Blockchair mempool) → flow signal ±5
-Layer 6  QAOA CPU sim → portfolio correlation bias ±15  ← Phase 3
+KUCOIN_API_KEY / KUCOIN_SECRET / KUCOIN_PASSPHRASE  — KuCoin API
+BOT_TOKEN             — Telegram Bot
+API_SECRET            — X-API-Key для приватных эндпоинтов
+RAILWAY_PUBLIC_DOMAIN — твой-домен.up.railway.app
+ANTHROPIC_API_KEY     — Claude Vision AI
 ```
 
-## Q-Score Formula (v5.6)
-```
-score = 50 + price×2 + rsi_delta + ema±8 + pattern_bonus
-      + vision_bonus + fg_bonus + polymarket + whale + quantum_bias
-BUY  if score ≥ 65  |  SELL if score ≤ 35  |  HOLD otherwise
+## API-контракт
+
+### Публичные (без auth)
+- GET /                    → Mini App HTML (no-cache)
+- GET /api/public/stats    → цены + баланс + Q-score + whale + airdrops
+- GET /api/public/balance  → спот + фьючерсы
+- GET /api/public/positions → открытые позиции
+- GET /api/debug           → ⚠️ диагностика (TODO: закрыть auth)
+- GET /api/scanner/status  → статус AutoScanner
+
+### Приватные (Header: X-API-Key: {API_SECRET})
+- GET  /api/stats          → полная статистика
+- POST /api/settings       → изменить параметры бота
+- POST /api/autopilot/{state} → ⚠️ СЕЙЧАС БЕЗ AUTH (баг, backlog)
+- POST /api/ai/chat        → Claude AI чат (rate limit 20/10min)
+- GET  /api/setup-webhook  → обновить кнопку Telegram после деплоя
+
+## Ключевые параметры
+```python
+MIN_Q_SCORE = 77      # порог входа в сделку
+COOLDOWN = 600        # секунд между сделками
+RISK_PER_TRADE = 0.02 # TODO: поднять до 0.08 через Railway Variables
+MAX_LEVERAGE = 3
+TRADING_PAIRS = ["ETH-USDT","BTC-USDT","SOL-USDT","AVAX-USDT","XRP-USDT"]
 ```
 
-## Key Files
-```
-server.py          Main FastAPI app (all logic, ~1500 lines)
-requirements.txt   fastapi uvicorn aiohttp python-telegram-bot pydantic Pillow pyqpanda3
-runtime.txt        python-3.11.0
-CLAUDE.md          This file
-AIRDROP_TRACKER_SPEC.md   Phase 4 specification
-```
+## Q-Score (0–100): Claude Vision 35% + Индикаторы 25% + Контекст 20% + Whale 10% + F&G 10%
 
-## API Endpoints
-```
-GET  /health                  Version, autopilot state, trade count
-GET  /api/debug               Live cycle log, last signals, Q-scores
-GET  /api/trades              Trade history, PnL by strategy track
-GET  /api/signal/{symbol}     On-demand signal for any pair
-GET  /api/quantum             QAOA bias for all 6 pairs
-GET  /api/airdrops            [Phase 4] Airdrop opportunities list
-GET  /api/dashboard           Combined dashboard data
-POST /api/telegram/callback   Telegram inline button handler (A/B/C/DUAL)
-POST /api/autopilot/{state}   Toggle auto-trading on/off
-```
+## Стратегии: B (Q>85, TP3%/SL1.5%), C (Q60-85, TP1.5%/SL1%), DUAL (Q>90, Long+Short)
 
-## Trading Strategies
-```
-A  Conservative  5% risk  2x lev  TP 2%  SL 1%
-B  Standard     10% risk  3x lev  TP 3%  SL 1.5%   ← auto-default (60s timeout)
-C  Bonus        25% risk  5x lev  TP 5%  SL 2.5%
-DUAL  B + C simultaneously (real + bonus track)
-```
+## Правила изменений
+1. После изменения эндпоинта — обновить index.html одновременно (контракт!)
+2. После деплоя — обязательно вызвать GET /api/setup-webhook
+3. CORS оставить открытым — Telegram WebApp требует wildcard
+4. Секреты только в Railway Variables, никогда в коде
+5. server.py — один файл, не дробить на модули
 
-## Environment Variables (Railway)
-```
-KUCOIN_API_KEY / KUCOIN_SECRET / KUCOIN_PASSPHRASE
-BOT_TOKEN / ALERT_CHAT_ID
-YANDEX_VISION_KEY / YANDEX_FOLDER_ID
-ANTHROPIC_API_KEY
-TEST_MODE=true          # false for live trading
-MIN_CONFIDENCE=0.66
-MIN_Q_SCORE=65
-MAX_LEVERAGE=3
-```
+## Security backlog (приоритет → v7.4.5)
+- [ ] /api/autopilot/{state} — добавить Depends(verify_api_key) + key в Mini App
+- [ ] /api/debug — убрать чувствительные поля или закрыть auth
+- [ ] Rate limiting на публичные эндпоинты (100/min per IP)
+- [ ] CORS → сузить до Telegram origins
+- [ ] Security headers middleware
+- [ ] Trade log → Railway Volume (сейчас теряется при редеплое)
 
-## Trading Pairs
+## Чеклист деплоя
 ```
-Spot:    BTC-USDT ETH-USDT SOL-USDT BNB-USDT XRP-USDT AVAX-USDT
-Futures: XBTUSDTM ETHUSDTM SOLUSDTM
-QAOA correlation matrix: 6×6, updates every 15 min
+[ ] git push → Railway задеплоил (2-3 мин)
+[ ] /api/scanner/status → сервис запущен
+[ ] /api/debug → все checks зелёные
+[ ] GET /api/setup-webhook → кнопка обновлена
+[ ] Перезапустить Telegram → Mini App → Настройки → Диагностика
 ```
-
-## Phases Roadmap
-```
-✅ Phase 1  Fear&Greed + Polymarket + Whale + Strategies A/B/C/DUAL (v5.0-5.3)
-✅ Phase 2  Yandex Vision chart OCR (v5.4)
-✅ Phase 3  Origin QC QAOA CPU simulator (v5.6)
-⏳ Phase 4  Airdrop Tracker — /api/airdrops + Telegram digest (v6.0)
-⏳ Phase 5  Kimi K2.5 native vision (replace Yandex OCR hack)
-⏳ Phase 6  Origin QC real chip Wukong 180 (uncomment REAL_QC_CHIP block)
-⏳ Phase 7  Arbitrage module — cross-exchange price delta detection
-⏳ Phase 8  AirdropOS — standalone commercial product
-```
-
-## Rules
-- Never modify trading logic without updating Q-Score formula comment
-- All new endpoints follow pattern: cache → fetch → parse → return
-- Telegram messages use Markdown parse_mode, max 4096 chars
-- All external API calls wrapped in try/except with fallback
-- Cooldown 100s per pair to prevent duplicate trades
-- pyqpanda3 REAL_QC_CHIP block: uncomment 3 lines + set ORIGIN_QC_TOKEN env
