@@ -21,20 +21,26 @@ from typing import Optional, List, Dict
 import aiohttp
 from fastapi import FastAPI, WebSocket, Request, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 
 app = FastAPI(title="QuantumTrade AI", version="7.3.8")
-_ALLOWED_ORIGINS = [
-    "https://mkf768888-sketch.github.io",  # v7.3.3: GitHub Pages frontend
-    "http://localhost:3000",               # v7.3.3: local dev
-    "http://localhost:8080",
-]
+_ALLOWED_ORIGINS = ["*"]   # v7.3.8: open for Mini App (Telegram WebApp origin varies)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_ALLOWED_ORIGINS,        # v7.3.3: было ["*"] — ИСПРАВЛЕНО
+    allow_origins=_ALLOWED_ORIGINS,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_mini_app():
+    """Serve the Telegram Mini App frontend."""
+    try:
+        with open("index.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>QuantumTrade AI</h1><p>index.html not found</p>", status_code=404)
 
 KUCOIN_API_KEY    = os.getenv("KUCOIN_API_KEY", "")
 KUCOIN_SECRET     = os.getenv("KUCOIN_SECRET", "")
