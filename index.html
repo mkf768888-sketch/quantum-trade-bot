@@ -632,7 +632,7 @@
           </div>
           <div class="metric">
             <div class="metric-label">Версия</div>
-            <div class="metric-value val-purple" id="cfgVersion" style="font-size:14px">7.4.2</div>
+            <div class="metric-value val-purple" id="cfgVersion" style="font-size:14px">7.4.4</div>
           </div>
         </div>
         <div style="margin-top:12px;font-size:12px;color:var(--text3)">Для изменения используй Telegram-бот: <code style="color:var(--accent2)">/settings</code></div>
@@ -644,6 +644,14 @@
         <label class="setup-label">API Key</label>
         <input class="setup-input" id="cfgKey" type="password" placeholder="secret key">
         <button class="setup-btn" onclick="updateConnection()">Сохранить</button>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">🔧 Диагностика системы</div>
+          <div class="card-badge" id="diagBadge" style="background:rgba(52,211,153,0.15);color:var(--accent2)">—</div>
+        </div>
+        <div id="diagResult" style="font-size:12px;color:var(--text3);margin-top:8px;line-height:1.6">Нажми кнопку для проверки всех компонентов</div>
+        <button class="setup-btn" style="margin-top:10px" onclick="runDiag()">🔍 Проверить подключение</button>
       </div>
     </div>
 
@@ -675,6 +683,61 @@ function updateConnection() {
   if (url) { BASE_URL = url; localStorage.setItem('qt_url', url); }
   if (key) { API_KEY  = key; localStorage.setItem('qt_key', key); }
   showToast('✅ Подключение сохранено'); loadData();
+}
+
+async function runDiag() {
+  const badge = document.getElementById('diagBadge');
+  const result = document.getElementById('diagResult');
+  badge.textContent = '⏳ Проверка...';
+  badge.style.background = 'rgba(251,191,36,0.15)';
+  badge.style.color = '#fbbf24';
+  result.innerHTML = '<span style="color:var(--text3)">Запрос к серверу...</span>';
+  if (!BASE_URL) {
+    badge.textContent = '❌ Нет URL';
+    badge.style.background = 'rgba(239,68,68,0.15)';
+    badge.style.color = '#ef4444';
+    result.innerHTML = '<span style="color:#ef4444">⚠️ Сначала укажи Railway URL выше</span>';
+    return;
+  }
+  try {
+    const res = await fetch(BASE_URL + '/api/debug', { signal: AbortSignal.timeout(10000) });
+    const d = await res.json();
+    const checks = d.checks || {};
+    let html = '';
+    let allOk = true;
+    const labels = {kucoin_price:'Цена KuCoin', kucoin_spot:'Спот баланс', kucoin_futures:'Фьючерсы', fear_greed:'Fear&Greed', coingecko:'CoinGecko', config:'Конфиг'};
+    for (const [key, val] of Object.entries(checks)) {
+      if (!val.ok) allOk = false;
+      const color = val.ok ? '#34d399' : '#ef4444';
+      const icon = val.ok ? '✅' : '❌';
+      let detail = '';
+      if (val.ok) {
+        if (val.price) detail = `$${parseFloat(val.price).toLocaleString()}`;
+        else if (val.total_usdt != null) detail = `${val.total_usdt.toFixed(2)} USDT`;
+        else if (val.equity != null) detail = `${val.equity.toFixed(2)} USDT`;
+        else if (val.value != null) detail = `${val.value} ${val.label||''}`;
+        else if (key==='config') detail = `AP:${val.autopilot?'ON':'OFF'} Arb:${val.arb?'ON':'OFF'}`;
+      } else {
+        detail = val.error ? val.error.slice(0,40) : 'Ошибка';
+      }
+      html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05)">
+        <span style="color:var(--text2)">${labels[key]||key}</span>
+        <span style="color:${color};text-align:right;font-size:11px">${icon} ${detail}</span>
+      </div>`;
+    }
+    if (d.scanner) {
+      html += `<div style="margin-top:8px;color:var(--text3);font-size:11px">🔄 Авто-сканер: ${d.scanner.runs || 0} проверок, ${d.scanner.issues || 0} проблем</div>`;
+    }
+    result.innerHTML = html || JSON.stringify(d, null, 2);
+    badge.textContent = allOk ? '✅ Всё ОК' : '⚠️ Есть проблемы';
+    badge.style.background = allOk ? 'rgba(52,211,153,0.15)' : 'rgba(251,191,36,0.15)';
+    badge.style.color = allOk ? '#34d399' : '#fbbf24';
+  } catch(e) {
+    badge.textContent = '❌ Ошибка';
+    badge.style.background = 'rgba(239,68,68,0.15)';
+    badge.style.color = '#ef4444';
+    result.innerHTML = `<span style="color:#ef4444">❌ Не удалось подключиться: ${e.message}</span>`;
+  }
 }
 
 // ── Mode (Эксперт / Просто) ───────────────────────────────────────────────────

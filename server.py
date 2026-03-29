@@ -2695,6 +2695,7 @@ async def startup():
     asyncio.create_task(trading_loop())
     asyncio.create_task(position_monitor_loop())
     asyncio.create_task(airdrop_digest_loop())
+    asyncio.create_task(auto_scanner_loop())  # v7.4.4: health scanner
     await get_airdrops()  # прогреваем кеш при старте
 
     # v7.4.0: авто-регистрация Telegram webhook при старте (если задан Railway домен)
@@ -2711,7 +2712,7 @@ async def startup():
                 )
                 await s.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
-                    json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": webapp_url}}},
+                    json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": webapp_url + "?v=744"}}},
                     timeout=aiohttp.ClientTimeout(total=10)
                 )
         except Exception as e:
@@ -3066,10 +3067,11 @@ async def setup_webhook(request: Request):
             )
             results["commands"] = await r2.json()
 
-            # 3. v7.4.0: Кнопка меню → Railway Mini App (GET / → index.html)
+            # 3. v7.4.4: Кнопка меню → Railway Mini App с ?v= для сброса кеша Telegram
+            versioned_url = f"{webapp_url}?v=744"
             r3 = await s.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
-                json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": webapp_url}}},
+                json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": versioned_url}}},
                 timeout=aiohttp.ClientTimeout(total=10)
             )
             results["menu_button"] = await r3.json()
@@ -3077,6 +3079,131 @@ async def setup_webhook(request: Request):
         return {"ok": True, "webhook_url": webhook_url, "webapp_url": webapp_url, "results": results}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+@app.get("/api/debug")
+async def api_debug():
+    """v7.4.4: Public diagnostics — checks all systems, returns status JSON."""
+    import time as _time
+    results = {"version": "7.4.4", "timestamp": datetime.utcnow().isoformat(), "checks": {}}
+    t0 = _time.time()
+
+    # 1. KuCoin REST prices
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(f"{KUCOIN_BASE_URL}/api/v1/market/orderbook/level1?symbol=BTC-USDT",
+                            timeout=aiohttp.ClientTimeout(total=6))
+            d = await r.json()
+            ok = d.get("code") == "200000"
+            results["checks"]["kucoin_price"] = {"ok": ok, "price": d.get("data", {}).get("price", "?") if ok else None, "error": d.get("msg") if not ok else None}
+    except Exception as e:
+        results["checks"]["kucoin_price"] = {"ok": False, "error": str(e)}
+
+    # 2. KuCoin authenticated (spot balance)
+    try:
+        bal = await get_balance()
+        results["checks"]["kucoin_spot"] = {"ok": bal.get("success", False), "total_usdt": bal.get("total_usdt", 0), "accounts": len(bal.get("accounts", [])), "error": bal.get("error") if not bal.get("success") else None}
+    except Exception as e:
+        results["checks"]["kucoin_spot"] = {"ok": False, "error": str(e)}
+
+    # 3. KuCoin futures balance
+    try:
+        fb = await get_futures_balance()
+        results["checks"]["kucoin_futures"] = {"ok": fb.get("success", False), "equity": fb.get("account_equity", 0), "error": fb.get("error") if not fb.get("success") else None}
+    except Exception as e:
+        results["checks"]["kucoin_futures"] = {"ok": False, "error": str(e)}
+
+    # 4. Fear & Greed API
+    try:
+        fg = await get_fear_greed()
+        results["checks"]["fear_greed"] = {"ok": isinstance(fg, dict) and "value" in fg, "value": fg.get("value"), "label": fg.get("label")}
+    except Exception as e:
+        results["checks"]["fear_greed"] = {"ok": False, "error": str(e)}
+
+    # 5. CoinGecko fallback
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
+                            timeout=aiohttp.ClientTimeout(total=6))
+            d = await r.json()
+            results["checks"]["coingecko"] = {"ok": "bitcoin" in d, "btc_usd": d.get("bitcoin", {}).get("usd")}
+    except Exception as e:
+        results["checks"]["coingecko"] = {"ok": False, "error": str(e)}
+
+    # 6. Config
+    results["checks"]["config"] = {
+        "ok": True, "min_q": MIN_Q_SCORE, "cooldown": COOLDOWN,
+        "autopilot": AUTOPILOT, "arb": ARB_EXEC_ENABLED,
+        "kucoin_key_set": bool(KUCOIN_API_KEY), "api_secret_set": bool(API_SECRET),
+        "bot_token_set": bool(BOT_TOKEN),
+    }
+
+    results["elapsed_ms"] = round((_time.time() - t0) * 1000)
+    all_ok = all(v.get("ok", False) for v in results["checks"].values())
+    results["overall"] = "✅ ALL OK" if all_ok else "⚠️ ISSUES DETECTED"
+    results["scanner"] = {
+        "runs": _scanner_state.get("ok_streak", 0),
+        "issues": len(_scanner_state.get("issues", [])),
+        "last_run": _scanner_state.get("last_run"),
+    }
+    return results
+
+# ── Auto-Scanner Background Task ───────────────────────────────────────────────
+_scanner_state = {"last_run": None, "issues": [], "ok_streak": 0, "alert_sent": False}
+
+async def auto_scanner_loop():
+    """v7.4.4: Health scanner — checks all systems every 5 min, alerts on issues."""
+    await asyncio.sleep(60)  # первый запуск через 1 мин после старта
+    while True:
+        try:
+            issues = []
+            # Check KuCoin prices
+            prices = await get_all_prices()
+            if not prices.get("success") or not prices.get("prices"):
+                issues.append("❌ KuCoin цены недоступны")
+
+            # Check KuCoin auth (spot)
+            if KUCOIN_API_KEY:
+                bal = await get_balance()
+                if not bal.get("success"):
+                    issues.append(f"❌ KuCoin Spot API: {bal.get('error', 'неизвестная ошибка')[:80]}")
+
+            # Check Telegram bot
+            if not BOT_TOKEN:
+                issues.append("❌ BOT_TOKEN не задан")
+            if not API_SECRET:
+                issues.append("⚠️ API_SECRET не задан — Mini App без авторизации")
+
+            # Check trade loop (last trade log entry)
+            _scanner_state["last_run"] = datetime.utcnow().isoformat()
+            _scanner_state["issues"] = issues
+
+            if issues:
+                _scanner_state["ok_streak"] = 0
+                if not _scanner_state["alert_sent"]:  # не спамим
+                    _scanner_state["alert_sent"] = True
+                    msg = "🔍 <b>QuantumTrade AutoScanner</b>\n\n"
+                    msg += "\n".join(issues)
+                    msg += f"\n\n🕐 {datetime.utcnow().strftime('%H:%M UTC')}"
+                    await notify(msg)
+            else:
+                _scanner_state["ok_streak"] += 1
+                _scanner_state["alert_sent"] = False
+                # Раз в час отправляем OK отчёт (когда ok_streak кратен 12)
+                if _scanner_state["ok_streak"] % 12 == 1:
+                    await notify(
+                        f"✅ <b>AutoScanner: все системы в норме</b>\n"
+                        f"📊 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s\n"
+                        f"🤖 Autopilot: {'ВКЛ' if AUTOPILOT else 'ВЫКЛ'} · Arb: {'ВКЛ' if ARB_EXEC_ENABLED else 'ВЫКЛ'}\n"
+                        f"📋 Сделок: {len(trade_log)} · Версия: 7.4.4"
+                    )
+        except Exception as e:
+            print(f"[scanner] error: {e}", flush=True)
+        await asyncio.sleep(300)  # каждые 5 минут
+
+@app.get("/api/scanner/status")
+async def api_scanner_status():
+    """v7.4.4: Статус автосканера."""
+    return _scanner_state
 
 @app.get("/api/setup-webhook")
 async def get_webhook_info():
@@ -3390,9 +3517,9 @@ def log_activity(msg: str):
     activity_log.append({"ts": datetime.utcnow().isoformat(), "msg": msg})
     if len(activity_log) > 100: activity_log.pop(0)
 
-@app.get("/api/debug")
-async def api_debug(_auth=Depends(verify_api_key)):  # v7.3.3: auth required
-    """Returns last known state for debugging."""
+@app.get("/api/debug/internal")
+async def api_debug_internal(_auth=Depends(verify_api_key)):  # v7.3.3: auth required (renamed to avoid duplicate route)
+    """Returns last known state for debugging (internal, auth required)."""
     return {
         "last_signals":  last_signals,
         "last_qscore":   last_q_score,
