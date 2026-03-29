@@ -497,8 +497,8 @@ async def run_qaoa_optimization(price_changes: Dict[str, float]) -> Dict[str, fl
             )
         raw_bias = {PAIR_NAMES[i]: bias_list[i] for i in range(N_PAIRS)}
 
-        # v7.3.1: Amazon Braket энсембль — 12×/день (каждые 2 часа)
-        braket_interval = 7200  # 2 часа = 12 запусков в день
+        # v7.6: Amazon Braket энсембль — ЭКОНОМ: 4×/день (каждые 6 часов)
+        braket_interval = int(os.getenv("BRAKET_INTERVAL", "21600"))  # 6ч = 4 запуска/день
         if _braket_ready and (time.time() - _braket_ts) >= braket_interval:
             try:
                 braket_list = await _braket_qaoa_run(changes_list, live_corr)
@@ -568,7 +568,8 @@ def _braket_run_sync(changes_list: list, live_corr: list) -> list:
 
         # Запуск на QPU
         device = AwsDevice(BRAKET_DEVICE_ARN)
-        task   = device.run(circ, s3_destination_folder=(BRAKET_S3_BUCKET, "qaoa"), shots=1024)
+        n_shots = int(os.getenv("BRAKET_SHOTS", "256"))  # v7.6: эконом 256 (было 1024)
+        task   = device.run(circ, s3_destination_folder=(BRAKET_S3_BUCKET, "qaoa"), shots=n_shots)
         result = task.result()
 
         # Вычисляем <Z_i> из измерений
