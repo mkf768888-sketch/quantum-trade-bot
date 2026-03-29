@@ -226,6 +226,9 @@
       <div class="tab active" onclick="showPage('dashboard')">📊 Главная</div>
       <div class="tab" onclick="showPage('trades')">📋 Сделки</div>
       <div class="tab expert-only" onclick="showPage('signals')">⚡ Сигналы</div>
+      <div class="tab expert-only" onclick="showPage('whales')">🐋 Киты</div>
+      <div class="tab expert-only" onclick="showPage('events')">📅 События</div>
+      <div class="tab expert-only" onclick="showPage('futures')">📈 Фьючерсы</div>
       <div class="tab expert-only" onclick="showPage('arb')">🔺 Арбитраж</div>
       <div class="tab" onclick="showPage('ai')">🧠 AI</div>
       <div class="tab expert-only" onclick="showPage('settings')">⚙️ Настройки</div>
@@ -399,6 +402,89 @@
       </div>
     </div>
 
+    <!-- WHALES -->
+    <div class="page" id="page-whales">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">🐋 Активность китов</div>
+          <div class="card-badge badge-purple" id="whaleUpdated">—</div>
+        </div>
+        <!-- Fear & Greed -->
+        <div class="metric-grid" style="margin-bottom:12px">
+          <div class="metric" style="text-align:center">
+            <div class="metric-label">Fear & Greed</div>
+            <div class="metric-value" id="fgValue" style="font-size:28px">—</div>
+            <div class="metric-sub" id="fgLabel">—</div>
+          </div>
+          <div class="metric" style="text-align:center">
+            <div class="metric-label">Общий сигнал</div>
+            <div class="metric-value" id="whaleOverall" style="font-size:22px">—</div>
+            <div class="metric-sub" id="whaleDesc">Ждём данных...</div>
+          </div>
+        </div>
+        <div id="whaleList"><div class="loading"><div class="spin"></div> Загружаю...</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title" style="margin-bottom:10px">Как работает анализ китов</div>
+        <div style="font-size:12px;color:var(--text2);line-height:1.7">
+          Бот отслеживает движения топ-500 кошельков через on-chain аналитику.
+          Когда киты накапливают — сигнал бычий (+5 к Q-Score).
+          Когда продают — медвежий (-5). Это один из 7 факторов итогового Q-Score.
+        </div>
+      </div>
+    </div>
+
+    <!-- EVENTS / POLYMARKET -->
+    <div class="page" id="page-events">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">📅 Polymarket — Крипто события</div>
+          <div class="card-badge badge-purple">LIVE</div>
+        </div>
+        <div style="font-size:12px;color:var(--text3);margin-bottom:12px">Рыночные вероятности из Polymarket — влияют на Q-Score</div>
+        <div id="polyList"><div class="loading"><div class="spin"></div> Загружаю...</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title" style="margin-bottom:10px">Влияние на торговлю</div>
+        <div style="font-size:12px;color:var(--text2);line-height:1.7">
+          Polymarket — предсказательный рынок. Вероятности из него бот добавляет к Q-Score (±8 баллов).
+          Высокая вероятность бычьего события → бот агрессивнее открывает LONG позиции.
+        </div>
+      </div>
+    </div>
+
+    <!-- FUTURES -->
+    <div class="page" id="page-futures">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">📈 Фьючерсные позиции</div>
+          <div class="card-badge" id="futBadge">0 открытых</div>
+        </div>
+        <div id="futPositions"><div class="loading"><div class="spin"></div> Загружаю...</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title" style="margin-bottom:12px">Сводка фьючерсов</div>
+        <div class="metric-grid">
+          <div class="metric">
+            <div class="metric-label">Сделок фьюч</div>
+            <div class="metric-value val-purple" id="futTotal">—</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">PnL фьюч</div>
+            <div class="metric-value" id="futPnlPage">—</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Win Rate</div>
+            <div class="metric-value" id="futWRPage">—</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Плечо</div>
+            <div class="metric-value val-yellow" id="futLev">3x</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- AI -->
     <div class="page" id="page-ai">
       <div class="card">
@@ -558,6 +644,9 @@ async function loadData() {
     renderTrades(trades, stats);
     renderSignals(stats);
     renderArb(stats);
+    renderWhales(stats);
+    renderEvents(stats);
+    renderFutures(stats);
     renderTicker(stats.prices||{});
     document.getElementById('lastRefresh').textContent = '🕐 ' + new Date().toLocaleTimeString('ru');
     setStatus('online');
@@ -675,6 +764,99 @@ function renderArb(s) {
   const b=document.getElementById('arbBadge');
   b.textContent=on?'ВКЛ':'ВЫКЛ'; b.className='card-badge '+(on?'badge-green':'badge-red');
   updateTogglesUI();
+}
+
+// ── Whales ────────────────────────────────────────────────────────────────────
+function renderWhales(s) {
+  const fg = s.fear_greed || {}; const whales = s.whales || {};
+  const fgVal = fg.value || 50;
+  const fgEl = document.getElementById('fgValue');
+  if(fgEl){ fgEl.textContent=fgVal; fgEl.className='metric-value '+(fgVal<40?'val-red':fgVal>60?'val-green':'val-yellow'); }
+  const fgLbl = document.getElementById('fgLabel'); if(fgLbl) fgLbl.textContent=fg.label||'—';
+  document.getElementById('whaleUpdated').textContent = new Date().toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'});
+
+  const syms = Object.keys(whales);
+  if(!syms.length){ document.getElementById('whaleList').innerHTML='<div style="padding:12px;color:var(--text3);text-align:center">Нет данных китов</div>'; return; }
+
+  // Overall whale sentiment
+  const totalBonus = syms.reduce((a,k)=>a+(whales[k].bonus||0),0);
+  const ovEl=document.getElementById('whaleOverall');
+  if(ovEl){ovEl.textContent=totalBonus>0?'🟢 Бычий':totalBonus<0?'🔴 Медвежий':'⚪ Нейтральный';}
+  const descEl=document.getElementById('whaleDesc');
+  if(descEl){descEl.textContent=totalBonus>0?'Киты накапливают':totalBonus<0?'Киты продают':'Без явного сигнала';}
+
+  document.getElementById('whaleList').innerHTML = syms.map(sym=>{
+    const w=whales[sym]; const b=w.bonus||0;
+    const cls=b>0?'val-green':b<0?'val-red':'';
+    const icon=b>0?'📈':b<0?'📉':'➡️';
+    return `<div class="signal-row">
+      <div class="sig-sym">${sym.replace('-USDT','')}</div>
+      <div style="font-size:12px;color:var(--text2)">${icon} ${w.signal||'neutral'}</div>
+      <div class="sig-pct ${cls}">${b>=0?'+':''}${b} pts</div>
+    </div>`;
+  }).join('');
+}
+
+// ── Events / Polymarket ───────────────────────────────────────────────────────
+function renderEvents(s) {
+  const events = s.polymarket || [];
+  const el = document.getElementById('polyList');
+  if(!el) return;
+  if(!events.length){
+    el.innerHTML='<div style="padding:16px;text-align:center;color:var(--text3)">Нет активных событий<br><span style="font-size:11px">Polymarket API обновляется каждые 15 мин</span></div>';
+    return;
+  }
+  el.innerHTML = events.map(e=>{
+    const p=e.yes_prob||0; const vol=e.volume||0;
+    const bar=`<div style="height:4px;border-radius:2px;background:var(--border);margin-top:6px"><div style="height:4px;border-radius:2px;background:${p>60?'var(--quantum)':p<40?'var(--danger)':'var(--warn)'};width:${p}%"></div></div>`;
+    return `<div style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <div style="font-size:13px;line-height:1.4;margin-bottom:4px">${e.title}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:11px;color:var(--text3)">Объём: $${(vol/1000).toFixed(0)}K</span>
+        <span style="font-size:12px;font-weight:700;font-family:var(--mono);color:${p>60?'var(--quantum)':p<40?'var(--danger)':'var(--warn)'}">${p}% YES</span>
+      </div>${bar}
+    </div>`;
+  }).join('');
+  // Also fetch fresh polymarket data
+  if(BASE_URL) fetch(BASE_URL+'/api/polymarket').then(r=>r.json()).then(d=>{
+    if(d.events&&d.events.length) renderEvents({polymarket:d.events});
+  }).catch(()=>{});
+}
+
+// ── Futures page ──────────────────────────────────────────────────────────────
+function renderFutures(s) {
+  // Stats from trades
+  const t = s.trading||{};
+  const el = document.getElementById('futTotal'); if(el) el.textContent=t.total||0;
+  const pnlEl=document.getElementById('futPnlPage');
+  if(pnlEl){const p=t.total_pnl||0;pnlEl.textContent=(p>=0?'+':'')+p.toFixed(4);pnlEl.className='metric-value '+(p>=0?'val-green':'val-red');}
+  const wrEl=document.getElementById('futWRPage');
+  if(wrEl){const w=t.win_rate||0;wrEl.textContent=w+'%';wrEl.className='metric-value '+(w>=50?'val-green':'val-red');}
+  // Load open positions if API key available
+  if(BASE_URL&&API_KEY){
+    apiGet('/api/futures/positions').then(data=>{
+      const pos=data.positions||[];
+      document.getElementById('futBadge').textContent=pos.length+' открытых';
+      const el=document.getElementById('futPositions');
+      if(!pos.length){el.innerHTML='<div style="padding:16px;text-align:center;color:var(--text3)">Открытых позиций нет</div>';return;}
+      el.innerHTML=pos.map(p=>{
+        const side=p.side==='buy'?'🟢 LONG':'🔴 SHORT';
+        const pnl=p.unrealisedPnl||0;
+        return `<div class="trade-item">
+          <div class="trade-dot" style="background:${pnl>=0?'var(--profit)':'var(--loss)'}"></div>
+          <div class="trade-body">
+            <div class="trade-sym">${p.symbol||'—'} <span style="font-size:10px;color:var(--text3)">${side} ${p.leverage||3}x</span></div>
+            <div class="trade-meta">Размер: ${p.currentQty||0} · Цена входа: $${(p.avgEntryPrice||0).toLocaleString()}</div>
+          </div>
+          <div class="trade-pnl ${pnl>=0?'val-green':'val-red'}">${pnl>=0?'+':''}$${Math.abs(pnl).toFixed(4)}</div>
+        </div>`;
+      }).join('');
+    }).catch(()=>{
+      document.getElementById('futPositions').innerHTML='<div style="padding:12px;color:var(--text3);text-align:center">Нет открытых позиций</div>';
+    });
+  } else {
+    document.getElementById('futPositions').innerHTML='<div style="padding:12px;color:var(--text3);text-align:center">Требуется API ключ</div>';
+  }
 }
 
 // ── Ticker ────────────────────────────────────────────────────────────────────

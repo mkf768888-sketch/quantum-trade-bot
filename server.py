@@ -24,8 +24,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="7.3.8")
-_ALLOWED_ORIGINS = ["*"]   # v7.3.8: open for Mini App (Telegram WebApp origin varies)
+app = FastAPI(title="QuantumTrade AI", version="7.3.9")
+_ALLOWED_ORIGINS = ["*"]   # v7.3.9: open for Mini App (Telegram WebApp origin varies)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
@@ -1853,7 +1853,7 @@ async def _notify_arb(opp: dict):
     await notify(msg)
 
 
-# ── v7.3.8: Triangular Arb EXECUTION (safe) ───────────────────────────────────
+# ── v7.3.9: Triangular Arb EXECUTION (safe) ───────────────────────────────────
 ARB_EXEC_USDT     = float(os.getenv("ARB_EXEC_USDT", "20"))    # USDT per arb cycle
 ARB_EXEC_ENABLED  = os.getenv("ARB_EXEC_ENABLED", "false").lower() == "true"  # OFF by default
 ARB_MIN_PROFIT_PCT = 0.6   # minimum profit % to actually execute (after fees)
@@ -2689,7 +2689,7 @@ async def startup():
     mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
     await notify(
-        f"⚛ <b>QuantumTrade v7.3.8</b>\n"
+        f"⚛ <b>QuantumTrade v7.3.9</b>\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
         f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
@@ -2991,7 +2991,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "7.3.8",
+        "version": "7.3.9",
         "auto_trading": AUTOPILOT,
         "quantum_chip": "Wukong_180" if _qcloud_ready else "CPU_simulator",
         "timestamp": datetime.utcnow().isoformat(),
@@ -3088,21 +3088,45 @@ async def api_signal(symbol: str):
 
 @app.get("/api/public/stats")
 async def api_public_stats():
-    """Public read-only stats for Mini App — no auth required."""
-    prices_data = await get_all_prices()
+    """Public read-only stats for Mini App — no auth required. v7.3.9: +whales +polymarket +fear&greed"""
+    # Fetch in parallel: prices, fear&greed, whale signals for main pairs, polymarket
+    MAIN_PAIRS = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT"]
+    prices_data, fg_data, *whale_results = await asyncio.gather(
+        get_all_prices(),
+        get_fear_greed(),
+        *[get_whale_signal(sym) for sym in MAIN_PAIRS],
+        return_exceptions=True
+    )
+    # Polymarket (cached — non-blocking)
+    poly_cached = _cache_get("polymarket", 900) or []
+
     trades_total = len(trade_log)
     trades_wins  = sum(1 for t in trade_log if (t.get("pnl") or 0) > 0)
     total_pnl    = round(sum(t.get("pnl") or 0 for t in trade_log), 4)
     win_rate     = round(trades_wins / trades_total * 100, 1) if trades_total else 0
     open_pos     = sum(1 for t in trade_log if t.get("status") == "open")
-    recent_trades= list(reversed(trade_log))[:10]
-    # Sanitise: only non-sensitive fields
-    safe_trades  = [{"symbol": t.get("symbol"), "side": t.get("side"),
-                     "price": t.get("price"), "pnl": t.get("pnl"),
-                     "status": t.get("status"), "account": t.get("account"),
-                     "q_score": t.get("q_score"), "ts": t.get("ts")} for t in recent_trades]
+    recent_trades = list(reversed(trade_log))[:10]
+    safe_trades   = [{"symbol": t.get("symbol"), "side": t.get("side"),
+                      "price": t.get("price"), "pnl": t.get("pnl"),
+                      "status": t.get("status"), "account": t.get("account"),
+                      "q_score": t.get("q_score"), "ts": t.get("ts")} for t in recent_trades]
     arb_info = {"enabled": ARB_EXEC_ENABLED, "total": _arb_stats.get("total", 0),
                 "success": _arb_stats.get("success", 0), "pnl": round(_arb_stats.get("total_pnl", 0), 4)}
+
+    # Whale summary per symbol
+    whales = {}
+    for sym, w in zip(MAIN_PAIRS, whale_results):
+        if isinstance(w, dict):
+            whales[sym] = {"bonus": w.get("bonus", 0), "signal": w.get("signal", "neutral"),
+                           "description": w.get("description", "")}
+
+    # Fear & Greed
+    fg = {"value": fg_data.get("value", 50), "label": fg_data.get("label", "—")} if isinstance(fg_data, dict) else {"value": 50, "label": "—"}
+
+    # Polymarket top events (already filtered for crypto)
+    poly_events = [{"title": e.get("title"), "yes_prob": e.get("yes_prob"), "volume": e.get("volume")}
+                   for e in poly_cached[:6]]
+
     return {
         "autopilot": AUTOPILOT,
         "arb": arb_info,
@@ -3113,8 +3137,11 @@ async def api_public_stats():
         "prices":   {sym: {"price": v.get("price"), "change": v.get("change")}
                      for sym, v in prices_data.get("prices", {}).items()},
         "recent_trades": safe_trades,
+        "whales":    whales,
+        "fear_greed": fg,
+        "polymarket": poly_events,
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "7.3.8",
+        "version": "7.3.9",
     }
 
 @app.get("/api/dashboard")
