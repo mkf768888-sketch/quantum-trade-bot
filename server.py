@@ -23,7 +23,7 @@ from fastapi import FastAPI, WebSocket, Request, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="7.3.6")
+app = FastAPI(title="QuantumTrade AI", version="7.3.7")
 _ALLOWED_ORIGINS = [
     "https://mkf768888-sketch.github.io",  # v7.3.3: GitHub Pages frontend
     "http://localhost:3000",               # v7.3.3: local dev
@@ -1847,7 +1847,7 @@ async def _notify_arb(opp: dict):
     await notify(msg)
 
 
-# ── v7.3.6: Triangular Arb EXECUTION (safe) ───────────────────────────────────
+# ── v7.3.7: Triangular Arb EXECUTION (safe) ───────────────────────────────────
 ARB_EXEC_USDT     = float(os.getenv("ARB_EXEC_USDT", "20"))    # USDT per arb cycle
 ARB_EXEC_ENABLED  = os.getenv("ARB_EXEC_ENABLED", "false").lower() == "true"  # OFF by default
 ARB_MIN_PROFIT_PCT = 0.6   # minimum profit % to actually execute (after fees)
@@ -2161,7 +2161,8 @@ async def _tg_answer(cb_id: str, text: str = ""):
 
 async def _tg_main_menu(chat_id: int):
     """Главное меню бота."""
-    ap = "🟢 ВКЛ" if AUTOPILOT else "🔴 ВЫКЛ"
+    ap  = "🟢 ВКЛ" if AUTOPILOT       else "🔴 ВЫКЛ"
+    arb = "🟢"     if ARB_EXEC_ENABLED else "🔴"
     kb = {"inline_keyboard": [
         [{"text": "🖥️ Открыть дашборд", "web_app": {"url": WEBAPP_URL}}],
         [{"text": "📊 Статистика", "callback_data": "menu_stats"},
@@ -2170,7 +2171,7 @@ async def _tg_main_menu(chat_id: int):
          {"text": f"🤖 Автопилот: {ap}", "callback_data": "menu_autopilot"}],
         [{"text": "💰 Баланс",     "callback_data": "menu_balance"},
          {"text": "📈 Позиции",    "callback_data": "menu_positions"}],
-        [{"text": "⚡ Арбитраж",   "callback_data": "menu_arb"}],
+        [{"text": f"⚡ Арбитраж {arb}", "callback_data": "menu_arb"}],
     ]}
     await _tg_send(chat_id,
         "⚛ <b>QuantumTrade AI v6.8.0</b>\n"
@@ -2233,13 +2234,20 @@ async def _tg_airdrops(chat_id: int):
 
 async def _tg_settings(chat_id: int):
     """Карточка настроек с рабочими кнопками."""
+    ap_icon  = "🟢 ВКЛ" if AUTOPILOT        else "🔴 ВЫКЛ"
+    arb_icon = "🟢 ВКЛ" if ARB_EXEC_ENABLED  else "🔴 ВЫКЛ"
     kb = {"inline_keyboard": [
+        # ── Переключатели ──────────────────────────────────────────────────
+        [{"text": f"🤖 Торговля: {ap_icon}",   "callback_data": "toggle_autopilot"},
+         {"text": f"⚡ Арбитраж: {arb_icon}",  "callback_data": "toggle_arb"}],
+        # ── Min Q-Score ────────────────────────────────────────────────────
         [{"text": "🟢 Min Q: 62 (страх рынка)", "callback_data": "set_minq_62"},
          {"text": "📉 Min Q: 65 (мягкий)",      "callback_data": "set_minq_65"}],
         [{"text": "📊 Min Q: 70 (умеренный)",   "callback_data": "set_minq_70"},
          {"text": "📊 Min Q: 78 (стандарт)",    "callback_data": "set_minq_78"}],
         [{"text": "📈 Min Q: 82 (строгий)",     "callback_data": "set_minq_82"},
          {"text": f"✅ Текущий: {MIN_Q_SCORE}", "callback_data": "set_minq_cur"}],
+        # ── Cooldown ───────────────────────────────────────────────────────
         [{"text": "⏱ Cooldown: 180s", "callback_data": "set_cd_180"},
          {"text": "⏱ Cooldown: 300s", "callback_data": "set_cd_300"}],
         [{"text": "⏱ Cooldown: 600s", "callback_data": "set_cd_600"},
@@ -2252,8 +2260,9 @@ async def _tg_settings(chat_id: int):
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 Min Q-Score: <code>{MIN_Q_SCORE}</code>\n"
         f"⏱ Cooldown: <code>{COOLDOWN}s</code>\n"
-        f"🤖 Автопилот: <code>{'ВКЛ' if AUTOPILOT else 'ВЫКЛ'}</code>\n\n"
-        f"<i>Выбери параметр для изменения, затем нажми Сохранить</i>", kb)
+        f"🤖 Торговля: <code>{'ВКЛ' if AUTOPILOT else 'ВЫКЛ'}</code>\n"
+        f"⚡ Арбитраж: <code>{'ВКЛ' if ARB_EXEC_ENABLED else 'ВЫКЛ'}</code>\n\n"
+        f"<i>Нажми кнопку переключателя выше чтобы вкл/выкл</i>", kb)
 
 
 async def _tg_arb(chat_id: int):
@@ -2275,7 +2284,11 @@ async def _tg_arb(chat_id: int):
         f"<b>\u0410\u043a\u0442\u0438\u0432\u043d\u044b\u0435 \u0441\u0432\u044f\u0437\u043a\u0438:</b>\n{body}\n\n"
         f"\U0001f4a1 \u0410\u043b\u0435\u0440\u0442 \u043f\u0440\u0438\u0445\u043e\u0434\u0438\u0442 \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438 \u043f\u0440\u0438 \u043e\u0431\u043d\u0430\u0440\u0443\u0436\u0435\u043d\u0438\u0438 \u0432\u043e\u0437\u043c\u043e\u0436\u043d\u043e\u0441\u0442\u0438."
     )
-    kb = {"inline_keyboard": [[{"text": "\u25c0\ufe0f \u041c\u0435\u043d\u044e", "callback_data": "menu_main"}]]}
+    arb_btn_text = "🔴 Выключить арбитраж" if ARB_EXEC_ENABLED else "🟢 Включить арбитраж"
+    kb = {"inline_keyboard": [
+        [{"text": arb_btn_text, "callback_data": "toggle_arb"}],
+        [{"text": "◀️ Меню",   "callback_data": "menu_main"}],
+    ]}
     await _tg_send(chat_id, text, kb)
 
 
@@ -2478,7 +2491,7 @@ async def telegram_callback(req: TelegramUpdate):
         return {"ok": True}
 
 async def _telegram_callback_inner(req: TelegramUpdate):
-    global MIN_Q_SCORE, COOLDOWN, AUTOPILOT
+    global MIN_Q_SCORE, COOLDOWN, AUTOPILOT, ARB_EXEC_ENABLED
 
     # ── Обработка текстовых команд ─────────────────────────────────────────
     if req.message:
@@ -2575,11 +2588,29 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         if chat_id: await _tg_arb(chat_id)
 
     elif data == "menu_autopilot":
+        # Кнопка в главном меню — тоглим и обновляем меню
         AUTOPILOT = not AUTOPILOT
         state = "ВКЛ 🟢" if AUTOPILOT else "ВЫКЛ 🔴"
-        await _tg_answer(cb_id, f"Автопилот {state}")
-        log_activity(f"[settings] Автопилот → {state} (via Telegram)")
+        await _tg_answer(cb_id, f"Торговля {state}")
+        log_activity(f"[settings] Автопилот → {state} (via main menu)")
         if chat_id: await _tg_main_menu(chat_id)
+
+    elif data == "toggle_autopilot":
+        # Кнопка в панели настроек — тоглим и обновляем настройки
+        AUTOPILOT = not AUTOPILOT
+        state = "ВКЛ 🟢" if AUTOPILOT else "ВЫКЛ 🔴"
+        await _tg_answer(cb_id, f"Торговля {state}")
+        log_activity(f"[settings] Автопилот → {state} (via settings panel)")
+        if chat_id: await _tg_settings(chat_id)
+
+    elif data == "toggle_arb":
+        # Кнопка в настройках / панели арбитража
+        ARB_EXEC_ENABLED = not ARB_EXEC_ENABLED
+        state = "ВКЛ 🟢" if ARB_EXEC_ENABLED else "ВЫКЛ 🔴"
+        await _tg_answer(cb_id, f"Арбитраж {state}")
+        log_activity(f"[settings] ARB_EXEC_ENABLED → {state} (via Telegram)")
+        # Обновляем ту панель, откуда нажали
+        if chat_id: await _tg_arb(chat_id)
 
     # ── Настройки Min Q ────────────────────────────────────────────────────
     elif data in ("set_minq_62", "set_minq_65", "set_minq_70", "set_minq_78", "set_minq_82", "set_minq_cur"):
@@ -2602,12 +2633,13 @@ async def _telegram_callback_inner(req: TelegramUpdate):
     # ── Сохранить настройки ────────────────────────────────────────────────
     elif data == "save_settings":
         await _tg_answer(cb_id, "✅ Настройки сохранены!")
-        log_activity(f"[settings] SAVED: MIN_Q={MIN_Q_SCORE} COOLDOWN={COOLDOWN}s AUTOPILOT={AUTOPILOT}")
+        log_activity(f"[settings] SAVED: MIN_Q={MIN_Q_SCORE} COOLDOWN={COOLDOWN}s AUTOPILOT={AUTOPILOT} ARB={ARB_EXEC_ENABLED}")
         await notify(
             f"💾 *Настройки сохранены*\n"
             f"Min Q-Score: `{MIN_Q_SCORE}`\n"
             f"Cooldown: `{COOLDOWN}s`\n"
-            f"Автопилот: `{'ВКЛ' if AUTOPILOT else 'ВЫКЛ'}`"
+            f"Торговля: `{'ВКЛ' if AUTOPILOT else 'ВЫКЛ'}`\n"
+            f"Арбитраж: `{'ВКЛ' if ARB_EXEC_ENABLED else 'ВЫКЛ'}`"
         )
         if chat_id: await _tg_settings(chat_id)
 
@@ -2651,7 +2683,7 @@ async def startup():
     mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
     await notify(
-        f"⚛ <b>QuantumTrade v7.3.6</b>\n"
+        f"⚛ <b>QuantumTrade v7.3.7</b>\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
         f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
@@ -2953,7 +2985,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "7.3.6",
+        "version": "7.3.7",
         "auto_trading": AUTOPILOT,
         "quantum_chip": "Wukong_180" if _qcloud_ready else "CPU_simulator",
         "timestamp": datetime.utcnow().isoformat(),
