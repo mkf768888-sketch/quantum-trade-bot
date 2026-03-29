@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-<title>QuantumTrade AI v8.1</title>
+<title>QuantumTrade AI v8.2</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -259,7 +259,7 @@
         <div class="card">
           <div class="card-header">
             <div class="card-title">Общая прибыль</div>
-            <div class="badge badge-p" id="versionBadge">v8.1</div>
+            <div class="badge badge-p" id="versionBadge">v8.2</div>
           </div>
           <div id="pnlBlock"><div class="empty-state">Подключитесь для просмотра P&L</div></div>
         </div>
@@ -560,13 +560,20 @@ const tg = window.Telegram?.WebApp;
 if(tg){tg.ready();tg.expand();try{tg.setHeaderColor('#0a0b10');tg.setBackgroundColor('#0a0b10');}catch(e){}}
 
 // ── Config ──
+// Normalize URL: always ensure https:// prefix
+function normalizeUrl(u){
+  if(!u)return '';
+  u=u.trim().replace(/\/+$/,'');
+  if(u&&!/^https?:\/\//i.test(u)) u='https://'+u;
+  return u;
+}
 // Auto-detect API URL: same origin as Mini App (served from same Railway server)
-let BASE_URL = localStorage.getItem('qt_url') || window.location.origin || '';
+let BASE_URL = normalizeUrl(localStorage.getItem('qt_url')) || window.location.origin || '';
 let API_KEY  = localStorage.getItem('qt_key') || '';
 let _state   = { autopilot: false, arb: false };
 
 function saveSetup(){
-  const url=document.getElementById('setupUrl').value.trim().replace(/\/+$/,'');
+  const url=normalizeUrl(document.getElementById('setupUrl').value);
   const key=document.getElementById('setupKey').value.trim();
   if(!url||!key){showToast('Заполни оба поля');return;}
   BASE_URL=url;API_KEY=key;
@@ -575,7 +582,7 @@ function saveSetup(){
   loadData();
 }
 function updateConnection(){
-  const url=document.getElementById('cfgUrl').value.trim().replace(/\/+$/,'');
+  const url=normalizeUrl(document.getElementById('cfgUrl').value);
   const key=document.getElementById('cfgKey').value.trim();
   if(url){BASE_URL=url;localStorage.setItem('qt_url',url);}
   if(key){API_KEY=key;localStorage.setItem('qt_key',key);}
