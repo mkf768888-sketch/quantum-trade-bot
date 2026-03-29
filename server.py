@@ -23,7 +23,7 @@ from fastapi import FastAPI, WebSocket, Request, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="7.3.7")
+app = FastAPI(title="QuantumTrade AI", version="7.3.8")
 _ALLOWED_ORIGINS = [
     "https://mkf768888-sketch.github.io",  # v7.3.3: GitHub Pages frontend
     "http://localhost:3000",               # v7.3.3: local dev
@@ -1847,7 +1847,7 @@ async def _notify_arb(opp: dict):
     await notify(msg)
 
 
-# ── v7.3.7: Triangular Arb EXECUTION (safe) ───────────────────────────────────
+# ── v7.3.8: Triangular Arb EXECUTION (safe) ───────────────────────────────────
 ARB_EXEC_USDT     = float(os.getenv("ARB_EXEC_USDT", "20"))    # USDT per arb cycle
 ARB_EXEC_ENABLED  = os.getenv("ARB_EXEC_ENABLED", "false").lower() == "true"  # OFF by default
 ARB_MIN_PROFIT_PCT = 0.6   # minimum profit % to actually execute (after fees)
@@ -2683,7 +2683,7 @@ async def startup():
     mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
     await notify(
-        f"⚛ <b>QuantumTrade v7.3.7</b>\n"
+        f"⚛ <b>QuantumTrade v7.3.8</b>\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
         f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
@@ -2985,7 +2985,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "7.3.7",
+        "version": "7.3.8",
         "auto_trading": AUTOPILOT,
         "quantum_chip": "Wukong_180" if _qcloud_ready else "CPU_simulator",
         "timestamp": datetime.utcnow().isoformat(),
@@ -3079,6 +3079,37 @@ async def api_signal(symbol: str):
     signal = calc_signal(change, vision)
     signal["symbol"] = symbol; signal["price"] = price; signal["vision"] = vision
     return signal
+
+@app.get("/api/public/stats")
+async def api_public_stats():
+    """Public read-only stats for Mini App — no auth required."""
+    prices_data = await get_all_prices()
+    trades_total = len(trade_log)
+    trades_wins  = sum(1 for t in trade_log if (t.get("pnl") or 0) > 0)
+    total_pnl    = round(sum(t.get("pnl") or 0 for t in trade_log), 4)
+    win_rate     = round(trades_wins / trades_total * 100, 1) if trades_total else 0
+    open_pos     = sum(1 for t in trade_log if t.get("status") == "open")
+    recent_trades= list(reversed(trade_log))[:10]
+    # Sanitise: only non-sensitive fields
+    safe_trades  = [{"symbol": t.get("symbol"), "side": t.get("side"),
+                     "price": t.get("price"), "pnl": t.get("pnl"),
+                     "status": t.get("status"), "account": t.get("account"),
+                     "q_score": t.get("q_score"), "ts": t.get("ts")} for t in recent_trades]
+    arb_info = {"enabled": ARB_EXEC_ENABLED, "total": _arb_stats.get("total", 0),
+                "success": _arb_stats.get("success", 0), "pnl": round(_arb_stats.get("total_pnl", 0), 4)}
+    return {
+        "autopilot": AUTOPILOT,
+        "arb": arb_info,
+        "trading": {"total": trades_total, "wins": trades_wins, "total_pnl": total_pnl,
+                    "win_rate": win_rate, "open": open_pos},
+        "settings": {"min_q_score": MIN_Q_SCORE, "cooldown": COOLDOWN,
+                     "risk_pct": RISK_PER_TRADE},
+        "prices":   {sym: {"price": v.get("price"), "change": v.get("change")}
+                     for sym, v in prices_data.get("prices", {}).items()},
+        "recent_trades": safe_trades,
+        "timestamp": datetime.utcnow().isoformat(),
+        "version": "7.3.8",
+    }
 
 @app.get("/api/dashboard")
 async def api_dashboard(_auth=Depends(verify_api_key)):  # v7.3.3: auth
