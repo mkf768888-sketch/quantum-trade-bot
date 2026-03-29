@@ -1,11 +1,11 @@
 """
-QuantumTrade AI - FastAPI Backend v7.5.2
+QuantumTrade AI - FastAPI Backend v8.2.0
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
 Phase3: Origin QC QAOA — квантовая оптимизация портфеля (CPU симулятор + Wukong 180 реальный чип)
 Phase5: Claude Vision — AI-анализ графиков
 Phase6: Origin QC Wukong 180 — реальный квантовый чип (авто-переключение по ORIGIN_QC_TOKEN)
 v7.5.0: Self-learning performance analytics, AutoScanner 10+ checks
-v7.5.2: Self-learning Q-Score adjustment, perf tracking wired, all versions unified
+v8.2.0: Self-learning Q-Score adjustment, perf tracking wired, all versions unified
 """
 
 import asyncio
@@ -25,7 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 
-app = FastAPI(title="QuantumTrade AI", version="7.5.2")
+app = FastAPI(title="QuantumTrade AI", version="8.2.0")
 _ALLOWED_ORIGINS = ["*"]   # v7.3.9: open for Mini App (Telegram WebApp origin varies)
 app.add_middleware(
     CORSMiddleware,
@@ -1687,7 +1687,7 @@ async def auto_trade_cycle():
 
     futures_candidates = []
 
-    # v7.5.2: Самообучение — динамическая коррекция Q-порога на основе статистики
+    # v8.2.0: Самообучение — динамическая коррекция Q-порога на основе статистики
     _q_adjust = 0
     if _perf_stats["total_trades"] >= 5:
         # На серии убытков (≥3) повышаем порог → более осторожная торговля
@@ -1715,7 +1715,7 @@ async def auto_trade_cycle():
         bd     = signal.get("breakdown", {})
         # v7.1.2: per-pair Q threshold (overrides global MIN_Q_SCORE per symbol)
         _pair_min_q = PAIR_Q_THRESHOLDS.get(symbol, MIN_Q_SCORE)
-        # v7.5.2: self-learning корректировка + per-symbol статистика
+        # v8.2.0: self-learning корректировка + per-symbol статистика
         _sym_q_adj = _q_adjust
         sym_stats = _perf_stats["by_symbol"].get(symbol, {})
         if sym_stats.get("trades", 0) >= 5:
@@ -2302,7 +2302,7 @@ async def _tg_main_menu(chat_id: int):
         [{"text": f"⚡ Арбитраж {arb}", "callback_data": "menu_arb"}],
     ]}
     await _tg_send(chat_id,
-        "⚛ <b>QuantumTrade AI v7.5.2</b>\n"
+        "⚛ <b>QuantumTrade AI v8.2.0</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "Выбери раздел:", kb)
 
@@ -2557,7 +2557,7 @@ async def _tg_ai_ask(chat_id: int, question: str):
     total_pnl = sum(t.get("pnl", 0) for t in trade_log)
     chip = "Wukong_180" if _qcloud_ready else "CPU_simulator"
 
-    system = f"""Ты — AI-консультант торгового бота QuantumTrade v7.5.2.
+    system = f"""Ты — AI-консультант торгового бота QuantumTrade v8.2.0.
 Текущие показатели:
 - Всего сделок: {total}, Win Rate: {win_rate:.1f}%, PnL: ${total_pnl:.2f}
 - Q-Score последний: {last_q_score:.1f}, MIN_Q: {MIN_Q_SCORE}
@@ -2824,7 +2824,7 @@ async def startup():
                 )
                 await s.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
-                    json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": webapp_url + "?v=752"}}},
+                    json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": webapp_url + "?v=820"}}},
                     timeout=aiohttp.ClientTimeout(total=10)
                 )
         except Exception as e:
@@ -2833,7 +2833,7 @@ async def startup():
     mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
     await notify(
-        f"⚛ <b>QuantumTrade v7.5.2</b>\n"
+        f"⚛ <b>QuantumTrade v8.2.0</b>\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
         f"✅ Mini App: Баланс + Автопилот без API ключа\n"
@@ -3137,7 +3137,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "7.5.2",
+        "version": "8.2.0",
         "auto_trading": AUTOPILOT,
         "quantum_chip": "Wukong_180" if _qcloud_ready else "CPU_simulator",
         "timestamp": datetime.utcnow().isoformat(),
@@ -3182,7 +3182,7 @@ async def setup_webhook(request: Request):
             results["commands"] = await r2.json()
 
             # 3. v7.4.4: Кнопка меню → Railway Mini App с ?v= для сброса кеша Telegram
-            versioned_url = f"{webapp_url}?v=752"
+            versioned_url = f"{webapp_url}?v=820"
             r3 = await s.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
                 json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": versioned_url}}},
@@ -3196,9 +3196,9 @@ async def setup_webhook(request: Request):
 
 @app.get("/api/debug")
 async def api_debug(_auth=Depends(verify_api_key)):
-    """v7.5.2: Protected diagnostics — checks all systems, returns status JSON."""
+    """v8.2.0: Protected diagnostics — checks all systems, returns status JSON."""
     import time as _time
-    results = {"version": "7.5.2", "timestamp": datetime.utcnow().isoformat(), "checks": {}}
+    results = {"version": "8.2.0", "timestamp": datetime.utcnow().isoformat(), "checks": {}}
     t0 = _time.time()
 
     # 1. KuCoin REST prices
@@ -3366,7 +3366,7 @@ async def auto_scanner_loop():
                 _scanner_state["ok_streak"] = 0
                 if not _scanner_state["alert_sent"]:
                     _scanner_state["alert_sent"] = True
-                    msg = "🔍 <b>QuantumTrade AutoScanner v7.5.2</b>\n\n"
+                    msg = "🔍 <b>QuantumTrade AutoScanner v8.2.0</b>\n\n"
                     msg += "\n".join(issues)
                     if warnings: msg += "\n\n" + "\n".join(warnings[:3])
                     if recommendations: msg += "\n\n" + "\n".join(recommendations[:2])
@@ -3382,7 +3382,7 @@ async def auto_scanner_loop():
                         f"📊 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s\n"
                         f"🤖 AP: {'ВКЛ' if AUTOPILOT else 'ВЫКЛ'} · Arb: {'ВКЛ' if ARB_EXEC_ENABLED else 'ВЫКЛ'}\n"
                         f"📋 Сделок: {_perf_stats['total_trades']} · WR: {wr:.0f}% · PnL: ${_perf_stats['total_pnl']:.2f}\n"
-                        f"🔥 Streak: {_perf_stats['streak']} · Версия: 7.5.2"
+                        f"🔥 Streak: {_perf_stats['streak']} · Версия: 8.2.0"
                     )
                     if warnings: msg += "\n\n" + "\n".join(warnings[:2])
                     if recommendations: msg += "\n\n" + "\n".join(recommendations[:2])
@@ -3413,7 +3413,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "7.5.2",
+        "version": "8.2.0",
     }
 
 @app.get("/api/setup-webhook")
@@ -3582,7 +3582,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "7.5.2",
+        "version": "8.2.0",
     }
 
 @app.get("/api/dashboard")
@@ -3744,7 +3744,7 @@ async def api_debug_internal(_auth=Depends(verify_api_key)):  # v7.3.3: auth req
     }
 
 @app.post("/api/trade/manual")
-async def manual_trade(req: ManualTrade, _auth=Depends(verify_api_key)):  # v7.5.2: auth + error handling
+async def manual_trade(req: ManualTrade, _auth=Depends(verify_api_key)):  # v8.2.0: auth + error handling
     try:
         result = await place_futures_order(req.symbol, req.side, int(req.size), req.leverage) if req.is_futures else await place_spot_order(req.symbol, req.side, req.size)
         success = result.get("code") == "200000"
@@ -3757,7 +3757,7 @@ async def manual_trade(req: ManualTrade, _auth=Depends(verify_api_key)):  # v7.5
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/autopilot/{state}")
-async def toggle_autopilot(state: str, _auth=Depends(verify_api_key)):  # v7.5.2: auth required
+async def toggle_autopilot(state: str, _auth=Depends(verify_api_key)):  # v8.2.0: auth required
     global AUTOPILOT
     # Accept: "on"/"true"/1 → True; "off"/"false"/0 → False
     AUTOPILOT = state.lower() in ("on", "true", "1", "yes")
