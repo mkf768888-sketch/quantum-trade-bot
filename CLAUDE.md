@@ -1,6 +1,6 @@
 # QuantumTrade AI — CLAUDE.md
 > Главный конфиг для AI-агентов. Читать при каждом запуске. Макс 120 строк.
-> v7.5.1 · 2026-03-29 · github.com/mkf768888-sketch/quantum-trade-bot
+> v7.5.2 · 2026-03-29 · github.com/mkf768888-sketch/quantum-trade-bot
 
 ## Стек и архитектура
 - **Бэкенд:** Python 3.11, FastAPI, Railway Cloud → один файл: `server.py` (~3600 строк)

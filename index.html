@@ -6,7 +6,7 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>QuantumTrade AI v7.5.1</title>
+<title>QuantumTrade AI v7.5.2</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -265,7 +265,7 @@
       <div class="card">
         <div class="card-header">
           <div class="card-title">Общая прибыль</div>
-          <div class="card-badge badge-purple" id="versionBadge">v7.5.1</div>
+          <div class="card-badge badge-purple" id="versionBadge">v7.5.2</div>
         </div>
         <div id="pnlBlock"><div class="loading"><div class="spin"></div> Загружаю...</div></div>
       </div>
@@ -632,7 +632,7 @@
           </div>
           <div class="metric">
             <div class="metric-label">Версия</div>
-            <div class="metric-value val-purple" id="cfgVersion" style="font-size:14px">7.5.1</div>
+            <div class="metric-value val-purple" id="cfgVersion" style="font-size:14px">7.5.2</div>
           </div>
         </div>
         <div style="margin-top:12px;font-size:12px;color:var(--text3)">Для изменения используй Telegram-бот: <code style="color:var(--accent2)">/settings</code></div>
@@ -701,6 +701,7 @@ async function runDiag() {
   }
   try {
     const res = await fetch(BASE_URL + '/api/debug', { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
     const d = await res.json();
     const checks = d.checks || {};
     let html = '';
@@ -773,19 +774,21 @@ function showPage(id) {
 
 // ── API ──────────────────────────────────────────────────────────────────────
 async function apiGet(path) {
-  const r = await fetch(BASE_URL + path, { headers: { 'X-API-Key': API_KEY } });
+  const r = await fetch(BASE_URL + path, { headers: { 'X-API-Key': API_KEY }, signal: AbortSignal.timeout(15000) });
   if (!r.ok) throw new Error(r.status); return r.json();
 }
 async function apiPost(path, body={}) {
-  const r = await fetch(BASE_URL + path, { method:'POST', headers: {'X-API-Key':API_KEY,'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  const r = await fetch(BASE_URL + path, { method:'POST', headers: {'X-API-Key':API_KEY,'Content-Type':'application/json'}, body:JSON.stringify(body), signal: AbortSignal.timeout(15000) });
   if (!r.ok) throw new Error(r.status); return r.json();
 }
+// Safe text escaper to prevent XSS
+function escHtml(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 
 // ── Load ─────────────────────────────────────────────────────────────────────
 async function loadData() {
   if (!BASE_URL) { document.getElementById('setupScreen').style.display='flex'; return; }
   try {
-    const stats  = await fetch(BASE_URL + '/api/public/stats').then(r=>r.json());
+    const stats  = await fetch(BASE_URL + '/api/public/stats', { signal: AbortSignal.timeout(15000) }).then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); });
     const trades = await apiGet('/api/trades?limit=20').catch(()=>null);
     renderDashboard(stats);
     renderTrades(trades, stats);
@@ -888,7 +891,7 @@ async function renderSignals(stats) {
     : '<div style="padding:12px;color:var(--text3);text-align:center">Нет данных цен</div>';
   try {
     const syms = ['BTC-USDT','ETH-USDT','SOL-USDT','BNB-USDT'];
-    const results = await Promise.all(syms.map(s=>fetch(BASE_URL+'/api/signal/'+s).then(r=>r.json()).catch(()=>null)));
+    const results = await Promise.all(syms.map(s=>fetch(BASE_URL+'/api/signal/'+s, { signal: AbortSignal.timeout(12000) }).then(r=>{ if(!r.ok) return null; return r.json(); }).catch(()=>null)));
     const valid = results.filter(Boolean);
     document.getElementById('sigCount').textContent = valid.length;
     document.getElementById('signalsList').innerHTML = valid.map(sig=>{
@@ -971,7 +974,7 @@ function renderEvents(s) {
     </div>`;
   }).join('');
   // Also fetch fresh polymarket data
-  if(BASE_URL) fetch(BASE_URL+'/api/polymarket').then(r=>r.json()).then(d=>{
+  if(BASE_URL) fetch(BASE_URL+'/api/polymarket', { signal: AbortSignal.timeout(10000) }).then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); }).then(d=>{
     if(d.events&&d.events.length) renderEvents({polymarket:d.events});
   }).catch(()=>{});
 }
@@ -1184,7 +1187,8 @@ function quickChat(t){document.getElementById('chatInput').value=t;sendChat();}
 function addMsg(text,type,id) {
   const wrap=document.getElementById('chatMessages'); const now=new Date().toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'});
   const d=document.createElement('div'); d.className='msg '+type; if(id)d.id=id;
-  d.innerHTML=`<div class="msg-bubble">${text.replace(/\n/g,'<br>').replace(/\*([^*]+)\*/g,'<b>$1</b>')}</div><div class="msg-time">${now}</div>`;
+  const safe=escHtml(text).replace(/\n/g,'<br>').replace(/\*([^*]+)\*/g,'<b>$1</b>');
+  d.innerHTML=`<div class="msg-bubble">${safe}</div><div class="msg-time">${now}</div>`;
   wrap.appendChild(d); wrap.scrollTop=wrap.scrollHeight;
 }
 
