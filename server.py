@@ -612,7 +612,7 @@ def log_trade(symbol, side, price, size, tp, sl, confidence, q_score, pattern, a
         "tp": tp, "sl": sl, "confidence": confidence, "q_score": q_score,
         "pattern": pattern, "account": account, "status": "open", "pnl": None,
     })
-    if len(trade_log) > 500:
+    if len(trade_log) > 2000:
         trade_log.pop(0)
     _save_trades_to_disk()
 
@@ -1685,6 +1685,22 @@ async def auto_trade_cycle():
 
     futures_candidates = []
 
+    # v7.5.1: Самообучение — динамическая коррекция Q-порога на основе статистики
+    _q_adjust = 0
+    if _perf_stats["total_trades"] >= 5:
+        # На серии убытков (≥3) повышаем порог → более осторожная торговля
+        if _perf_stats["streak"] <= -3:
+            _q_adjust = min(abs(_perf_stats["streak"]), 8)  # макс +8
+        # На серии побед (≥5) немного снижаем → агрессивнее
+        elif _perf_stats["streak"] >= 5:
+            _q_adjust = -2
+        # Win rate < 40% → повышаем порог
+        wr = _perf_stats["wins"] / _perf_stats["total_trades"] * 100
+        if wr < 40 and _perf_stats["total_trades"] >= 10:
+            _q_adjust = max(_q_adjust, 5)
+    if _q_adjust != 0:
+        log_activity(f"[self-learn] Q-adjust={_q_adjust:+d} (streak={_perf_stats['streak']}, trades={_perf_stats['total_trades']})")
+
     for res in cv_results:
         if isinstance(res, Exception):
             log_activity(f"[cycle] error: {res}"); continue
@@ -1697,6 +1713,16 @@ async def auto_trade_cycle():
         bd     = signal.get("breakdown", {})
         # v7.1.2: per-pair Q threshold (overrides global MIN_Q_SCORE per symbol)
         _pair_min_q = PAIR_Q_THRESHOLDS.get(symbol, MIN_Q_SCORE)
+        # v7.5.1: self-learning корректировка + per-symbol статистика
+        _sym_q_adj = _q_adjust
+        sym_stats = _perf_stats["by_symbol"].get(symbol, {})
+        if sym_stats.get("trades", 0) >= 5:
+            sym_wr = sym_stats["wins"] / sym_stats["trades"] * 100
+            if sym_wr < 30:
+                _sym_q_adj += 5  # символ убыточный → порог ещё выше
+            elif sym_wr > 70:
+                _sym_q_adj -= 2  # символ прибыльный → чуть ниже
+        _pair_min_q = max(40, min(90, _pair_min_q + _sym_q_adj))
         if action == "BUY" and q < _pair_min_q:
             log_activity(f"[cycle] {symbol}: Q={q:.1f}<{_pair_min_q} (pair threshold) → SKIP")
             continue
@@ -2188,6 +2214,13 @@ async def position_monitor_loop():
                         log_activity(f"[monitor] {trade['symbol']} {reason} closed PnL=${pnl_usdt:+.4f}")
                         print(f"[CLOSE] {trade['symbol']} {trade['side'].upper()} PnL=${pnl_usdt:+.4f} entry=${trade['price']} exit=${price_now}", flush=True)
                         _save_trades_to_disk()
+                        # v7.5.0: обновляем статистику самообучения
+                        _update_perf_on_trade({
+                            "pnl_usdt": pnl_usdt,
+                            "strategy": strat,
+                            "symbol": trade["symbol"],
+                            "q_score": trade.get("q_score", 0),
+                        })
                         await notify(
                             f"{emoji} <b>Сделка закрыта — Стратегия {strat}</b>\n"
                             f"<code>{trade['symbol']}</code> {trade['side'].upper()} | {reason}\n"
@@ -2787,7 +2820,7 @@ async def startup():
                 )
                 await s.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
-                    json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": webapp_url + "?v=750"}}},
+                    json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": webapp_url + "?v=751"}}},
                     timeout=aiohttp.ClientTimeout(total=10)
                 )
         except Exception as e:
@@ -3143,7 +3176,7 @@ async def setup_webhook(request: Request):
             results["commands"] = await r2.json()
 
             # 3. v7.4.4: Кнопка меню → Railway Mini App с ?v= для сброса кеша Telegram
-            versioned_url = f"{webapp_url}?v=750"
+            versioned_url = f"{webapp_url}?v=751"
             r3 = await s.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
                 json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": versioned_url}}},
@@ -3159,7 +3192,7 @@ async def setup_webhook(request: Request):
 async def api_debug():
     """v7.4.4: Public diagnostics — checks all systems, returns status JSON."""
     import time as _time
-    results = {"version": "7.5.0", "timestamp": datetime.utcnow().isoformat(), "checks": {}}
+    results = {"version": "7.5.1", "timestamp": datetime.utcnow().isoformat(), "checks": {}}
     t0 = _time.time()
 
     # 1. KuCoin REST prices
@@ -3327,7 +3360,7 @@ async def auto_scanner_loop():
                 _scanner_state["ok_streak"] = 0
                 if not _scanner_state["alert_sent"]:
                     _scanner_state["alert_sent"] = True
-                    msg = "🔍 <b>QuantumTrade AutoScanner v7.5.0</b>\n\n"
+                    msg = "🔍 <b>QuantumTrade AutoScanner v7.5.1</b>\n\n"
                     msg += "\n".join(issues)
                     if warnings: msg += "\n\n" + "\n".join(warnings[:3])
                     if recommendations: msg += "\n\n" + "\n".join(recommendations[:2])
@@ -3343,7 +3376,7 @@ async def auto_scanner_loop():
                         f"📊 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s\n"
                         f"🤖 AP: {'ВКЛ' if AUTOPILOT else 'ВЫКЛ'} · Arb: {'ВКЛ' if ARB_EXEC_ENABLED else 'ВЫКЛ'}\n"
                         f"📋 Сделок: {_perf_stats['total_trades']} · WR: {wr:.0f}% · PnL: ${_perf_stats['total_pnl']:.2f}\n"
-                        f"🔥 Streak: {_perf_stats['streak']} · Версия: 7.5.0"
+                        f"🔥 Streak: {_perf_stats['streak']} · Версия: 7.5.1"
                     )
                     if warnings: msg += "\n\n" + "\n".join(warnings[:2])
                     if recommendations: msg += "\n\n" + "\n".join(recommendations[:2])
@@ -3374,7 +3407,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "7.5.0",
+        "version": "7.5.1",
     }
 
 @app.get("/api/setup-webhook")
