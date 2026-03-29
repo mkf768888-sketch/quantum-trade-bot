@@ -114,28 +114,103 @@ last_q_score  = 0.0
 _q_alert_last: dict = {}   # v7.2.2: антиспам для Q-алертов {"sell": ts, "buy": ts}
 trade_log: List[dict] = []
 
-# ── Персистентное хранилище сделок ─────────────────────────────────────────────
-# Выживает при редеплое — пишем в /tmp/trades.json (Railway ephemeral storage)
-_TRADES_FILE = "/tmp/qt_trades.json"
+# ── Персистентное хранилище сделок (v7.5.0: увеличено до 2000, /data/) ────────
+_TRADES_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "/tmp")
+_TRADES_FILE = os.path.join(_TRADES_DIR, "qt_trades.json")
+_TRADES_STATS_FILE = os.path.join(_TRADES_DIR, "qt_performance.json")
+
+# v7.5.0: Агрегированная статистика для самообучения бота
+_perf_stats = {
+    "total_trades": 0, "wins": 0, "losses": 0, "total_pnl": 0.0,
+    "by_strategy": {"B": {"trades": 0, "wins": 0, "pnl": 0.0}, "C": {"trades": 0, "wins": 0, "pnl": 0.0}, "DUAL": {"trades": 0, "wins": 0, "pnl": 0.0}},
+    "by_symbol": {},
+    "avg_q_score_win": 0.0, "avg_q_score_loss": 0.0,
+    "best_hour_utc": None, "worst_hour_utc": None,
+    "streak": 0, "max_streak": 0, "max_drawdown": 0.0,
+    "updated": None,
+}
 
 def _load_trades_from_disk():
     """Загружаем историю сделок при старте."""
-    global trade_log
+    global trade_log, _perf_stats
     try:
         if os.path.exists(_TRADES_FILE):
             with open(_TRADES_FILE, "r") as f:
                 trade_log = json.load(f)
             print(f"[trades] загружено {len(trade_log)} сделок из {_TRADES_FILE}")
+        if os.path.exists(_TRADES_STATS_FILE):
+            with open(_TRADES_STATS_FILE, "r") as f:
+                loaded = json.load(f)
+                _perf_stats.update(loaded)
+            print(f"[perf] статистика загружена: {_perf_stats['total_trades']} сделок, PnL: {_perf_stats['total_pnl']}")
     except Exception as e:
         print(f"[trades] ошибка загрузки: {e}")
 
 def _save_trades_to_disk():
-    """Сохраняем trade_log на диск после каждой новой сделки."""
+    """Сохраняем trade_log на диск после каждой новой сделки. v7.5.0: 2000 записей."""
     try:
         with open(_TRADES_FILE, "w") as f:
-            json.dump(trade_log[-500:], f)  # храним последние 500
+            json.dump(trade_log[-2000:], f)  # v7.5.0: 500→2000
     except Exception as e:
         print(f"[trades] ошибка записи: {e}")
+
+def _save_perf_stats():
+    """v7.5.0: Сохраняем агрегированную статистику производительности."""
+    try:
+        _perf_stats["updated"] = datetime.utcnow().isoformat()
+        with open(_TRADES_STATS_FILE, "w") as f:
+            json.dump(_perf_stats, f)
+    except Exception as e:
+        print(f"[perf] ошибка записи: {e}")
+
+def _update_perf_on_trade(trade: dict):
+    """v7.5.0: Обновляем статистику после каждой закрытой сделки для самообучения."""
+    pnl = trade.get("pnl_usdt", 0.0)
+    strat = trade.get("strategy", "B")
+    symbol = trade.get("symbol", "?")
+    q = trade.get("q_score", 0)
+    is_win = pnl > 0
+
+    _perf_stats["total_trades"] += 1
+    _perf_stats["total_pnl"] = round(_perf_stats["total_pnl"] + pnl, 4)
+    if is_win:
+        _perf_stats["wins"] += 1
+        _perf_stats["streak"] = max(0, _perf_stats["streak"]) + 1
+    else:
+        _perf_stats["losses"] += 1
+        _perf_stats["streak"] = min(0, _perf_stats["streak"]) - 1
+    _perf_stats["max_streak"] = max(_perf_stats["max_streak"], abs(_perf_stats["streak"]))
+
+    # По стратегиям
+    if strat not in _perf_stats["by_strategy"]:
+        _perf_stats["by_strategy"][strat] = {"trades": 0, "wins": 0, "pnl": 0.0}
+    s = _perf_stats["by_strategy"][strat]
+    s["trades"] += 1
+    if is_win: s["wins"] += 1
+    s["pnl"] = round(s["pnl"] + pnl, 4)
+
+    # По символам
+    if symbol not in _perf_stats["by_symbol"]:
+        _perf_stats["by_symbol"][symbol] = {"trades": 0, "wins": 0, "pnl": 0.0}
+    sym = _perf_stats["by_symbol"][symbol]
+    sym["trades"] += 1
+    if is_win: sym["wins"] += 1
+    sym["pnl"] = round(sym["pnl"] + pnl, 4)
+
+    # Средний Q-Score для побед/поражений
+    total = _perf_stats["total_trades"]
+    if is_win and _perf_stats["wins"] > 0:
+        prev = _perf_stats["avg_q_score_win"] * (_perf_stats["wins"] - 1)
+        _perf_stats["avg_q_score_win"] = round((prev + q) / _perf_stats["wins"], 1)
+    elif not is_win and _perf_stats["losses"] > 0:
+        prev = _perf_stats["avg_q_score_loss"] * (_perf_stats["losses"] - 1)
+        _perf_stats["avg_q_score_loss"] = round((prev + q) / _perf_stats["losses"], 1)
+
+    # Max drawdown
+    if _perf_stats["total_pnl"] < _perf_stats["max_drawdown"]:
+        _perf_stats["max_drawdown"] = round(_perf_stats["total_pnl"], 4)
+
+    _save_perf_stats()
 
 # ── QAOA State ─────────────────────────────────────────────────────────────────
 _quantum_bias: Dict[str, float] = {}   # symbol → bias [-15..+15]
@@ -2712,7 +2787,7 @@ async def startup():
                 )
                 await s.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
-                    json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": webapp_url + "?v=744"}}},
+                    json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": webapp_url + "?v=750"}}},
                     timeout=aiohttp.ClientTimeout(total=10)
                 )
         except Exception as e:
@@ -3068,7 +3143,7 @@ async def setup_webhook(request: Request):
             results["commands"] = await r2.json()
 
             # 3. v7.4.4: Кнопка меню → Railway Mini App с ?v= для сброса кеша Telegram
-            versioned_url = f"{webapp_url}?v=744"
+            versioned_url = f"{webapp_url}?v=750"
             r3 = await s.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
                 json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": versioned_url}}},
@@ -3084,7 +3159,7 @@ async def setup_webhook(request: Request):
 async def api_debug():
     """v7.4.4: Public diagnostics — checks all systems, returns status JSON."""
     import time as _time
-    results = {"version": "7.4.4", "timestamp": datetime.utcnow().isoformat(), "checks": {}}
+    results = {"version": "7.5.0", "timestamp": datetime.utcnow().isoformat(), "checks": {}}
     t0 = _time.time()
 
     # 1. KuCoin REST prices
@@ -3151,59 +3226,156 @@ async def api_debug():
 _scanner_state = {"last_run": None, "issues": [], "ok_streak": 0, "alert_sent": False}
 
 async def auto_scanner_loop():
-    """v7.4.4: Health scanner — checks all systems every 5 min, alerts on issues."""
-    await asyncio.sleep(60)  # первый запуск через 1 мин после старта
+    """v7.5.0: Полный health scanner — 10+ проверок каждые 5 мин, алерты + рекомендации."""
+    await asyncio.sleep(60)
     while True:
         try:
             issues = []
-            # Check KuCoin prices
+            warnings = []
+            recommendations = []
+
+            # ── 1. KuCoin Prices ──────────────────────────────────────────────
             prices = await get_all_prices()
             if not prices.get("success") or not prices.get("prices"):
                 issues.append("❌ KuCoin цены недоступны")
 
-            # Check KuCoin auth (spot)
+            # ── 2. KuCoin Auth (Spot) ─────────────────────────────────────────
             if KUCOIN_API_KEY:
                 bal = await get_balance()
                 if not bal.get("success"):
-                    issues.append(f"❌ KuCoin Spot API: {bal.get('error', 'неизвестная ошибка')[:80]}")
+                    issues.append(f"❌ KuCoin Spot: {bal.get('error', '?')[:60]}")
+                else:
+                    total = bal.get("total_usdt", 0)
+                    if total < 10:
+                        warnings.append(f"⚠️ Баланс спот: ${total:.2f} — недостаточно для торговли")
+            else:
+                issues.append("❌ KUCOIN_API_KEY не задан")
 
-            # Check Telegram bot
+            # ── 3. KuCoin Futures ─────────────────────────────────────────────
+            if KUCOIN_API_KEY:
+                fb = await get_futures_balance()
+                if not fb.get("success"):
+                    warnings.append(f"⚠️ KuCoin Futures: {fb.get('error', '?')[:60]}")
+
+            # ── 4. Telegram ───────────────────────────────────────────────────
             if not BOT_TOKEN:
                 issues.append("❌ BOT_TOKEN не задан")
             if not API_SECRET:
-                issues.append("⚠️ API_SECRET не задан — Mini App без авторизации")
+                warnings.append("⚠️ API_SECRET не задан — Mini App без авторизации")
 
-            # Check trade loop (last trade log entry)
+            # ── 5. Claude Vision AI ───────────────────────────────────────────
+            if not ANTHROPIC_API_KEY:
+                warnings.append("⚠️ ANTHROPIC_API_KEY не задан — Claude Vision отключён (Q-Score снижен)")
+
+            # ── 6. Торговая активность ────────────────────────────────────────
+            if trade_log:
+                last_trade_ts = trade_log[-1].get("ts", 0)
+                hours_since = (time.time() - last_trade_ts) / 3600 if last_trade_ts else float("inf")
+                if AUTOPILOT and hours_since > 24:
+                    warnings.append(f"⚠️ Автопилот ВКЛ, но 0 сделок за {int(hours_since)}ч — проверь Q-min ({MIN_Q_SCORE})")
+                    if MIN_Q_SCORE > 80:
+                        recommendations.append("💡 MIN_Q_SCORE={} слишком высок. Попробуй 72-77 для большей активности".format(MIN_Q_SCORE))
+
+            # ── 7. Производительность (self-learning) ─────────────────────────
+            if _perf_stats["total_trades"] >= 10:
+                wr = _perf_stats["wins"] / _perf_stats["total_trades"] * 100
+                if wr < 40:
+                    warnings.append(f"⚠️ Win rate {wr:.0f}% (низкий) — рекомендуется поднять MIN_Q_SCORE")
+                    recommendations.append("💡 Повысь MIN_Q_SCORE на 5 пунктов для улучшения качества сигналов")
+                if _perf_stats["max_drawdown"] < -50:
+                    issues.append(f"❌ Max drawdown ${_perf_stats['max_drawdown']:.2f} — критическая просадка")
+                # Анализ по стратегиям
+                for strat, data in _perf_stats["by_strategy"].items():
+                    if data["trades"] >= 5:
+                        swr = data["wins"] / data["trades"] * 100
+                        if swr < 30:
+                            recommendations.append(f"💡 Стратегия {strat}: WR {swr:.0f}%, PnL ${data['pnl']:.2f} — рассмотри отключение")
+                # Анализ по символам
+                for sym, data in _perf_stats["by_symbol"].items():
+                    if data["trades"] >= 5 and data["pnl"] < -20:
+                        recommendations.append(f"💡 {sym}: убыток ${data['pnl']:.2f} за {data['trades']} сделок — рассмотри исключение")
+                # Лучший Q-Score для побед
+                if _perf_stats["avg_q_score_win"] > _perf_stats["avg_q_score_loss"] + 5:
+                    recommendations.append(f"💡 Средний Q побед: {_perf_stats['avg_q_score_win']}, поражений: {_perf_stats['avg_q_score_loss']}")
+
+            # ── 8. Streak detection ───────────────────────────────────────────
+            if _perf_stats["streak"] <= -3:
+                warnings.append(f"⚠️ Серия из {abs(_perf_stats['streak'])} убыточных сделок подряд")
+                recommendations.append("💡 При серии -3 рекомендуется пауза. Рассмотри /set cooldown 1200")
+
+            # ── 9. Railway & trade log persistence ────────────────────────────
+            if not os.path.exists(_TRADES_FILE):
+                warnings.append("⚠️ Trade log файл не найден — история может быть утеряна")
+
+            # ── 10. QAOA status ───────────────────────────────────────────────
+            if not _qcloud_ready:
+                pass  # CPU fallback работает, не алертим
+
+            # ── Формируем статус ──────────────────────────────────────────────
             _scanner_state["last_run"] = datetime.utcnow().isoformat()
             _scanner_state["issues"] = issues
+            _scanner_state["warnings"] = warnings
+            _scanner_state["recommendations"] = recommendations
+            _scanner_state["perf"] = {
+                "trades": _perf_stats["total_trades"],
+                "wr": round(_perf_stats["wins"] / max(1, _perf_stats["total_trades"]) * 100, 1),
+                "pnl": _perf_stats["total_pnl"],
+                "streak": _perf_stats["streak"],
+            }
 
             if issues:
                 _scanner_state["ok_streak"] = 0
-                if not _scanner_state["alert_sent"]:  # не спамим
+                if not _scanner_state["alert_sent"]:
                     _scanner_state["alert_sent"] = True
-                    msg = "🔍 <b>QuantumTrade AutoScanner</b>\n\n"
+                    msg = "🔍 <b>QuantumTrade AutoScanner v7.5.0</b>\n\n"
                     msg += "\n".join(issues)
+                    if warnings: msg += "\n\n" + "\n".join(warnings[:3])
+                    if recommendations: msg += "\n\n" + "\n".join(recommendations[:2])
                     msg += f"\n\n🕐 {datetime.utcnow().strftime('%H:%M UTC')}"
                     await notify(msg)
             else:
                 _scanner_state["ok_streak"] += 1
                 _scanner_state["alert_sent"] = False
-                # Раз в час отправляем OK отчёт (когда ok_streak кратен 12)
                 if _scanner_state["ok_streak"] % 12 == 1:
-                    await notify(
+                    wr = _perf_stats["wins"] / max(1, _perf_stats["total_trades"]) * 100
+                    msg = (
                         f"✅ <b>AutoScanner: все системы в норме</b>\n"
                         f"📊 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s\n"
-                        f"🤖 Autopilot: {'ВКЛ' if AUTOPILOT else 'ВЫКЛ'} · Arb: {'ВКЛ' if ARB_EXEC_ENABLED else 'ВЫКЛ'}\n"
-                        f"📋 Сделок: {len(trade_log)} · Версия: 7.4.4"
+                        f"🤖 AP: {'ВКЛ' if AUTOPILOT else 'ВЫКЛ'} · Arb: {'ВКЛ' if ARB_EXEC_ENABLED else 'ВЫКЛ'}\n"
+                        f"📋 Сделок: {_perf_stats['total_trades']} · WR: {wr:.0f}% · PnL: ${_perf_stats['total_pnl']:.2f}\n"
+                        f"🔥 Streak: {_perf_stats['streak']} · Версия: 7.5.0"
                     )
+                    if warnings: msg += "\n\n" + "\n".join(warnings[:2])
+                    if recommendations: msg += "\n\n" + "\n".join(recommendations[:2])
+                    await notify(msg)
         except Exception as e:
             print(f"[scanner] error: {e}", flush=True)
-        await asyncio.sleep(300)  # каждые 5 минут
+        await asyncio.sleep(300)
 
 @app.get("/api/scanner/status")
 async def api_scanner_status():
-    """v7.4.4: Статус автосканера."""
+    """v7.5.0: Статус автосканера + производительность + рекомендации."""
     return _scanner_state
+
+@app.get("/api/public/performance")
+async def api_public_performance():
+    """v7.5.0: Статистика производительности бота для самообучения и Mini App."""
+    return {
+        "total_trades": _perf_stats["total_trades"],
+        "wins": _perf_stats["wins"],
+        "losses": _perf_stats["losses"],
+        "win_rate": round(_perf_stats["wins"] / max(1, _perf_stats["total_trades"]) * 100, 1),
+        "total_pnl": _perf_stats["total_pnl"],
+        "max_drawdown": _perf_stats["max_drawdown"],
+        "streak": _perf_stats["streak"],
+        "max_streak": _perf_stats["max_streak"],
+        "avg_q_win": _perf_stats["avg_q_score_win"],
+        "avg_q_loss": _perf_stats["avg_q_score_loss"],
+        "by_strategy": _perf_stats["by_strategy"],
+        "by_symbol": _perf_stats["by_symbol"],
+        "recommendations": _scanner_state.get("recommendations", []),
+        "version": "7.5.0",
+    }
 
 @app.get("/api/setup-webhook")
 async def get_webhook_info():
