@@ -224,6 +224,7 @@
     </div>
     <div class="nav-tabs">
       <div class="tab active" onclick="showPage('dashboard')">📊 Главная</div>
+      <div class="tab" onclick="showPage('balance')">💰 Баланс</div>
       <div class="tab" onclick="showPage('trades')">📋 Сделки</div>
       <div class="tab expert-only" onclick="showPage('signals')">⚡ Сигналы</div>
       <div class="tab expert-only" onclick="showPage('whales')">🐋 Киты</div>
@@ -297,6 +298,27 @@
           </div>
         </div>
       </div>
+      <!-- Balance summary widget on dashboard -->
+      <div class="card" style="cursor:pointer" onclick="showPage('balance')">
+        <div class="card-header">
+          <div class="card-title">💰 Баланс аккаунта</div>
+          <div style="font-size:11px;color:var(--accent2)">Подробнее →</div>
+        </div>
+        <div class="metric-grid" style="grid-template-columns:1fr 1fr 1fr">
+          <div class="metric">
+            <div class="metric-label">Спот</div>
+            <div class="metric-value val-green" id="dashBalSpot">—</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Фьючерсы</div>
+            <div class="metric-value" id="dashBalFut">—</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Итого</div>
+            <div class="metric-value val-purple" id="dashBalTotal">—</div>
+          </div>
+        </div>
+      </div>
       <div class="card">
         <div class="card-title" style="margin-bottom:12px">Быстрые действия</div>
         <div class="action-grid">
@@ -324,6 +346,64 @@
           <div style="font-size:11px;color:var(--accent2);cursor:pointer" onclick="showPage('trades')">Все →</div>
         </div>
         <div id="recentTradesPreview"><div class="loading"><div class="spin"></div></div></div>
+      </div>
+    </div>
+
+    <!-- TRADES -->
+    <!-- BALANCE -->
+    <div class="page" id="page-balance">
+      <!-- Total portfolio -->
+      <div class="card" style="background:linear-gradient(135deg,rgba(139,92,246,0.15),rgba(52,211,153,0.08));border-color:rgba(139,92,246,0.3)">
+        <div class="card-header">
+          <div class="card-title">💼 Портфель</div>
+          <div class="card-badge badge-purple" id="balLastUpdate">—</div>
+        </div>
+        <div style="text-align:center;padding:8px 0 16px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:4px">ИТОГО (USDT)</div>
+          <div style="font-size:32px;font-weight:700;color:var(--accent2)" id="balTotal">—</div>
+          <div style="font-size:12px;color:var(--text3);margin-top:4px" id="balTotalChange"></div>
+        </div>
+        <div class="metric-grid" style="grid-template-columns:1fr 1fr">
+          <div class="metric">
+            <div class="metric-label">🏦 Спот</div>
+            <div class="metric-value val-green" id="balSpot">—</div>
+            <div class="metric-sub">доступно</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">📈 Фьючерсы</div>
+            <div class="metric-value" id="balFutures">—</div>
+            <div class="metric-sub" id="balFuturesSub">equity</div>
+          </div>
+        </div>
+        <!-- Futures extra -->
+        <div class="metric-grid" style="grid-template-columns:1fr 1fr;margin-top:8px" id="balFutExtra">
+          <div class="metric">
+            <div class="metric-label">Доступно</div>
+            <div class="metric-value" id="balFutAvail">—</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Нереал. P&L</div>
+            <div class="metric-value" id="balFutPnl">—</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Spot assets -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">🏦 Спот активы</div>
+          <div class="card-badge badge-purple" id="balAssetCount">0</div>
+        </div>
+        <div id="balSpotList"><div class="loading"><div class="spin"></div> Загружаю...</div></div>
+      </div>
+
+      <!-- Futures positions recap -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">📈 Фьючерс позиции</div>
+          <div class="card-badge" id="balPosBadge" style="background:rgba(52,211,153,0.15);color:var(--accent2)">0</div>
+        </div>
+        <div id="balPosList"><div class="loading"><div class="spin"></div> Загружаю...</div></div>
       </div>
     </div>
 
@@ -622,6 +702,7 @@ function showPage(id) {
     if (t.getAttribute('onclick') && t.getAttribute('onclick').includes("'"+id+"'")) t.classList.add('active');
   });
   if(id==='settings') prefillSettings();
+  if(id==='balance') renderBalance();
 }
 
 // ── API ──────────────────────────────────────────────────────────────────────
@@ -650,6 +731,15 @@ async function loadData() {
     renderTicker(stats.prices||{});
     document.getElementById('lastRefresh').textContent = '🕐 ' + new Date().toLocaleTimeString('ru');
     setStatus('online');
+    // v7.4.1: load balance summary for dashboard widget
+    if(BASE_URL&&API_KEY) {
+      apiGet('/api/combined/balance').then(c=>{
+        const fmt=v=>'$'+(v||0).toLocaleString('ru',{minimumFractionDigits:0,maximumFractionDigits:0});
+        const sp=document.getElementById('dashBalSpot'); if(sp) sp.textContent=fmt(c.spot_usdt);
+        const fu=document.getElementById('dashBalFut');  if(fu) fu.textContent=fmt(c.futures_equity);
+        const to=document.getElementById('dashBalTotal');if(to) to.textContent=fmt(c.total_usdt);
+      }).catch(()=>{});
+    }
   } catch(e) { setStatus('offline'); }
 }
 
@@ -821,6 +911,109 @@ function renderEvents(s) {
   if(BASE_URL) fetch(BASE_URL+'/api/polymarket').then(r=>r.json()).then(d=>{
     if(d.events&&d.events.length) renderEvents({polymarket:d.events});
   }).catch(()=>{});
+}
+
+// ── Balance page ──────────────────────────────────────────────────────────────
+async function renderBalance() {
+  if(!BASE_URL||!API_KEY){
+    document.getElementById('balSpotList').innerHTML='<div style="padding:16px;text-align:center;color:var(--text3)">⚠️ Требуется API ключ — настрой в ⚙️ Настройки</div>';
+    document.getElementById('balPosList').innerHTML='';
+    return;
+  }
+  try {
+    // Parallel: combined balance + spot accounts + futures positions
+    const [combined, spotFull, positions] = await Promise.allSettled([
+      apiGet('/api/combined/balance'),
+      apiGet('/api/balance'),
+      apiGet('/api/futures/positions'),
+    ]);
+
+    // ── Total portfolio ────────────────────────────────────────────────────────
+    if(combined.status==='fulfilled'&&combined.value){
+      const c = combined.value;
+      const total = c.total_usdt||0;
+      const spot  = c.spot_usdt||0;
+      const futEq = c.futures_equity||0;
+      const futAv = c.futures_usdt||0;
+      const pnl   = c.futures_unrealised_pnl||0;
+      document.getElementById('balTotal').textContent   = '$'+total.toLocaleString('ru',{minimumFractionDigits:2,maximumFractionDigits:2});
+      document.getElementById('balSpot').textContent    = '$'+spot.toLocaleString('ru',{minimumFractionDigits:2,maximumFractionDigits:2});
+      const futEl=document.getElementById('balFutures');
+      futEl.textContent='$'+futEq.toLocaleString('ru',{minimumFractionDigits:2,maximumFractionDigits:2});
+      futEl.className='metric-value '+(futEq>0?'val-green':'');
+      document.getElementById('balFutAvail').textContent='$'+futAv.toLocaleString('ru',{minimumFractionDigits:2,maximumFractionDigits:2});
+      const pnlEl=document.getElementById('balFutPnl');
+      pnlEl.textContent=(pnl>=0?'+':'')+pnl.toFixed(4)+' USDT';
+      pnlEl.className='metric-value '+(pnl>=0?'val-green':'val-red');
+      document.getElementById('balLastUpdate').textContent=new Date().toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'});
+    }
+
+    // ── Spot assets list ───────────────────────────────────────────────────────
+    const CURRENCY_ICONS = {BTC:'₿',ETH:'Ξ',SOL:'◎',USDT:'$',USDC:'$',BNB:'⬡',XRP:'✕',AVAX:'🔺',DOT:'●',ADA:'₳',DOGE:'Ð',TRX:'♦',LTC:'Ł',MATIC:'⬡',LINK:'⬡'};
+    if(spotFull.status==='fulfilled'&&spotFull.value){
+      const accs = (spotFull.value.accounts||[]).filter(a=>parseFloat(a.balance)>0.0001);
+      document.getElementById('balAssetCount').textContent=accs.length;
+      if(!accs.length){
+        document.getElementById('balSpotList').innerHTML='<div style="padding:16px;text-align:center;color:var(--text3)">Нет активов на споте</div>';
+      } else {
+        // Group by currency (sum trade+main+margin)
+        const grouped={};
+        accs.forEach(a=>{
+          const cur=a.currency;
+          if(!grouped[cur]) grouped[cur]={total:0,available:0,holds:0};
+          grouped[cur].total+=parseFloat(a.balance)||0;
+          grouped[cur].available+=parseFloat(a.available)||0;
+          grouped[cur].holds+=parseFloat(a.holds)||0;
+        });
+        const sorted=Object.entries(grouped).sort((a,b)=>{
+          // USDT first, then by balance
+          if(a[0]==='USDT')return -1; if(b[0]==='USDT')return 1;
+          return b[1].total-a[1].total;
+        });
+        document.getElementById('balSpotList').innerHTML=sorted.map(([cur,v])=>{
+          const icon=CURRENCY_ICONS[cur]||'○';
+          const bal=v.total>=1?v.total.toFixed(4):v.total.toFixed(8);
+          const holds=v.holds>0?`<span style="color:var(--text3);font-size:10px"> (в ордерах: ${v.holds.toFixed(4)})</span>`:'';
+          return `<div class="trade-item">
+            <div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,rgba(139,92,246,0.3),rgba(52,211,153,0.2));display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">${icon}</div>
+            <div class="trade-body">
+              <div class="trade-sym">${cur}${holds}</div>
+              <div class="trade-meta">Доступно: ${v.available>=1?v.available.toFixed(4):v.available.toFixed(8)}</div>
+            </div>
+            <div style="text-align:right;font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text1)">${bal}</div>
+          </div>`;
+        }).join('');
+      }
+    } else {
+      document.getElementById('balSpotList').innerHTML='<div style="padding:12px;color:var(--text3);text-align:center">Не удалось загрузить спот</div>';
+    }
+
+    // ── Futures positions ──────────────────────────────────────────────────────
+    if(positions.status==='fulfilled'&&positions.value){
+      const pos=positions.value.positions||[];
+      document.getElementById('balPosBadge').textContent=pos.length;
+      if(!pos.length){
+        document.getElementById('balPosList').innerHTML='<div style="padding:16px;text-align:center;color:var(--text3)">Нет открытых позиций</div>';
+      } else {
+        document.getElementById('balPosList').innerHTML=pos.map(p=>{
+          const side=p.side==='buy'?'🟢 LONG':'🔴 SHORT';
+          const pnl=p.unrealisedPnl||0;
+          return `<div class="trade-item">
+            <div class="trade-dot" style="background:${pnl>=0?'var(--profit)':'var(--loss)'}"></div>
+            <div class="trade-body">
+              <div class="trade-sym">${p.symbol||'—'} <span style="font-size:10px;color:var(--text3)">${side} ${p.leverage||3}x</span></div>
+              <div class="trade-meta">Цена входа: $${(p.avgEntryPrice||0).toLocaleString()} · Кол-во: ${p.currentQty||0}</div>
+            </div>
+            <div class="trade-pnl ${pnl>=0?'val-green':'val-red'}">${pnl>=0?'+':''}$${Math.abs(pnl).toFixed(4)}</div>
+          </div>`;
+        }).join('');
+      }
+    } else {
+      document.getElementById('balPosList').innerHTML='<div style="padding:12px;color:var(--text3);text-align:center">Нет открытых позиций</div>';
+    }
+  } catch(e){
+    document.getElementById('balSpotList').innerHTML=`<div style="padding:12px;color:var(--danger);text-align:center">❌ Ошибка: ${e.message}</div>`;
+  }
 }
 
 // ── Futures page ──────────────────────────────────────────────────────────────
