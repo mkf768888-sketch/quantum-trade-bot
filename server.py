@@ -3194,8 +3194,8 @@ async def setup_webhook(request: Request):
         return {"ok": False, "error": str(e)}
 
 @app.get("/api/debug")
-async def api_debug():
-    """v7.4.4: Public diagnostics — checks all systems, returns status JSON."""
+async def api_debug(_auth=Depends(verify_api_key)):
+    """v7.5.2: Protected diagnostics — checks all systems, returns status JSON."""
     import time as _time
     results = {"version": "7.5.2", "timestamp": datetime.utcnow().isoformat(), "checks": {}}
     t0 = _time.time()
