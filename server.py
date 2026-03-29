@@ -24,6 +24,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPExcept
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
+import db  # v8.2: PostgreSQL persistent storage
 
 app = FastAPI(title="QuantumTrade AI", version="8.2.0")
 _ALLOWED_ORIGINS = ["*"]   # v7.3.9: open for Mini App (Telegram WebApp origin varies)
@@ -607,16 +608,20 @@ async def _braket_qaoa_run(changes_list: list, live_corr: list) -> list:
     )
 
 
-def log_trade(symbol, side, price, size, tp, sl, confidence, q_score, pattern, account="spot"):
-    trade_log.append({
+def log_trade(symbol, side, price, size, tp, sl, confidence, q_score, pattern, account="spot", strategy="B"):
+    trade = {
         "id": len(trade_log) + 1, "ts": datetime.utcnow().isoformat(), "open_ts": time.time(),
         "symbol": symbol, "side": side, "price": price, "size": size,
         "tp": tp, "sl": sl, "confidence": confidence, "q_score": q_score,
-        "pattern": pattern, "account": account, "status": "open", "pnl": None,
-    })
+        "pattern": pattern, "account": account, "strategy": strategy, "status": "open", "pnl": None,
+    }
+    trade_log.append(trade)
     if len(trade_log) > 2000:
         trade_log.pop(0)
     _save_trades_to_disk()
+    # v8.2: PostgreSQL persistent storage
+    if db.is_ready():
+        asyncio.ensure_future(db.insert_trade(trade))
 
 
 # ── KuCoin Auth ────────────────────────────────────────────────────────────────
@@ -1713,6 +1718,16 @@ async def auto_trade_cycle():
         conf   = signal["confidence"]
         q      = signal["q_score"]
         bd     = signal.get("breakdown", {})
+        # v8.2: Log signal and Q-Score to PostgreSQL
+        if db.is_ready():
+            asyncio.ensure_future(db.insert_signal({
+                "symbol": symbol, "side": action.lower() if action != "HOLD" else None,
+                "q_score": q, "confidence": conf, "pattern": vision.get("pattern", "?"),
+                "fg_bonus": bd.get("fear_greed", 0), "poly_bonus": bd.get("polymarket", 0),
+                "whale_bonus": bd.get("whale", 0), "vision_bonus": vision.get("vision_bonus", 0),
+                "quantum_bias": bd.get("quantum_bias", 0), "executed": action != "HOLD",
+            }))
+            asyncio.ensure_future(db.insert_q_score(symbol, q, bd))
         # v7.1.2: per-pair Q threshold (overrides global MIN_Q_SCORE per symbol)
         _pair_min_q = PAIR_Q_THRESHOLDS.get(symbol, MIN_Q_SCORE)
         # v8.2.0: self-learning корректировка + per-symbol статистика
@@ -2223,6 +2238,14 @@ async def position_monitor_loop():
                             "symbol": trade["symbol"],
                             "q_score": trade.get("q_score", 0),
                         })
+                        # v8.2: PostgreSQL persistent storage
+                        if db.is_ready():
+                            asyncio.ensure_future(db.close_trade(
+                                symbol=trade["symbol"], pnl_usdt=pnl_usdt, pnl_pct=round(pnl_pct, 6),
+                                close_price=price_now, close_reason=reason, strategy=strat,
+                                duration_sec=round(time.time() - open_ts, 1)
+                            ))
+                            asyncio.ensure_future(db.save_perf_stats(_perf_stats))
                         await notify(
                             f"{emoji} <b>Сделка закрыта — Стратегия {strat}</b>\n"
                             f"<code>{trade['symbol']}</code> {trade['side'].upper()} | {reason}\n"
@@ -2799,7 +2822,21 @@ async def _telegram_callback_inner(req: TelegramUpdate):
 
 @app.on_event("startup")
 async def startup():
-    _load_trades_from_disk()          # загружаем историю сделок при старте
+    _load_trades_from_disk()          # загружаем историю сделок при старте (JSON fallback)
+
+    # v8.2: PostgreSQL — persistent storage
+    pg_ok = await db.init_db()
+    if pg_ok:
+        # One-time migration: JSON → PostgreSQL (if trades exist in JSON but not in DB)
+        db_count = await db.get_trade_count()
+        if db_count == 0 and trade_log:
+            migrated = await db.migrate_from_json(trade_log, _perf_stats)
+            print(f"[startup] migrated {migrated} trades JSON → PostgreSQL")
+        # Load perf stats from DB
+        db_stats = await db.load_perf_stats()
+        if db_stats:
+            _perf_stats.update(db_stats)
+            print(f"[startup] perf stats loaded from PostgreSQL")
 
     # Phase 6: пробуем подключить Origin QC Wukong 180
     qc_ok = await asyncio.get_event_loop().run_in_executor(None, _init_qcloud)
@@ -3630,6 +3667,18 @@ async def api_trades(limit: int = 50, _auth=Depends(verify_api_key)):  # v7.3.3:
             "all_real": {**track_stats("_A"), "plus_B": track_stats("_B")},
         }
     }
+
+@app.get("/api/analytics")
+async def api_analytics(x_api_key: str = Header(None)):
+    """v8.2: Rich trade analytics from PostgreSQL for AI self-learning."""
+    await verify_api_key(x_api_key)
+    if not db.is_ready():
+        return {"error": "PostgreSQL not connected", "fallback": _perf_stats}
+    analytics = await db.get_analytics()
+    analytics["perf_stats"] = _perf_stats
+    analytics["db_trade_count"] = await db.get_trade_count()
+    return analytics
+
 
 @app.get("/api/polymarket")
 async def api_polymarket():
