@@ -37,6 +37,16 @@
   .logo-text span{background:linear-gradient(90deg,var(--accent),var(--quantum));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
   .status-pill{display:flex;align-items:center;gap:5px;background:rgba(52,211,153,0.1);border:1px solid rgba(52,211,153,0.25);padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600;color:var(--quantum);transition:all 0.4s}
   .status-pill.offline{background:rgba(248,113,113,0.1);border-color:rgba(248,113,113,0.25);color:var(--danger)}
+  /* AUTOPILOT BUTTON in header */
+  .ap-header-btn{display:flex;align-items:center;gap:5px;padding:5px 12px;border-radius:20px;font-size:11px;font-weight:700;cursor:pointer;border:none;transition:all 0.3s;letter-spacing:0.3px}
+  .ap-header-btn.on{background:linear-gradient(135deg,rgba(52,211,153,0.25),rgba(52,211,153,0.15));border:1px solid rgba(52,211,153,0.4);color:var(--quantum)}
+  .ap-header-btn.off{background:rgba(100,116,139,0.15);border:1px solid rgba(100,116,139,0.3);color:var(--text3)}
+  /* MODE TOGGLE Эксперт/Просто */
+  .mode-toggle{display:flex;align-items:center;gap:0;background:rgba(17,20,40,0.8);border:1px solid var(--border);border-radius:20px;padding:2px;margin-bottom:8px}
+  .mode-btn{padding:4px 12px;border-radius:16px;font-size:11px;font-weight:600;cursor:pointer;transition:all 0.2s;color:var(--text3);white-space:nowrap}
+  .mode-btn.active{background:linear-gradient(135deg,var(--purple),var(--blue));color:#fff;box-shadow:0 0 12px rgba(139,92,246,0.3)}
+  /* SIMPLE MODE — hide expert-only elements */
+  body.simple-mode .expert-only{display:none!important}
   .dot{width:6px;height:6px;border-radius:50%;background:currentColor;animation:blink 1.5s ease-in-out infinite}
   @keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
   .nav-tabs{display:flex;gap:4px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none}
@@ -195,15 +205,30 @@
         <div class="logo-icon">⚛</div>
         <div class="logo-text">Quantum<span>Trade</span></div>
       </div>
-      <div class="status-pill" id="statusPill"><div class="dot"></div><span id="statusText">LIVE</span></div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <!-- AUTOPILOT quick button -->
+        <button class="ap-header-btn off" id="apHeaderBtn" onclick="toggleAutopilot()">
+          <div class="dot" style="width:5px;height:5px"></div>
+          <span id="apHeaderText">AUTOPILOT</span>
+        </button>
+        <div class="status-pill" id="statusPill"><div class="dot"></div><span id="statusText">LIVE</span></div>
+      </div>
+    </div>
+    <!-- MODE TOGGLE -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div class="mode-toggle">
+        <div class="mode-btn active" id="modeExpert" onclick="setMode('expert')">Эксперт</div>
+        <div class="mode-btn" id="modeSimple" onclick="setMode('simple')">Просто</div>
+      </div>
+      <div style="font-size:10px;color:var(--text3)" id="modeHint">Все функции</div>
     </div>
     <div class="nav-tabs">
       <div class="tab active" onclick="showPage('dashboard')">📊 Главная</div>
       <div class="tab" onclick="showPage('trades')">📋 Сделки</div>
-      <div class="tab" onclick="showPage('signals')">⚡ Сигналы</div>
-      <div class="tab" onclick="showPage('arb')">🔺 Арбитраж</div>
+      <div class="tab expert-only" onclick="showPage('signals')">⚡ Сигналы</div>
+      <div class="tab expert-only" onclick="showPage('arb')">🔺 Арбитраж</div>
       <div class="tab" onclick="showPage('ai')">🧠 AI</div>
-      <div class="tab" onclick="showPage('settings')">⚙️ Настройки</div>
+      <div class="tab expert-only" onclick="showPage('settings')">⚙️ Настройки</div>
     </div>
   </div>
 
@@ -483,13 +508,33 @@ function updateConnection() {
   showToast('✅ Подключение сохранено'); loadData();
 }
 
+// ── Mode (Эксперт / Просто) ───────────────────────────────────────────────────
+let _mode = localStorage.getItem('qt_mode') || 'expert';
+function setMode(m) {
+  _mode = m; localStorage.setItem('qt_mode', m);
+  document.getElementById('modeExpert').classList.toggle('active', m==='expert');
+  document.getElementById('modeSimple').classList.toggle('active', m==='simple');
+  document.getElementById('modeHint').textContent = m==='expert' ? 'Все функции' : 'Основное';
+  if (m==='simple') {
+    document.body.classList.add('simple-mode');
+    // if on expert-only page → go to dashboard
+    const active = document.querySelector('.page.active');
+    if (active && active.id !== 'page-dashboard' && active.id !== 'page-trades' && active.id !== 'page-ai')
+      showPage('dashboard');
+  } else {
+    document.body.classList.remove('simple-mode');
+  }
+}
+
 // ── Nav ──────────────────────────────────────────────────────────────────────
 function showPage(id) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
-  const map={dashboard:0,trades:1,signals:2,arb:3,ai:4,settings:5};
-  if(map[id]!==undefined) document.querySelectorAll('.tab')[map[id]].classList.add('active');
+  // find visible tab with matching onclick
+  document.querySelectorAll('.tab').forEach(t => {
+    if (t.getAttribute('onclick') && t.getAttribute('onclick').includes("'"+id+"'")) t.classList.add('active');
+  });
   if(id==='settings') prefillSettings();
 }
 
@@ -647,6 +692,10 @@ function renderTicker(prices) {
 function updateTogglesUI() {
   ['apToggle'].forEach(id=>{const e=document.getElementById(id);if(e){if(_state.autopilot)e.classList.add('on');else e.classList.remove('on');}});
   ['arbToggle','arbToggle2'].forEach(id=>{const e=document.getElementById(id);if(e){if(_state.arb)e.classList.add('on');else e.classList.remove('on');}});
+  // header autopilot button
+  const btn=document.getElementById('apHeaderBtn'); const txt=document.getElementById('apHeaderText');
+  if(btn){btn.className='ap-header-btn '+(_state.autopilot?'on':'off');}
+  if(txt){txt.textContent=_state.autopilot?'AUTOPILOT ON':'AUTOPILOT OFF';}
 }
 
 async function toggleAutopilot() {
@@ -711,6 +760,7 @@ function showToast(msg){
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+setMode(_mode); // apply saved mode on load
 if(!BASE_URL||!API_KEY){
   document.getElementById('setupScreen').style.display='flex';
 } else {
