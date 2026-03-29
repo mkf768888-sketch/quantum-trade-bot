@@ -58,9 +58,10 @@ AWS_SECRET_KEY     = os.getenv("AWS_SECRET_ACCESS_KEY", "") # v7.3.1: Amazon Bra
 AWS_REGION         = os.getenv("AWS_REGION", "us-east-1")  # v7.3.1: Braket region
 BRAKET_S3_BUCKET   = os.getenv("BRAKET_S3_BUCKET",   "")   # v7.3.1: S3 бакет для результатов
 BRAKET_DEVICE_ARN  = os.getenv("BRAKET_DEVICE_ARN",  "arn:aws:braket:us-east-1::device/qpu/ionq/Harmony")  # v7.3.1
-RAILWAY_TOKEN     = os.getenv("RAILWAY_TOKEN", "")       # v7.2.1: Railway API — persist variable changes
-WEBAPP_URL        = os.getenv("WEBAPP_URL", "https://mkf768888-sketch.github.io/quantum-trade-ui/")  # v7.2.2: GitHub Pages frontend
-API_SECRET        = os.getenv("API_SECRET", "")          # v7.3.3: защита приватных эндпоинтов
+RAILWAY_TOKEN        = os.getenv("RAILWAY_TOKEN", "")       # v7.2.1: Railway API — persist variable changes
+RAILWAY_PUBLIC_DOMAIN= os.getenv("RAILWAY_PUBLIC_DOMAIN", "")  # v7.4.0: авто-URL Railway сервиса
+WEBAPP_URL           = os.getenv("WEBAPP_URL", "")          # v7.4.0: если не задан — берётся из Railway URL
+API_SECRET           = os.getenv("API_SECRET", "")          # v7.3.3: защита приватных эндпоинтов
 
 # ── v7.3.3: API-аутентификация ──────────────────────────────────────────────
 async def verify_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
@@ -2686,13 +2687,34 @@ async def startup():
     asyncio.create_task(position_monitor_loop())
     asyncio.create_task(airdrop_digest_loop())
     await get_airdrops()  # прогреваем кеш при старте
+
+    # v7.4.0: авто-регистрация Telegram webhook при старте (если задан Railway домен)
+    if BOT_TOKEN and RAILWAY_PUBLIC_DOMAIN:
+        try:
+            railway_base = f"https://{RAILWAY_PUBLIC_DOMAIN}"
+            webhook_url  = f"{railway_base}/api/telegram/callback"
+            webapp_url   = WEBAPP_URL or railway_base
+            async with aiohttp.ClientSession() as s:
+                await s.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
+                    json={"url": webhook_url, "allowed_updates": ["message", "callback_query"]},
+                    timeout=aiohttp.ClientTimeout(total=10)
+                )
+                await s.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
+                    json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": webapp_url}}},
+                    timeout=aiohttp.ClientTimeout(total=10)
+                )
+        except Exception as e:
+            print(f"[startup] webhook auto-setup failed: {e}")
+
     mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
     await notify(
-        f"⚛ <b>QuantumTrade v7.3.9</b>\n"
+        f"⚛ <b>QuantumTrade v7.4.0</b>\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
-        f"✅ Динамический выбор стратегии B/C/DUAL по Q\n"
+        f"✅ Mini App → Railway URL (авто-регистрация)\n"
         f"⚛️ Phase 5: Claude Vision — нативный AI-анализ графиков\n"
         f"{qc_label} (Phase 3+6)\n"
         f"🪂 Airdrop Tracker активен (Phase 4)\n"
@@ -2999,11 +3021,16 @@ async def health():
 
 @app.post("/api/setup-webhook")
 async def setup_webhook(request: Request):
-    """Регистрирует Telegram Webhook + команды в меню бота."""
+    """v7.4.0: Регистрирует Telegram Webhook + команды + Mini App кнопку.
+    WEBAPP_URL теперь авто-определяется из Railway домена."""
     if not BOT_TOKEN:
         return {"ok": False, "error": "BOT_TOKEN не задан"}
     base_url = str(request.base_url).rstrip("/").replace("http://", "https://")
     webhook_url = f"{base_url}/api/telegram/callback"
+
+    # v7.4.0: Mini App URL = Railway URL (тот же сервис, GET / отдаёт index.html)
+    webapp_url = WEBAPP_URL or base_url  # если WEBAPP_URL задан — используем его, иначе Railway URL
+
     results = {}
     try:
         async with aiohttp.ClientSession() as s:
@@ -3030,15 +3057,15 @@ async def setup_webhook(request: Request):
             )
             results["commands"] = await r2.json()
 
-            # 3. Устанавливаем кнопку меню с web_app (дашборд)
+            # 3. v7.4.0: Кнопка меню → Railway Mini App (GET / → index.html)
             r3 = await s.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
-                json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": WEBAPP_URL}}},
+                json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": webapp_url}}},
                 timeout=aiohttp.ClientTimeout(total=10)
             )
             results["menu_button"] = await r3.json()
 
-        return {"ok": True, "webhook_url": webhook_url, "webapp_url": WEBAPP_URL, "results": results}
+        return {"ok": True, "webhook_url": webhook_url, "webapp_url": webapp_url, "results": results}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
