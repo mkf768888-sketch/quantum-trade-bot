@@ -3431,7 +3431,7 @@ async def _tg_ai_ask(chat_id: int, question: str):
     total_pnl = sum(t.get("pnl", 0) for t in trade_log)
     chip = "Wukong_180" if _qcloud_ready else "CPU_simulator"
 
-    system = f"""Ты — AI-консультант торгового бота QuantumTrade v8.3.0.
+    system = f"""Ты — AI-консультант торгового бота QuantumTrade v8.3.3.
 Текущие показатели:
 - Всего сделок: {total}, Win Rate: {win_rate:.1f}%, PnL: ${total_pnl:.2f}
 - Q-Score последний: {last_q_score:.1f}, MIN_Q: {MIN_Q_SCORE}
@@ -3702,6 +3702,12 @@ async def startup():
         if db_count == 0 and trade_log:
             migrated = await db.migrate_from_json(trade_log, _perf_stats)
             print(f"[startup] migrated {migrated} trades JSON → PostgreSQL")
+        # v8.3.3: Load trade history from PostgreSQL (survives container restarts)
+        if db_count > 0 and not trade_log:
+            db_trades = await db.get_trades(limit=200)
+            if db_trades:
+                trade_log.extend(reversed(db_trades))  # oldest first
+                print(f"[startup] loaded {len(db_trades)} trades from PostgreSQL")
         # Load perf stats from DB
         db_stats = await db.load_perf_stats()
         if db_stats:
@@ -3740,18 +3746,24 @@ async def startup():
         except Exception as e:
             print(f"[startup] webhook auto-setup failed: {e}")
 
-    mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
+    mode     = "TEST" if TEST_MODE else "LIVE"
+    risk_pct = round(RISK_PER_TRADE * 100)
     qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
+    arb_active = sum(1 for _, _, c, _ in ARB_TRIANGLES if c not in _arb_dead_pairs)
+    ai_chat_model = AI_TIER_CHAT.upper()
+    ai_crit_model = AI_TIER_CRITICAL.upper()
     await notify(
-        f"⚛ <b>QuantumTrade v8.3.0</b>\n"
-        f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
-        f"✅ Telegram: /menu /stats /airdrops /settings\n"
-        f"✅ Mini App: Баланс + Автопилот без API ключа\n"
-        f"⚛️ Phase 5: Claude Vision — нативный AI-анализ графиков\n"
-        f"{qc_label} (Phase 3+6)\n"
-        f"🪂 Airdrop Tracker активен (Phase 4)\n"
-        f"📊 Режим: {mode} · История: {len(trade_log)} сделок\n"
-        f"🎯 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s"
+        f"⚛ <b>QuantumTrade v8.3.3</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 Режим: {mode} · Риск: {risk_pct}% · Леверидж: {MAX_LEVERAGE}x\n"
+        f"🎯 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s\n"
+        f"✅ Спот: {len(SPOT_PAIRS)} пар · Фьючерсы: {len(FUT_PAIRS)} пар\n"
+        f"⚡ Арбитраж: {arb_active}/{len(ARB_TRIANGLES)} связок · WebSocket live\n"
+        f"🛡️ Opus Gate: сделки >${OPUS_GATE_MIN_USDT:.0f} → подтверждение AI\n"
+        f"🤖 AI: {ai_chat_model} (чат) · {ai_crit_model} (критич.)\n"
+        f"{qc_label}\n"
+        f"🪂 Airdrop Tracker активен\n"
+        f"💰 Резерв арбитража: ${ARB_RESERVE_USDT:.0f} · История: {len(trade_log)} сделок"
     )
 
 async def trading_loop():
