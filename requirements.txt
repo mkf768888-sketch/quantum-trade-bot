@@ -6,5 +6,3 @@ pydantic
 Pillow
 asyncpg
 pandas
-pandas-ta
-starlette
