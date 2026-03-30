@@ -64,6 +64,12 @@ ALERT_CHAT_ID     = os.getenv("ALERT_CHAT_ID", "")
 YANDEX_VISION_KEY = os.getenv("YANDEX_VISION_KEY", "")
 YANDEX_FOLDER_ID  = os.getenv("YANDEX_FOLDER_ID", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+# v8.3: 3-tier AI architecture
+DEEPSEEK_API_KEY  = os.getenv("DEEPSEEK_API_KEY", "")   # DeepSeek V3 — text/strategy (free tier)
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")  # OpenAI-compatible
+AI_TIER_VISION    = os.getenv("AI_TIER_VISION", "haiku")     # haiku (default) | opus
+AI_TIER_CHAT      = os.getenv("AI_TIER_CHAT", "deepseek")    # deepseek (default) | haiku | sonnet
+AI_TIER_CRITICAL  = os.getenv("AI_TIER_CRITICAL", "opus")    # opus (default) | sonnet
 ORIGIN_QC_TOKEN   = os.getenv("ORIGIN_QC_TOKEN", "")     # Phase 6: Origin QC Wukong 180
 AWS_ACCESS_KEY_ID  = os.getenv("AWS_ACCESS_KEY_ID",  "")   # v7.3.1: Amazon Braket
 AWS_SECRET_KEY     = os.getenv("AWS_SECRET_ACCESS_KEY", "") # v7.3.1: Amazon Braket
@@ -1216,6 +1222,103 @@ async def _analyze_chart_claude_vision(img_b64: str, symbol: str, tech: dict) ->
     except Exception as e:
         print(f"[claude_vision] {symbol} error: {type(e).__name__}: {e}")
         return {"success": False, "bonus": 0.0, "summary": ""}
+
+
+# ── v8.3: 3-Tier AI Architecture ──────────────────────────────────────────────
+# Tier 1: DeepSeek V3 — text/strategy/chat (~free, OpenAI-compatible API)
+# Tier 2: Claude Haiku — routine vision analysis (~$0.0003/call)
+# Tier 3: Claude Opus — critical decisions, anomalies (~$0.015/call)
+# ──────────────────────────────────────────────────────────────────────────────
+
+_ai_call_stats: dict = {"deepseek": 0, "haiku": 0, "sonnet": 0, "opus": 0, "errors": 0}
+
+async def ai_call_deepseek(messages: list, max_tokens: int = 500, system: str = "") -> dict:
+    """Call DeepSeek V3 API (OpenAI-compatible). Falls back to Claude Haiku if no key."""
+    if not DEEPSEEK_API_KEY:
+        return await ai_call_claude(messages, max_tokens, system, model="haiku")
+    try:
+        payload = {
+            "model": "deepseek-chat",
+            "messages": ([{"role": "system", "content": system}] if system else []) + messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+        }
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(
+                f"{DEEPSEEK_BASE_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=15)
+            )
+            data = await r.json()
+        if r.status != 200:
+            log_activity(f"[deepseek] HTTP {r.status}: {json.dumps(data)[:200]}")
+            _ai_call_stats["errors"] += 1
+            # Fallback to Claude Haiku
+            return await ai_call_claude(messages, max_tokens, system, model="haiku")
+        text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        _ai_call_stats["deepseek"] += 1
+        return {"success": True, "text": text, "model": "deepseek-v3", "tokens": data.get("usage", {}).get("total_tokens", 0)}
+    except Exception as e:
+        log_activity(f"[deepseek] error: {e}")
+        _ai_call_stats["errors"] += 1
+        return await ai_call_claude(messages, max_tokens, system, model="haiku")
+
+
+async def ai_call_claude(messages: list, max_tokens: int = 500, system: str = "", model: str = "haiku") -> dict:
+    """Call Claude API. Model: haiku | sonnet | opus."""
+    if not ANTHROPIC_API_KEY:
+        return {"success": False, "text": "", "model": "none", "error": "no ANTHROPIC_API_KEY"}
+    model_map = {
+        "haiku":  "claude-haiku-4-5-20251001",
+        "sonnet": "claude-sonnet-4-20250514",
+        "opus":   "claude-opus-4-6-20250610",
+    }
+    model_id = model_map.get(model, model_map["haiku"])
+    try:
+        payload = {
+            "model": model_id,
+            "max_tokens": max_tokens,
+            "messages": messages,
+        }
+        if system:
+            payload["system"] = system
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=20)
+            )
+            data = await r.json()
+        if r.status != 200:
+            log_activity(f"[claude_{model}] HTTP {r.status}: {json.dumps(data)[:200]}")
+            _ai_call_stats["errors"] += 1
+            return {"success": False, "text": "", "model": model_id, "error": f"HTTP {r.status}"}
+        text = data.get("content", [{}])[0].get("text", "")
+        _ai_call_stats[model] += 1
+        return {"success": True, "text": text, "model": model_id,
+                "tokens": data.get("usage", {}).get("input_tokens", 0) + data.get("usage", {}).get("output_tokens", 0)}
+    except Exception as e:
+        log_activity(f"[claude_{model}] error: {e}")
+        _ai_call_stats["errors"] += 1
+        return {"success": False, "text": "", "model": model_id, "error": str(e)}
+
+
+async def ai_dispatch(tier: str, messages: list, max_tokens: int = 500, system: str = "") -> dict:
+    """v8.3: Unified AI dispatcher. Routes to the right model based on tier config.
+    tier: 'chat' | 'vision' | 'critical'
+    """
+    tier_config = {
+        "chat": AI_TIER_CHAT,        # deepseek | haiku | sonnet
+        "vision": AI_TIER_VISION,     # haiku | opus
+        "critical": AI_TIER_CRITICAL, # opus | sonnet
+    }
+    target = tier_config.get(tier, "haiku")
+    if target == "deepseek":
+        return await ai_call_deepseek(messages, max_tokens, system)
+    else:
+        return await ai_call_claude(messages, max_tokens, system, model=target)
 
 
 # ── Telegram ───────────────────────────────────────────────────────────────────
@@ -2680,6 +2783,10 @@ async def _tg_settings(chat_id: int):
         f"⏱ Cooldown: <code>{COOLDOWN}s</code>\n"
         f"🤖 Торговля: <code>{'ВКЛ' if AUTOPILOT else 'ВЫКЛ'}</code>\n"
         f"⚡ Арбитраж: <code>{'ВКЛ' if ARB_EXEC_ENABLED else 'ВЫКЛ'}</code>\n\n"
+        f"🧠 <b>AI модели:</b>\n"
+        f"  Vision: <code>{AI_TIER_VISION}</code> | Chat: <code>{AI_TIER_CHAT}</code> | Critical: <code>{AI_TIER_CRITICAL}</code>\n"
+        f"  DeepSeek: {'✅' if DEEPSEEK_API_KEY else '❌'} | Claude: {'✅' if ANTHROPIC_API_KEY else '❌'}\n"
+        f"  Вызовы: DS={_ai_call_stats['deepseek']} H={_ai_call_stats['haiku']} S={_ai_call_stats['sonnet']} O={_ai_call_stats['opus']} err={_ai_call_stats['errors']}\n\n"
         f"<i>Нажми кнопку переключателя выше чтобы вкл/выкл</i>", kb)
 
 
@@ -3046,8 +3153,8 @@ async def _tg_ai_ask(chat_id: int, question: str):
         await _tg_send(chat_id, "↩️ Изменение отменено.")
         return
 
-    if not ANTHROPIC_API_KEY:
-        await _tg_send(chat_id, "❌ ANTHROPIC_API_KEY не задан — AI консультант недоступен.")
+    if not ANTHROPIC_API_KEY and not DEEPSEEK_API_KEY:
+        await _tg_send(chat_id, "❌ Нет API ключей (ANTHROPIC/DEEPSEEK) — AI консультант недоступен.")
         return
 
     # Формируем контекст бота
@@ -3075,16 +3182,10 @@ async def _tg_ai_ask(chat_id: int, question: str):
     if len(hist) > 10: hist.pop(0)
 
     try:
-        async with aiohttp.ClientSession() as s:
-            r = await s.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                json={"model": "claude-haiku-4-5-20251001", "max_tokens": 300,
-                      "system": system, "messages": hist[-6:]},
-                timeout=aiohttp.ClientTimeout(total=15)
-            )
-            data = await r.json()
-        reply = data.get("content", [{}])[0].get("text", "Не удалось получить ответ.")
+        # v8.3: route through 3-tier AI dispatcher (deepseek by default for chat)
+        ai_result = await ai_dispatch("chat", hist[-6:], max_tokens=300, system=system)
+        reply = ai_result.get("text", "Не удалось получить ответ.")
+        ai_model = ai_result.get("model", "?")
         hist.append({"role": "assistant", "content": reply})
 
         # Проверяем предложение изменения
@@ -3105,7 +3206,8 @@ async def _tg_ai_ask(chat_id: int, question: str):
                     )
                     return
 
-        await _tg_send(chat_id, f"🤖 {reply}")
+        model_icon = "🧠" if "deepseek" in ai_model else "⚛️"
+        await _tg_send(chat_id, f"🤖 {reply}\n\n<i>{model_icon} {ai_model}</i>")
     except Exception as e:
         await _tg_send(chat_id, f"❌ Ошибка AI консультанта: {e}")
 
@@ -4259,7 +4361,7 @@ async def api_ai_chat(req: ChatRequest, request: Request):
             raise HTTPException(status_code=429, detail="Rate limit exceeded. Max 20 requests/min.")
         _ai_chat_rl[client_ip] = (rl[0] + 1, rl[1])
     if not ANTHROPIC_API_KEY:
-        return {"error": "ANTHROPIC_API_KEY not configured on server", "success": False}
+        return {"error": "No AI API keys configured", "success": False}
     system_lines = [
         "Ты QuantumTrade AI — торговый советник в трейдинг-боте на KuCoin.",
         "Помогаешь понять рынок, сигналы и стратегию. Объясняй простым языком — многие новички.",
@@ -4271,18 +4373,11 @@ async def api_ai_chat(req: ChatRequest, request: Request):
         system_lines.append(req.context)
     system_prompt = "\n".join(system_lines)
     try:
-        async with aiohttp.ClientSession() as s:
-            r = await s.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
-                json={"model": "claude-sonnet-4-20250514", "max_tokens": 1000, "system": system_prompt, "messages": req.messages[-10:]},
-                timeout=aiohttp.ClientTimeout(total=30),
-            )
-            data = await r.json()
-            if r.status == 200:
-                text = data.get("content", [{}])[0].get("text", "")
-                return {"reply": text, "success": True}
-            return {"error": data.get("error", {}).get("message", "API error"), "success": False, "status": r.status}
+        # v8.3: route through 3-tier AI dispatcher
+        ai_result = await ai_dispatch("chat", req.messages[-10:], max_tokens=1000, system=system_prompt)
+        if ai_result.get("success"):
+            return {"reply": ai_result["text"], "success": True, "model": ai_result.get("model", "?")}
+        return {"error": ai_result.get("error", "AI call failed"), "success": False}
     except Exception as e:
         return {"error": str(e), "success": False}
 
