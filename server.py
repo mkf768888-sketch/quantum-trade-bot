@@ -1318,6 +1318,118 @@ async def ai_call_claude(messages: list, max_tokens: int = 500, system: str = ""
         return {"success": False, "text": "", "model": model_id, "error": str(e)}
 
 
+# ── v9.0: MiroFish Lite — Multi-Agent Sentiment Simulation ─────────────────────
+# Inspired by MiroFish (OASIS/CAMEL-AI). Instead of deploying full MiroFish infra
+# (Neo4j + Ollama + 16GB RAM), we simulate diverse "trader personas" via existing LLM.
+# Each persona has a unique personality, risk appetite, and analysis style.
+# Collective vote → sentiment score for trade decisions.
+# ──────────────────────────────────────────────────────────────────────────────────
+
+MIROFISH_ENABLED  = os.getenv("MIROFISH_ENABLED", "true").lower() == "true"
+MIROFISH_CACHE_TTL = int(os.getenv("MIROFISH_CACHE_TTL", "1800"))  # 30 min cache
+
+_mirofish_cache: dict = {}  # symbol → {ts, score, agents, detail}
+_mirofish_stats: dict = {"calls": 0, "cache_hits": 0, "avg_score": 0.0, "last_call": 0}
+
+# 8 diverse trader personas — each "votes" BUY/SELL/HOLD with reasoning
+MIROFISH_PERSONAS = [
+    {"id": "whale", "name": "Кит-институционал", "style": "Крупный фонд. Покупает только фундаментально сильные активы. Очень осторожен. Смотрит на макро и ликвидность."},
+    {"id": "scalper", "name": "Скальпер", "style": "Дейтрейдер. Ловит быстрые движения. Смотрит только на моментум, объёмы и RSI. Не держит позиции дольше часа."},
+    {"id": "contrarian", "name": "Контрариан", "style": "Идёт против толпы. Когда все покупают — продаёт. Когда паника — покупает. Любит экстремальные значения Fear & Greed."},
+    {"id": "quant", "name": "Квант-аналитик", "style": "Математик. Анализирует паттерны, EMA кроссы, RSI дивергенции. Игнорирует эмоции. Торгует только по статистике."},
+    {"id": "macro", "name": "Макро-стратег", "style": "Смотрит на глобальную картину: ставки ФРС, DXY, корреляция с S&P500. Fear & Greed для него ключевой индикатор."},
+    {"id": "degen", "name": "Дегенерат", "style": "Агрессивный трейдер. Высокий риск, высокая награда. Любит волатильность. Покупает на хайпе и новостях."},
+    {"id": "conservative", "name": "Консерватор", "style": "Пенсионный фонд. Покупает только BTC/ETH. Только при сильных сигналах. Предпочитает HOLD если не уверен."},
+    {"id": "news_trader", "name": "Новостной трейдер", "style": "Торгует на новостях и настроениях. Polymarket, Twitter тренды, регуляции. Быстро реагирует на события."},
+]
+
+async def mirofish_simulate(symbol: str, price: float, q_score: float,
+                             fg_value: int, pattern: str, rsi: float = 50,
+                             context: str = "") -> dict:
+    """v9.0: MiroFish Lite — run multi-agent sentiment simulation.
+    Returns: {score: -100..+100, direction: BUY/SELL/HOLD, confidence: 0-100,
+              agents: [{id, vote, reason}], cached: bool}
+    """
+    # Check cache first
+    cache_key = f"{symbol}_{int(time.time() // MIROFISH_CACHE_TTL)}"
+    cached = _mirofish_cache.get(cache_key)
+    if cached:
+        _mirofish_stats["cache_hits"] += 1
+        return {**cached, "cached": True}
+
+    # Build market context for all agents
+    fg_label = "Extreme Fear" if fg_value < 15 else "Fear" if fg_value < 40 else "Neutral" if fg_value < 60 else "Greed" if fg_value < 80 else "Extreme Greed"
+    market_ctx = (
+        f"Symbol: {symbol}, Price: ${price:,.2f}, Q-Score: {q_score:.1f}/100, "
+        f"Pattern: {pattern}, RSI: {rsi:.0f}, Fear&Greed: {fg_value} ({fg_label})"
+    )
+    if context:
+        market_ctx += f"\nAdditional: {context}"
+
+    # Run all agents in parallel (single LLM call with all personas for efficiency)
+    all_personas = "\n".join([f"- {p['name']}: {p['style']}" for p in MIROFISH_PERSONAS])
+
+    system = f"""Ты — MiroFish движок мульти-агентной симуляции.
+Тебе даны 8 различных трейдерских персон. Каждая должна проголосовать BUY, SELL или HOLD.
+Отвечай СТРОГО в формате JSON массива (без markdown):
+[{{"id":"whale","vote":"BUY","reason":"краткая причина"}},{{"id":"scalper","vote":"SELL","reason":"причина"}}...]
+
+Персоны:
+{all_personas}"""
+
+    user_msg = f"Рыночные данные:\n{market_ctx}\n\nКаждая персона голосует BUY/SELL/HOLD с кратким обоснованием (1 предложение). Только JSON массив, ничего больше."
+
+    try:
+        result = await ai_call_claude(
+            [{"role": "user", "content": user_msg}],
+            max_tokens=600, system=system, model="haiku"
+        )
+        raw = result.get("text", "").strip()
+
+        # Parse JSON response
+        # Clean potential markdown wrapping
+        if raw.startswith("```"): raw = raw.split("```")[1].strip()
+        if raw.startswith("json"): raw = raw[4:].strip()
+        agents = json.loads(raw)
+
+        # Calculate collective score
+        buy_count = sum(1 for a in agents if a.get("vote", "").upper() == "BUY")
+        sell_count = sum(1 for a in agents if a.get("vote", "").upper() == "SELL")
+        hold_count = sum(1 for a in agents if a.get("vote", "").upper() == "HOLD")
+        total = len(agents) or 1
+
+        # Score: -100 (all sell) to +100 (all buy)
+        score = round((buy_count - sell_count) / total * 100)
+        confidence = round(max(buy_count, sell_count) / total * 100)
+        direction = "BUY" if score > 20 else "SELL" if score < -20 else "HOLD"
+
+        result_data = {
+            "score": score, "direction": direction, "confidence": confidence,
+            "buy": buy_count, "sell": sell_count, "hold": hold_count,
+            "agents": agents, "model": result.get("model", "?"),
+        }
+
+        # Cache result
+        _mirofish_cache[cache_key] = result_data
+        _mirofish_stats["calls"] += 1
+        _mirofish_stats["last_call"] = time.time()
+        # Running average
+        n = _mirofish_stats["calls"]
+        _mirofish_stats["avg_score"] = round((_mirofish_stats["avg_score"] * (n-1) + score) / n, 1)
+
+        log_activity(f"[mirofish] {symbol}: score={score:+d} ({direction}) buy={buy_count} sell={sell_count} hold={hold_count}")
+        return {**result_data, "cached": False}
+
+    except json.JSONDecodeError as e:
+        log_activity(f"[mirofish] JSON parse error: {e} | raw: {raw[:200]}")
+        return {"score": 0, "direction": "HOLD", "confidence": 0, "error": "parse_error",
+                "buy": 0, "sell": 0, "hold": 0, "agents": [], "cached": False}
+    except Exception as e:
+        log_activity(f"[mirofish] error: {e}")
+        return {"score": 0, "direction": "HOLD", "confidence": 0, "error": str(e),
+                "buy": 0, "sell": 0, "hold": 0, "agents": [], "cached": False}
+
+
 async def ai_dispatch(tier: str, messages: list, max_tokens: int = 500, system: str = "") -> dict:
     """v8.3: Unified AI dispatcher. Routes to the right model based on tier config.
     tier: 'chat' | 'vision' | 'critical'
@@ -1814,11 +1926,14 @@ STRATEGIES = {
 STRATEGY_TIMEOUT = 60   # 1 минута
 
 
-async def send_strategy_choice(trade_id, symbol, action, price, q, pattern, fg, poly_b, whale_b):
+async def send_strategy_choice(trade_id, symbol, action, price, q, pattern, fg, poly_b, whale_b, mirofish=None):
     fg_txt = f"F&G: {fg.get('value',50)} {fg.get('classification','—')} ({fg.get('bonus',0):+d})" if fg.get("success") else ""
     poly_txt = f"Poly: {poly_b:+.0f}" if poly_b != 0 else ""
     whale_txt = f"Whale: {whale_b:+.0f}" if whale_b != 0 else ""
-    ctx = " · ".join(p for p in [fg_txt, poly_txt, whale_txt] if p)
+    mf_txt = ""
+    if mirofish and not mirofish.get("error"):
+        mf_txt = f"🐟 MiroFish: {mirofish['score']:+d} ({mirofish['direction']}, {mirofish['confidence']}%)"
+    ctx = " · ".join(p for p in [fg_txt, poly_txt, whale_txt, mf_txt] if p)
     act_emoji = "🟢 BUY" if action == "BUY" else "🔴 SELL"
     text = (
         f"⚛ *QuantumTrade — {act_emoji}*\n\n"
@@ -2141,6 +2256,21 @@ async def auto_trade_cycle():
         if conf < MIN_CONFIDENCE: continue
         if not AUTOPILOT: continue
 
+        # ── v9.0: MiroFish Lite — sentiment check before any trade ───────────
+        mf_result = None
+        if MIROFISH_ENABLED and action != "SELL":
+            mf_result = await mirofish_simulate(
+                symbol, price, q, fg_val,
+                vision.get("pattern", "?"),
+                rsi=vision.get("rsi", 50),
+                context=f"conf={conf:.0%} whale={whale.get('bonus',0):+d}"
+            )
+            # MiroFish veto: if direction opposes action with high confidence
+            if mf_result["direction"] == "SELL" and mf_result["confidence"] >= 75 and action == "BUY":
+                log_activity(f"[cycle] {symbol}: MIROFISH VETO — score={mf_result['score']:+d} "
+                             f"({mf_result['buy']}B/{mf_result['sell']}S/{mf_result['hold']}H) conf={mf_result['confidence']}%")
+                continue
+
         # ── Спот (BUY + SELL) v8.3 ──────────────────────────────────────────────
         if action == "BUY":
             # v8.3.4: Block buying during Extreme Fear (F&G < 15) — per trading.md rules
@@ -2156,13 +2286,15 @@ async def auto_trade_cycle():
                 if not gate["approved"]:
                     log_activity(f"[cycle] {symbol}: BLOCKED by Opus — {gate['reason']}")
                     continue
-                log_activity(f"[cycle] {symbol}: PLACING spot BUY ${spot_trade_usdt:.2f}")
+                log_activity(f"[cycle] {symbol}: PLACING spot BUY ${spot_trade_usdt:.2f}"
+                             f"{' MF=' + str(mf_result['score']) if mf_result else ''}")
                 ok = await execute_spot_trade(symbol, signal, vision, price, spot_trade_usdt)
                 if ok:
                     signals_fired.append({"account": "spot", "symbol": symbol, "action": action,
                         "price": price, "confidence": conf, "q_score": q,
                         "pattern": vision.get("pattern","?"), "rsi": vision.get("rsi", 0),
-                        "tp": round(price*(1+TP_PCT),4), "sl": round(price*(1-SL_PCT),4)})
+                        "tp": round(price*(1+TP_PCT),4), "sl": round(price*(1-SL_PCT),4),
+                        "mirofish": mf_result})
         elif action == "SELL":
             # v8.3: Sell existing spot position when SELL signal fires
             open_spot = [t for t in trade_log if t.get("status") == "open"
@@ -2212,10 +2344,11 @@ async def auto_trade_cycle():
             if reason:
                 log_activity(f"[cycle] {symbol}: SKIP fut — {reason}")
             else:
-                # v8.3.3: Opus gate for futures
+                # v8.3.3: Opus gate for futures (v9.0: enriched with MiroFish)
                 f_trade_usdt = max(0, fut_usdt - ARB_RESERVE_USDT) * RISK_PER_TRADE
+                mf_ctx = f" mirofish={mf_result['score']:+d}" if mf_result else ""
                 gate = await opus_gate_check(symbol, action, f_trade_usdt, q, fg_val,
-                                              vision.get("pattern", "?"), context="futures")
+                                              vision.get("pattern", "?"), context=f"futures{mf_ctx}")
                 if not gate["approved"]:
                     log_activity(f"[cycle] {symbol}: FUT BLOCKED by Opus — {gate['reason']}")
                 else:
@@ -2223,7 +2356,8 @@ async def auto_trade_cycle():
                         "symbol": symbol, "signal": signal, "vision": vision,
                         "price": price, "action": action, "conf": conf, "q": q,
                         "fg": fg_data, "poly": poly_b, "whale": whale.get("bonus", 0),
-                        "pattern": vision.get("pattern","?")
+                        "pattern": vision.get("pattern","?"),
+                        "mirofish": mf_result,
                     })
 
     # ── Лучший кандидат → Telegram A/B/C (3 мин таймаут) ────────────────────
@@ -2248,7 +2382,8 @@ async def auto_trade_cycle():
 
         await send_strategy_choice(
             trade_id, best["symbol"], best["action"], best["price"],
-            best["q"], best["pattern"], best["fg"], best["poly"], best["whale"]
+            best["q"], best["pattern"], best["fg"], best["poly"], best["whale"],
+            mirofish=best.get("mirofish")
         )
         asyncio.create_task(auto_execute_dynamic(trade_id))
 
@@ -2258,7 +2393,9 @@ async def auto_trade_cycle():
         msg  = f"⚛ *QuantumTrade {mode}*\n\n"
         for s in signals_fired:
             emoji = "🟢" if s["action"] == "BUY" else "🔴"
-            msg += f"{emoji} *{s['symbol']}* {s['action']} [spot]\n   Q:`{s['q_score']}` TP:`${s['tp']:,.2f}` SL:`${s['sl']:,.2f}`\n\n"
+            mf = s.get("mirofish")
+            mf_line = f"\n   🐟 MiroFish: `{mf['score']:+d}` ({mf['direction']})" if mf and not mf.get("error") else ""
+            msg += f"{emoji} *{s['symbol']}* {s['action']} [spot]\n   Q:`{s['q_score']}` TP:`${s['tp']:,.2f}` SL:`${s['sl']:,.2f}`{mf_line}\n\n"
         await notify(msg)
 
     # ── BTC Q-Score алерты ────────────────────────────────────────────────────
@@ -3125,7 +3262,81 @@ async def _tg_diag(chat_id: int):
     # 8. AI call stats
     results.append(f"<b>AI Calls:</b> DS={_ai_call_stats['deepseek']} H={_ai_call_stats['haiku']} O={_ai_call_stats['opus']} err={_ai_call_stats['errors']}")
 
-    text = "🔬 <b>QuantumTrade Diagnostics v8.3.4</b>\n" + "━" * 30 + "\n\n" + "\n\n".join(results)
+    # 9. MiroFish Lite
+    mf_en = "✅ Enabled" if MIROFISH_ENABLED else "❌ Disabled"
+    mf_calls = _mirofish_stats['calls']
+    mf_cache = _mirofish_stats['cache_hits']
+    mf_avg = _mirofish_stats['avg_score']
+    mf_last = ""
+    if _mirofish_stats['last_call'] > 0:
+        ago = int(time.time() - _mirofish_stats['last_call'])
+        mf_last = f", last {ago}s ago"
+    results.append(f"<b>🐟 MiroFish:</b> {mf_en} | calls={mf_calls} cache={mf_cache} avg={mf_avg:+.1f}{mf_last}")
+
+    text = "🔬 <b>QuantumTrade Diagnostics v9.0</b>\n" + "━" * 30 + "\n\n" + "\n\n".join(results)
+    await _tg_send(chat_id, text)
+
+
+async def _tg_mirofish(chat_id: int, raw: str):
+    """v9.0: Manual MiroFish sentiment check. Usage: /mirofish BTC-USDT"""
+    parts = raw.split()
+    symbol = parts[1].upper() if len(parts) > 1 else "BTC-USDT"
+    if not symbol.endswith("-USDT"):
+        symbol = f"{symbol}-USDT"
+
+    await _tg_send(chat_id, f"🐟 <i>MiroFish анализирует {symbol}...</i>")
+
+    # Get current market data for the symbol
+    price = _ws_prices.get(symbol.replace("-", "/"), {}).get("price")
+    if not price:
+        try:
+            async with aiohttp.ClientSession() as s:
+                r = await s.get(f"https://api.kucoin.com/api/v1/market/orderbook/level1?symbol={symbol}",
+                                timeout=aiohttp.ClientTimeout(total=5))
+                d = await r.json()
+                price = float(d["data"]["price"])
+        except Exception:
+            await _tg_send(chat_id, f"❌ Не удалось получить цену {symbol}")
+            return
+
+    # Get F&G
+    fg_val = 50
+    try:
+        fg = await get_fear_greed()
+        if fg.get("success"):
+            fg_val = fg.get("value", 50)
+    except Exception:
+        pass
+
+    result = await mirofish_simulate(symbol, price, 75, fg_val, "manual_check", rsi=50,
+                                      context="manual /mirofish command")
+
+    if result.get("error"):
+        await _tg_send(chat_id, f"❌ MiroFish ошибка: {result['error']}")
+        return
+
+    # Format agent votes
+    agent_lines = []
+    for a in result.get("agents", []):
+        vote = a.get("vote", "?").upper()
+        emoji = "🟢" if vote == "BUY" else "🔴" if vote == "SELL" else "⚪"
+        name = a.get("id", "?")
+        reason = a.get("reason", "")[:60]
+        agent_lines.append(f"  {emoji} <b>{name}</b>: {vote} — {reason}")
+
+    dir_emoji = "🟢" if result["direction"] == "BUY" else "🔴" if result["direction"] == "SELL" else "⚪"
+    cached_txt = " (кэш)" if result.get("cached") else ""
+
+    text = (
+        f"🐟 <b>MiroFish Lite — {symbol}</b>{cached_txt}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"💰 Цена: <code>${price:,.2f}</code> | F&G: <code>{fg_val}</code>\n"
+        f"{dir_emoji} Решение: <b>{result['direction']}</b> (score: <code>{result['score']:+d}</code>)\n"
+        f"📊 Уверенность: <code>{result['confidence']}%</code>\n"
+        f"🗳 Голоса: 🟢{result['buy']} 🔴{result['sell']} ⚪{result['hold']}\n\n"
+        f"<b>Агенты:</b>\n" + "\n".join(agent_lines) + "\n\n"
+        f"<i>Model: {result.get('model', '?')} | Calls: {_mirofish_stats['calls']}</i>"
+    )
     await _tg_send(chat_id, text)
 
 
@@ -3652,6 +3863,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/positions":           await _tg_positions(chat_id)
         elif cmd == "/arb":                 await _tg_arb(chat_id)
         elif cmd == "/spot":                await _tg_spot_status(chat_id)
+        elif cmd.startswith("/mirofish"):   await _tg_mirofish(chat_id, raw)
         elif cmd.startswith("/sell"):       await _tg_universal_sell(chat_id, raw)
         elif cmd.startswith("/buy"):
             if not cmd.startswith("/buy ") and cmd == "/buy":
@@ -4112,6 +4324,7 @@ async def arb_stats_api():
     return {
         "stats": _arb_stats,
         "opus_gate": _opus_gate_stats,
+        "mirofish": {**_mirofish_stats, "enabled": MIROFISH_ENABLED},
         "ws": {"connected": _ws_connected, "prices_count": len(_ws_prices), "reconnects": _ws_reconnects},
         "config": {
             "exec_enabled": ARB_EXEC_ENABLED, "exec_usdt": ARB_EXEC_USDT,
