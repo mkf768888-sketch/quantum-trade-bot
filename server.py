@@ -3198,8 +3198,12 @@ async def _tg_ai_ask(chat_id: int, question: str):
     try:
         # v8.3: route through 3-tier AI dispatcher (deepseek by default for chat)
         ai_result = await ai_dispatch("chat", hist[-6:], max_tokens=300, system=system)
-        reply = ai_result.get("text", "Не удалось получить ответ.")
+        reply = ai_result.get("text", "").strip()
         ai_model = ai_result.get("model", "?")
+        if not reply:
+            err_detail = ai_result.get("error", "пустой ответ")
+            await _tg_send(chat_id, f"⚠️ AI не ответил ({ai_model}): {err_detail}\nПопробуй ещё раз или переформулируй вопрос.")
+            return
         hist.append({"role": "assistant", "content": reply})
 
         # Проверяем предложение изменения
@@ -3261,7 +3265,17 @@ async def _telegram_callback_inner(req: TelegramUpdate):
                 await _tg_universal_buy(chat_id, raw)
         # v7.2.0: AI консультант
         elif cmd.startswith("/ask"):
-            question = raw[4:].strip() or raw[5:].strip()  # /ask текст или /ask@bot текст
+            # /ask текст или /ask@bot текст
+            question = raw.split(None, 1)[1].strip() if len(raw.split(None, 1)) > 1 else ""
+            if not question:
+                await _tg_send(chat_id,
+                    "🤖 <b>AI-консультант</b>\n\n"
+                    "Напиши вопрос после команды:\n"
+                    "<code>/ask как дела у бота?</code>\n"
+                    "<code>/ask стоит ли снизить Q-Score?</code>\n"
+                    "<code>/ask что такое арбитраж?</code>"
+                )
+                return
             await _tg_ai_ask(chat_id, question)
         # v7.2.1: прямая установка параметра без AI (/set PARAM VALUE)
         elif cmd.startswith("/set"):
