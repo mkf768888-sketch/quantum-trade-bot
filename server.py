@@ -789,6 +789,12 @@ async def get_futures_positions() -> dict:
         return {"positions": [], "success": False, "error": str(e)}
 
 async def get_all_prices() -> dict:
+    # v8.3: include all arb triangle USDT pairs in addition to SPOT_PAIRS
+    _arb_usdt_pairs = set()
+    for a, b, _, _ in ARB_TRIANGLES:
+        _arb_usdt_pairs.add(a)
+        _arb_usdt_pairs.add(b)
+    all_pairs = set(SPOT_PAIRS) | _arb_usdt_pairs
     try:
         async with aiohttp.ClientSession() as s:
             r = await s.get(f"{KUCOIN_BASE_URL}/api/v1/market/allTickers", timeout=aiohttp.ClientTimeout(total=10))
@@ -796,7 +802,7 @@ async def get_all_prices() -> dict:
             if data.get("code") == "200000":
                 tickers = {t["symbol"]: t for t in data["data"]["ticker"]}
                 result = {}
-                for sym in SPOT_PAIRS:
+                for sym in all_pairs:
                     if sym in tickers:
                         t = tickers[sym]
                         result[sym] = {"price": float(t.get("last", 0)), "change": float(t.get("changeRate", 0)) * 100, "vol": float(t.get("vol", 0))}
@@ -1954,16 +1960,40 @@ async def auto_trade_cycle():
 # Если спред > 0.4% (>0.3% комиссий KuCoin) → алерт в Telegram
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Треугольные пары: (coin_a, coin_b, cross_pair, description)
+# v8.3: Expanded triangles — all known KuCoin BTC + ETH cross-pairs
+# Format: (coin_a-USDT, coin_b-USDT, cross_pair, description)
+# The check_triangular_arb function auto-skips pairs that return 0 price
 ARB_TRIANGLES = [
-    ("ETH-USDT",  "BTC-USDT",  "ETH-BTC",  "USDT→ETH→BTC→USDT"),
-    # SOL-BTC and SOL-ETH pairs don't exist on KuCoin spot — removed
-    ("XRP-USDT",  "BTC-USDT",  "XRP-BTC",  "USDT→XRP→BTC→USDT"),
-    # XRP-ETH doesn't exist on KuCoin spot — removed
-    ("ADA-USDT",  "BTC-USDT",  "ADA-BTC",  "USDT→ADA→BTC→USDT"),
-    ("LINK-USDT", "BTC-USDT",  "LINK-BTC", "USDT→LINK→BTC→USDT"),
-    ("LTC-USDT",  "BTC-USDT",  "LTC-BTC",  "USDT→LTC→BTC→USDT"),
+    # ── BTC cross-pairs (USDT → X → BTC → USDT) ──────────────────────────
+    ("ETH-USDT",   "BTC-USDT",  "ETH-BTC",   "USDT→ETH→BTC→USDT"),
+    ("XRP-USDT",   "BTC-USDT",  "XRP-BTC",   "USDT→XRP→BTC→USDT"),
+    ("ADA-USDT",   "BTC-USDT",  "ADA-BTC",   "USDT→ADA→BTC→USDT"),
+    ("LINK-USDT",  "BTC-USDT",  "LINK-BTC",  "USDT→LINK→BTC→USDT"),
+    ("LTC-USDT",   "BTC-USDT",  "LTC-BTC",   "USDT→LTC→BTC→USDT"),
+    ("DOGE-USDT",  "BTC-USDT",  "DOGE-BTC",  "USDT→DOGE→BTC→USDT"),
+    ("ETC-USDT",   "BTC-USDT",  "ETC-BTC",   "USDT→ETC→BTC→USDT"),
+    ("DOT-USDT",   "BTC-USDT",  "DOT-BTC",   "USDT→DOT→BTC→USDT"),
+    ("ATOM-USDT",  "BTC-USDT",  "ATOM-BTC",  "USDT→ATOM→BTC→USDT"),
+    ("NEAR-USDT",  "BTC-USDT",  "NEAR-BTC",  "USDT→NEAR→BTC→USDT"),
+    ("FIL-USDT",   "BTC-USDT",  "FIL-BTC",   "USDT→FIL→BTC→USDT"),
+    ("UNI-USDT",   "BTC-USDT",  "UNI-BTC",   "USDT→UNI→BTC→USDT"),
+    ("AVAX-USDT",  "BTC-USDT",  "AVAX-BTC",  "USDT→AVAX→BTC→USDT"),
+    ("TRX-USDT",   "BTC-USDT",  "TRX-BTC",   "USDT→TRX→BTC→USDT"),
+    ("BNB-USDT",   "BTC-USDT",  "BNB-BTC",   "USDT→BNB→BTC→USDT"),
+    ("ALGO-USDT",  "BTC-USDT",  "ALGO-BTC",  "USDT→ALGO→BTC→USDT"),
+    ("XLM-USDT",   "BTC-USDT",  "XLM-BTC",   "USDT→XLM→BTC→USDT"),
+    ("VET-USDT",   "BTC-USDT",  "VET-BTC",   "USDT→VET→BTC→USDT"),
+    ("AAVE-USDT",  "BTC-USDT",  "AAVE-BTC",  "USDT→AAVE→BTC→USDT"),
+    ("AR-USDT",    "BTC-USDT",  "AR-BTC",    "USDT→AR→BTC→USDT"),
+    # ── ETH cross-pairs (USDT → X → ETH → USDT) ──────────────────────────
+    ("LTC-USDT",   "ETH-USDT",  "LTC-ETH",   "USDT→LTC→ETH→USDT"),
+    ("ETC-USDT",   "ETH-USDT",  "ETC-ETH",   "USDT→ETC→ETH→USDT"),
+    ("LINK-USDT",  "ETH-USDT",  "LINK-ETH",  "USDT→LINK→ETH→USDT"),
+    ("ADA-USDT",   "ETH-USDT",  "ADA-ETH",   "USDT→ADA→ETH→USDT"),
+    ("DOGE-USDT",  "ETH-USDT",  "DOGE-ETH",  "USDT→DOGE→ETH→USDT"),
 ]
+# v8.3: Invalid pairs are auto-detected at runtime and silently skipped
+_arb_dead_pairs: set = set()  # pairs that returned 0 price → skip next time
 ARB_FEE       = 0.001   # 0.1% per trade, 0.3% for 3 trades
 ARB_MIN_SPREAD = 0.004  # минимальный спред 0.4% после комиссий
 ARB_COOLDOWNS: dict = {}  # path → last_alert_ts (cooldown 5 мин)
@@ -2000,6 +2030,10 @@ async def check_triangular_arb(prices: dict) -> list:
     now = time.time()
 
     for a_sym, b_sym, cross_sym, path in ARB_TRIANGLES:
+        # v8.3: skip pairs that don't exist on KuCoin (auto-detected)
+        if cross_sym in _arb_dead_pairs:
+            continue
+
         # Cooldown check
         if now - ARB_COOLDOWNS.get(path, 0) < ARB_COOLDOWN_SEC:
             continue
@@ -2015,6 +2049,8 @@ async def check_triangular_arb(prices: dict) -> list:
         # Реальный кросс-курс с биржи
         actual_cross = await get_cross_ticker(cross_sym)
         if not actual_cross:
+            _arb_dead_pairs.add(cross_sym)  # mark as dead, don't query again
+            log_activity(f"[arb] {cross_sym} → dead pair (no data), skipping in future")
             continue
 
         # Спред: насколько реальный отличается от имплицитного
@@ -2651,18 +2687,24 @@ async def _tg_arb(chat_id: int):
     """Telegram: arbitrage monitor status."""
     now = time.time()
     lines = []
-    for _, _, _, path in ARB_TRIANGLES:
+    active_count = 0
+    dead_count = len(_arb_dead_pairs)
+    for _, _, cross_sym, path in ARB_TRIANGLES:
+        if cross_sym in _arb_dead_pairs:
+            continue  # don't show dead pairs
+        active_count += 1
         last    = ARB_COOLDOWNS.get(path, 0)
         elapsed = now - last
-        status  = "\U0001f50d \u041c\u043e\u043d\u0438\u0442\u043e\u0440\u0438\u043d\u0433" if elapsed > ARB_COOLDOWN_SEC else f"\u23f3 CD {int(ARB_COOLDOWN_SEC - elapsed)}s"
-        lines.append(f"  {path}: {status}")
+        status  = "\U0001f50d" if elapsed > ARB_COOLDOWN_SEC else f"\u23f3 {int(ARB_COOLDOWN_SEC - elapsed)}s"
+        lines.append(f"  {status} {path}")
     ap_status = "\u0412\u041a\u041b" if AUTOPILOT else "\u0412\u042b\u041a\u041b (\u0432\u043a\u043b\u044e\u0447\u0438 \u0430\u0432\u0442\u043e\u043f\u0438\u043b\u043e\u0442)"
     body = "\n".join(lines)
     text = (
         f"\u26a1 <b>\u0410\u0440\u0431\u0438\u0442\u0440\u0430\u0436 KuCoin \u2014 \u0421\u0442\u0430\u0442\u0443\u0441</b>\n\n"
         f"\U0001f504 \u041c\u043e\u043d\u0438\u0442\u043e\u0440\u0438\u043d\u0433: <b>{ap_status}</b>\n"
         f"\U0001f4d0 \u041c\u0438\u043d. \u0441\u043f\u0440\u0435\u0434: <code>{ARB_MIN_SPREAD*100:.1f}%</code> (\u043f\u043e\u0441\u043b\u0435 0.3% \u043a\u043e\u043c\u0438\u0441\u0441\u0438\u0439)\n"
-        f"\u23f1 Cooldown: <code>{ARB_COOLDOWN_SEC}s</code>\n\n"
+        f"\u23f1 Cooldown: <code>{ARB_COOLDOWN_SEC}s</code>\n"
+        f"📡 Связки: <code>{active_count}</code> активных" + (f" / <code>{dead_count}</code> отключены" if dead_count else "") + f" (всего {len(ARB_TRIANGLES)})\n\n"
         f"<b>\u0410\u043a\u0442\u0438\u0432\u043d\u044b\u0435 \u0441\u0432\u044f\u0437\u043a\u0438:</b>\n{body}\n\n"
         f"\U0001f4a1 \u0410\u043b\u0435\u0440\u0442 \u043f\u0440\u0438\u0445\u043e\u0434\u0438\u0442 \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438 \u043f\u0440\u0438 \u043e\u0431\u043d\u0430\u0440\u0443\u0436\u0435\u043d\u0438\u0438 \u0432\u043e\u0437\u043c\u043e\u0436\u043d\u043e\u0441\u0442\u0438."
     )
