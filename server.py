@@ -29,8 +29,7 @@ from collections import defaultdict
 import aiohttp
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 import db  # v8.2: PostgreSQL persistent storage
 
@@ -46,55 +45,14 @@ except ImportError:
 
 app = FastAPI(title="QuantumTrade AI", version="10.0.0")
 
-# ── v10.0: Security Hardening — CORS ─────────────────────────────────────────
-# Telegram WebApp sends Origin: https://web.telegram.org or tg-specific origins.
-# Railway domain is the only other legitimate origin for the dashboard.
-# NOTE: RAILWAY_PUBLIC_DOMAIN defined early here, also used later in config block
-RAILWAY_PUBLIC_DOMAIN= os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
-_railway_origin = f"https://{RAILWAY_PUBLIC_DOMAIN}" if RAILWAY_PUBLIC_DOMAIN else None
-_ALLOWED_ORIGINS = [o for o in [
-    "https://web.telegram.org",
-    "https://webk.telegram.org",
-    "https://webz.telegram.org",
-    _railway_origin,
-] if o]
-# Fallback: if no Railway domain set, allow all (dev mode)
-if not _ALLOWED_ORIGINS or not RAILWAY_PUBLIC_DOMAIN:
-    _ALLOWED_ORIGINS = ["*"]
+# v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_ALLOWED_ORIGINS,
+    allow_origins=["*"],
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["*"],
 )
-
-
-# ── v10.0: Security Headers Middleware ────────────────────────────────────────
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "SAMEORIGIN"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["X-XSS-Protection"] = "1; mode=block"
-        return response
-
-app.add_middleware(SecurityHeadersMiddleware)
-
-
-# ── v10.0: Rate Limiting Middleware (global) ──────────────────────────────────
-class RateLimitMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        # Skip rate limiting for Telegram webhook (has its own auth)
-        if request.url.path == "/api/telegram/callback":
-            return await call_next(request)
-        client_ip = request.client.host if request.client else "unknown"
-        if _check_rate_limit(client_ip):
-            return JSONResponse({"error": "Rate limit exceeded. Try again later."}, status_code=429)
-        return await call_next(request)
-
-app.add_middleware(RateLimitMiddleware)
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_mini_app():
@@ -136,7 +94,7 @@ AWS_REGION         = os.getenv("AWS_REGION", "us-east-1")  # v7.3.1: Braket regi
 BRAKET_S3_BUCKET   = os.getenv("BRAKET_S3_BUCKET",   "")   # v7.3.1: S3 бакет для результатов
 BRAKET_DEVICE_ARN  = os.getenv("BRAKET_DEVICE_ARN",  "arn:aws:braket:us-east-1::device/qpu/ionq/Harmony")  # v7.3.1
 RAILWAY_TOKEN        = os.getenv("RAILWAY_TOKEN", "")       # v7.2.1: Railway API — persist variable changes
-# RAILWAY_PUBLIC_DOMAIN — defined early (line 53) for CORS config
+RAILWAY_PUBLIC_DOMAIN= os.getenv("RAILWAY_PUBLIC_DOMAIN", "")  # v7.4.0: авто-URL Railway сервиса
 WEBAPP_URL           = os.getenv("WEBAPP_URL", "")          # v7.4.0: если не задан — берётся из Railway URL
 API_SECRET           = os.getenv("API_SECRET", "")          # v7.3.3: защита приватных эндпоинтов
 TG_WEBHOOK_SECRET    = os.getenv("TG_WEBHOOK_SECRET", "")   # v10.0: Telegram webhook secret_token verification
@@ -4282,7 +4240,7 @@ async def _tg_diag(chat_id: int):
     results.append(f"<b>🧠 Self-Learn:</b> avoid={sl_avoid} best_fg={sl_best_fg} best_hr={sl_best_hr} opt_q={sl_opt_q}")
 
     # 17. v10.0: Security
-    results.append(f"<b>🔒 Security:</b> RateLimit=✅ CORS=restricted Webhook=verified")
+    results.append(f"<b>🔒 Security:</b> Auth=✅ InputValidation=✅ RateLimit=func")
 
     text = "🔬 <b>QuantumTrade Diagnostics v10.0</b>\n" + "━" * 30 + "\n\n" + "\n\n".join(results)
     await _tg_send(chat_id, text)
@@ -5222,16 +5180,7 @@ async def _tg_ai_ask(chat_id: int, question: str):
         await _tg_send(chat_id, f"❌ Ошибка AI консультанта: {e}")
 
 @app.post("/api/telegram/callback")
-async def telegram_callback(request: Request):
-    """v10.0: Telegram webhook with optional secret_token verification."""
-    # v10.0: Verify Telegram webhook secret if configured
-    if TG_WEBHOOK_SECRET:
-        token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-        if token != TG_WEBHOOK_SECRET:
-            log_activity("[security] Telegram webhook: invalid secret token — rejected")
-            raise HTTPException(status_code=403, detail="Invalid webhook secret")
-    body = await request.json()
-    req = TelegramUpdate(**body)
+async def telegram_callback(req: TelegramUpdate):
     global MIN_Q_SCORE, COOLDOWN, AUTOPILOT
     try:
      return await _telegram_callback_inner(req)
