@@ -2665,7 +2665,6 @@ async def _tg_arb(chat_id: int):
     )
     kb = {"inline_keyboard": [
         [{"text": arb_btn_text, "callback_data": "toggle_arb"}],
-        [{"text": "💰 Продать всё в USDT", "callback_data": "sell_all_spot"}],
         [{"text": "◀️ Меню",   "callback_data": "menu_main"}],
     ]}
     await _tg_send(chat_id, text, kb)
@@ -2721,11 +2720,151 @@ async def _tg_spot_status(chat_id: int):
             pnl_pct = ((price - t["price"]) / t["price"] * 100) if price and t["price"] else 0
             emoji = "📈" if pnl_pct >= 0 else "📉"
             lines.append(f"  {emoji} {t['symbol']} {t['side'].upper()} @ ${t['price']:.4f} → ${price:.4f} ({pnl_pct:+.1f}%)")
-    kb = {"inline_keyboard": [
-        [{"text": "💰 Продать всё в USDT", "callback_data": "sell_all_spot"}],
-        [{"text": "◀️ Меню", "callback_data": "menu_main"}],
-    ]}
+    lines.append(f"\n💡 <code>/sell XRP</code> · <code>/sell ETH 50</code> · <code>/sell all</code>\n"
+                 f"💡 <code>/buy ETH 30</code> · <code>/buy BTC 50</code>")
+    kb = {"inline_keyboard": [[{"text": "◀️ Меню", "callback_data": "menu_main"}]]}
     await _tg_send(chat_id, "\n".join(lines), kb)
+
+
+async def _tg_universal_sell(chat_id: int, raw: str):
+    """v8.3: Universal sell command.
+    /sell all              — sell everything to USDT
+    /sell XRP              — sell all XRP
+    /sell ETH 50           — sell $50 worth of ETH
+    /sell ETH 50%          — sell 50% of ETH holdings
+    """
+    parts = raw.strip().split()
+    # /sell (no args) → show help + current balances
+    if len(parts) < 2:
+        balances = await get_spot_balances()
+        if not balances:
+            await _tg_send(chat_id, "💰 Нет монет для продажи. Только USDT на споте.")
+            return
+        lines = ["ℹ️ <b>Формат команды /sell:</b>\n",
+                 "<code>/sell all</code> — продать все монеты",
+                 "<code>/sell XRP</code> — продать весь XRP",
+                 "<code>/sell ETH 50</code> — продать ETH на $50",
+                 "<code>/sell ETH 50%</code> — продать 50% ETH\n",
+                 "📊 <b>Текущие монеты:</b>"]
+        for sym, info in balances.items():
+            lines.append(f"  {info['currency']}: {info['balance']:.6f} ≈ ${info['usdt_value']:.2f}")
+        await _tg_send(chat_id, "\n".join(lines))
+        return
+
+    target = parts[1].upper()
+
+    # /sell all
+    if target == "ALL":
+        await _tg_sell_all_spot(chat_id)
+        return
+
+    # Normalize coin name → pair
+    coin = target.replace("-USDT", "").replace("-", "")
+    pair = f"{coin}-USDT"
+    balances = await get_spot_balances()
+    info = balances.get(pair)
+    if not info or info["available"] <= 0:
+        await _tg_send(chat_id, f"❌ Нет {coin} на споте для продажи.")
+        return
+
+    sell_size = info["available"]  # default: sell all
+    sell_label = f"весь {coin}"
+
+    # /sell ETH 50 or /sell ETH 50%
+    if len(parts) >= 3:
+        amount_str = parts[2]
+        try:
+            if amount_str.endswith("%"):
+                pct = float(amount_str[:-1]) / 100.0
+                if not 0 < pct <= 1:
+                    await _tg_send(chat_id, "❌ Процент должен быть от 1% до 100%")
+                    return
+                sell_size = round(info["available"] * pct, 8)
+                sell_label = f"{amount_str} {coin} ({sell_size:.6f})"
+            else:
+                usdt_amount = float(amount_str)
+                if usdt_amount <= 0:
+                    await _tg_send(chat_id, "❌ Сумма должна быть > 0")
+                    return
+                if usdt_amount >= info["usdt_value"]:
+                    sell_label = f"весь {coin} (запрошено ${usdt_amount}, есть ${info['usdt_value']:.2f})"
+                else:
+                    sell_size = round(usdt_amount / info["price"], 8)
+                    sell_label = f"${usdt_amount} {coin} ({sell_size:.6f})"
+        except ValueError:
+            await _tg_send(chat_id, "❌ Неверная сумма. Примеры: <code>/sell ETH 50</code> или <code>/sell ETH 50%</code>")
+            return
+
+    # Execute sell
+    result = await sell_spot_to_usdt(pair, sell_size)
+    if result.get("success"):
+        usdt_received = round(sell_size * info["price"], 2)
+        # Close matching open trades
+        for t in trade_log:
+            if t.get("status") == "open" and t.get("symbol") == pair and t.get("account") == "spot":
+                pnl_pct = (info["price"] - t["price"]) / t["price"] if t["side"] == "buy" else 0
+                t["status"] = "closed"
+                t["pnl"] = round(pnl_pct * t["price"] * t["size"], 4)
+                t["close_price"] = info["price"]
+                t["close_reason"] = "manual_sell"
+        _save_trades_to_disk()
+        await _tg_send(chat_id,
+            f"✅ <b>Продано: {sell_label}</b>\n"
+            f"💵 Получено: ~<code>${usdt_received}</code> USDT\n"
+            f"📊 Цена: <code>${info['price']:,.2f}</code>")
+    else:
+        await _tg_send(chat_id, f"❌ Ошибка продажи {coin}: {result.get('msg', '?')}")
+
+
+async def _tg_universal_buy(chat_id: int, raw: str):
+    """v8.3: Universal buy command.
+    /buy ETH 30    — buy $30 worth of ETH
+    /buy BTC 50    — buy $50 worth of BTC
+    """
+    parts = raw.strip().split()
+    if len(parts) < 3:
+        await _tg_send(chat_id, "ℹ️ <b>Формат:</b>\n<code>/buy ETH 30</code> — купить ETH на $30\n<code>/buy BTC 50</code> — купить BTC на $50")
+        return
+
+    coin = parts[1].upper().replace("-USDT", "").replace("-", "")
+    pair = f"{coin}-USDT"
+    try:
+        usdt_amount = float(parts[2])
+    except ValueError:
+        await _tg_send(chat_id, "❌ Неверная сумма. Пример: <code>/buy ETH 30</code>")
+        return
+
+    if usdt_amount < 1:
+        await _tg_send(chat_id, "❌ Минимальная сумма: $1")
+        return
+
+    # Check USDT balance
+    bal = await get_balance()
+    usdt_avail = bal.get("total_usdt", 0)
+    if usdt_avail < usdt_amount:
+        await _tg_send(chat_id, f"❌ Недостаточно USDT: ${usdt_avail:.2f} < ${usdt_amount:.2f}")
+        return
+
+    # Get current price
+    price = await get_ticker(pair)
+    if price <= 0:
+        await _tg_send(chat_id, f"❌ Не удалось получить цену {pair}")
+        return
+
+    # Buy using funds-based order
+    result = await _spot_buy_funds(pair, usdt_amount)
+    if _order_ok(result):
+        size = round(usdt_amount / price, 8)
+        tp = round(price * (1 + TP_PCT), 4)
+        sl = round(price * (1 - SL_PCT), 4)
+        log_trade(pair, "buy", price, size, tp, sl, 0.75, 70.0, "manual", "spot", "manual")
+        await _tg_send(chat_id,
+            f"✅ <b>Куплено: {coin} на ${usdt_amount}</b>\n"
+            f"📊 Цена: <code>${price:,.2f}</code>\n"
+            f"📦 Кол-во: ~<code>{size}</code>\n"
+            f"🎯 TP: <code>${tp:,.2f}</code> | 🛑 SL: <code>${sl:,.2f}</code>")
+    else:
+        await _tg_send(chat_id, f"❌ Ошибка покупки {coin}: {result.get('msg', '?')}")
 
 
 async def _tg_balance(chat_id: int):
@@ -2944,8 +3083,13 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/balance":             await _tg_balance(chat_id)
         elif cmd == "/positions":           await _tg_positions(chat_id)
         elif cmd == "/arb":                 await _tg_arb(chat_id)
-        elif cmd == "/sell_all":            await _tg_sell_all_spot(chat_id)
         elif cmd == "/spot":                await _tg_spot_status(chat_id)
+        elif cmd.startswith("/sell"):       await _tg_universal_sell(chat_id, raw)
+        elif cmd.startswith("/buy"):
+            if not cmd.startswith("/buy ") and cmd == "/buy":
+                await _tg_send(chat_id, "ℹ️ <b>Формат:</b>\n<code>/buy ETH 30</code> — купить ETH на $30\n<code>/buy BTC 50</code> — купить BTC на $50")
+            else:
+                await _tg_universal_buy(chat_id, raw)
         # v7.2.0: AI консультант
         elif cmd.startswith("/ask"):
             question = raw[4:].strip() or raw[5:].strip()  # /ask текст или /ask@bot текст
