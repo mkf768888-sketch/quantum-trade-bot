@@ -3331,28 +3331,41 @@ async def _tg_main_menu(chat_id: int):
         "Выбери раздел:", kb)
 
 async def _tg_stats(chat_id: int):
-    """Отправляет карточку статистики трейдинга."""
-    total = len(trade_log)
-    wins  = sum(1 for t in trade_log if (t.get("pnl") or 0) > 0)
-    losses= sum(1 for t in trade_log if (t.get("pnl") or 0) <= 0 and t.get("pnl") is not None)
-    pnl   = round(sum(t.get("pnl") or 0 for t in trade_log), 4)
+    """Отправляет карточку статистики трейдинга. v9.0: uses _perf_stats (closed trades only)."""
+    # v9.0: Use _perf_stats for accurate WR (only closed trades)
+    total = _perf_stats.get("total_trades", 0)
+    wins  = _perf_stats.get("wins", 0)
+    losses = _perf_stats.get("losses", 0)
+    pnl   = round(_perf_stats.get("total_pnl", 0.0), 2)
     wr    = round(wins / total * 100, 1) if total else 0
     open_ = sum(1 for t in trade_log if t.get("status", "") == "open")
+    streak = _perf_stats.get("streak", 0)
     last_q = round(last_q_score, 1) if last_q_score else "—"
     pnl_emoji = "✅" if pnl >= 0 else "❌"
+    streak_emoji = "🔥" if streak > 0 else "❄️" if streak < 0 else "➖"
     chip  = "Wukong 180 ⚛️" if _qcloud_ready else "CPU симулятор"
+    # MiroFish stats
+    mf_txt = ""
+    if MIROFISH_ENABLED:
+        mf_txt = f"\n🐟 MiroFish: <code>{_mirofish_stats['calls']}</code> calls · avg <code>{_mirofish_stats['avg_score']:+.1f}</code>"
+    # ByBit stats
+    bb_txt = ""
+    if BYBIT_ENABLED:
+        bb_txt = f"\n🟡 ByBit: <code>{_bybit_stats['calls']}</code> calls · X-Arb checks: <code>{_xarb_stats['checks']}</code>"
     kb = {"inline_keyboard": [[{"text": "◀️ Меню", "callback_data": "menu_main"}]]}
     await _tg_send(chat_id,
-        f"📊 <b>Статистика трейдинга</b>\n"
+        f"📊 <b>Статистика трейдинга v9.0</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Всего сделок: <code>{total}</code> (открыто: <code>{open_}</code>)\n"
+        f"Закрытых сделок: <code>{total}</code> (открыто: <code>{open_}</code>)\n"
         f"Побед: <code>{wins}</code> / Потерь: <code>{losses}</code>\n"
         f"Win Rate: <code>{wr}%</code>\n"
-        f"Итог PnL: {pnl_emoji} <code>${pnl:+.4f}</code>\n"
+        f"Итог PnL: {pnl_emoji} <code>${pnl:+.2f}</code>\n"
+        f"{streak_emoji} Streak: <code>{streak:+d}</code>\n"
         f"Последний Q-Score: <code>{last_q}</code>\n"
         f"Автопилот: <code>{'ВКЛ' if AUTOPILOT else 'ВЫКЛ'}</code>\n"
         f"Min Q: <code>{MIN_Q_SCORE}</code> · Cooldown: <code>{COOLDOWN}s</code>\n"
-        f"Квантовый чип: {chip}", kb)
+        f"Квантовый чип: {chip}"
+        f"{mf_txt}{bb_txt}", kb)
 
 def _html_esc(s: str) -> str:
     """Экранирует спецсимволы HTML для Telegram (& < >)."""
