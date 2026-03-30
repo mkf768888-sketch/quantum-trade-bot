@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v8.3.1
+QuantumTrade AI - FastAPI Backend v8.3.2
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
 Phase3: Origin QC QAOA — квантовая оптимизация портфеля (CPU симулятор + Wukong 180 реальный чип)
 Phase5: Claude Vision — AI-анализ графиков
@@ -2067,7 +2067,12 @@ async def auto_trade_cycle():
 # Format: (coin_a-USDT, coin_b-USDT, cross_pair, description)
 # The check_triangular_arb function auto-skips pairs that return 0 price
 ARB_TRIANGLES = [
-    # ── BTC cross-pairs (USDT → X → BTC → USDT) ──────────────────────────
+    # ══════════════════════════════════════════════════════════════════════
+    # v8.3.2: 50 triangles (was 25) — BTC crosses, ETH crosses, KCS crosses
+    # Dead pairs auto-detected at runtime via _arb_dead_pairs
+    # ══════════════════════════════════════════════════════════════════════
+
+    # ── BTC cross-pairs (USDT → X → BTC → USDT) — 20 pairs ─────────────
     ("ETH-USDT",   "BTC-USDT",  "ETH-BTC",   "USDT→ETH→BTC→USDT"),
     ("XRP-USDT",   "BTC-USDT",  "XRP-BTC",   "USDT→XRP→BTC→USDT"),
     ("ADA-USDT",   "BTC-USDT",  "ADA-BTC",   "USDT→ADA→BTC→USDT"),
@@ -2088,12 +2093,42 @@ ARB_TRIANGLES = [
     ("VET-USDT",   "BTC-USDT",  "VET-BTC",   "USDT→VET→BTC→USDT"),
     ("AAVE-USDT",  "BTC-USDT",  "AAVE-BTC",  "USDT→AAVE→BTC→USDT"),
     ("AR-USDT",    "BTC-USDT",  "AR-BTC",    "USDT→AR→BTC→USDT"),
-    # ── ETH cross-pairs (USDT → X → ETH → USDT) ──────────────────────────
+
+    # ── ETH cross-pairs (USDT → X → ETH → USDT) — 15 pairs ─────────────
     ("LTC-USDT",   "ETH-USDT",  "LTC-ETH",   "USDT→LTC→ETH→USDT"),
     ("ETC-USDT",   "ETH-USDT",  "ETC-ETH",   "USDT→ETC→ETH→USDT"),
     ("LINK-USDT",  "ETH-USDT",  "LINK-ETH",  "USDT→LINK→ETH→USDT"),
     ("ADA-USDT",   "ETH-USDT",  "ADA-ETH",   "USDT→ADA→ETH→USDT"),
     ("DOGE-USDT",  "ETH-USDT",  "DOGE-ETH",  "USDT→DOGE→ETH→USDT"),
+    ("XRP-USDT",   "ETH-USDT",  "XRP-ETH",   "USDT→XRP→ETH→USDT"),
+    ("DOT-USDT",   "ETH-USDT",  "DOT-ETH",   "USDT→DOT→ETH→USDT"),
+    ("ATOM-USDT",  "ETH-USDT",  "ATOM-ETH",  "USDT→ATOM→ETH→USDT"),
+    ("FIL-USDT",   "ETH-USDT",  "FIL-ETH",   "USDT→FIL→ETH→USDT"),
+    ("UNI-USDT",   "ETH-USDT",  "UNI-ETH",   "USDT→UNI→ETH→USDT"),
+    ("AVAX-USDT",  "ETH-USDT",  "AVAX-ETH",  "USDT→AVAX→ETH→USDT"),
+    ("NEAR-USDT",  "ETH-USDT",  "NEAR-ETH",  "USDT→NEAR→ETH→USDT"),
+    ("AAVE-USDT",  "ETH-USDT",  "AAVE-ETH",  "USDT→AAVE→ETH→USDT"),
+    ("SNX-USDT",   "ETH-USDT",  "SNX-ETH",   "USDT→SNX→ETH→USDT"),
+    ("CRV-USDT",   "ETH-USDT",  "CRV-ETH",   "USDT→CRV→ETH→USDT"),
+
+    # ── KCS cross-pairs (USDT → X → KCS → USDT) — 8 pairs ──────────────
+    ("BTC-USDT",   "KCS-USDT",  "BTC-KCS",   "USDT→BTC→KCS→USDT"),
+    ("ETH-USDT",   "KCS-USDT",  "ETH-KCS",   "USDT→ETH→KCS→USDT"),
+    ("DOGE-USDT",  "KCS-USDT",  "DOGE-KCS",  "USDT→DOGE→KCS→USDT"),
+    ("XRP-USDT",   "KCS-USDT",  "XRP-KCS",   "USDT→XRP→KCS→USDT"),
+    ("SOL-USDT",   "KCS-USDT",  "SOL-KCS",   "USDT→SOL→KCS→USDT"),
+    ("DOT-USDT",   "KCS-USDT",  "DOT-KCS",   "USDT→DOT→KCS→USDT"),
+    ("LINK-USDT",  "KCS-USDT",  "LINK-KCS",  "USDT→LINK→KCS→USDT"),
+    ("UNI-USDT",   "KCS-USDT",  "UNI-KCS",   "USDT→UNI→KCS→USDT"),
+
+    # ── Extra BTC crosses (mid-cap) — 7 pairs ───────────────────────────
+    ("SOL-USDT",   "BTC-USDT",  "SOL-BTC",   "USDT→SOL→BTC→USDT"),
+    ("MATIC-USDT", "BTC-USDT",  "MATIC-BTC", "USDT→MATIC→BTC→USDT"),
+    ("OP-USDT",    "BTC-USDT",  "OP-BTC",    "USDT→OP→BTC→USDT"),
+    ("APT-USDT",   "BTC-USDT",  "APT-BTC",   "USDT→APT→BTC→USDT"),
+    ("SAND-USDT",  "BTC-USDT",  "SAND-BTC",  "USDT→SAND→BTC→USDT"),
+    ("MANA-USDT",  "BTC-USDT",  "MANA-BTC",  "USDT→MANA→BTC→USDT"),
+    ("GRT-USDT",   "BTC-USDT",  "GRT-BTC",   "USDT→GRT→BTC→USDT"),
 ]
 # v8.3: Invalid pairs are auto-detected at runtime and silently skipped
 _arb_dead_pairs: set = set()  # pairs that returned 0 price → skip next time
