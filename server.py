@@ -2182,7 +2182,7 @@ async def position_monitor_loop():
                         continue
                     # v7.2.4: Trailing Stop — защищаем прибыль для открытых позиций
                     if trade["symbol"] in open_syms and not trade.get("trail_triggered"):
-                        base_sym_t = SYM_REV.get(trade["symbol"], "BTC-USDT")
+                        base_sym_t = SYM_REV.get(trade["symbol"], trade["symbol"].replace("USDTM", "-USDT").replace("XBT", "BTC"))
                         try:
                             cur_p = await get_ticker(base_sym_t)
                             ent   = trade["price"]
@@ -2201,7 +2201,14 @@ async def position_monitor_loop():
                         except Exception as te:
                             print(f"[trail] {trade['symbol']} err: {te}", flush=True)
                     if trade["symbol"] not in open_syms:
-                        base_sym      = SYM_REV.get(trade["symbol"], "BTC-USDT")
+                        # v8.2: спот-сделки не мониторятся через фьючерсный API — пропускаем
+                        if trade.get("account") == "spot" or "USDTM" not in trade["symbol"]:
+                            trade["status"] = "closed"
+                            trade["pnl"] = 0.0
+                            trade["close_reason"] = "spot_skip"
+                            _save_trades_to_disk()
+                            continue
+                        base_sym      = SYM_REV.get(trade["symbol"], trade["symbol"].replace("USDTM", "-USDT").replace("XBT", "BTC"))
                         entry         = trade["price"]
                         contract_size = CONTRACT_SIZES.get(trade["symbol"], 0.01)
                         open_ts       = trade.get("open_ts", time.time() - 400)
@@ -3345,7 +3352,10 @@ async def auto_scanner_loop():
 
             # ── 6. Торговая активность ────────────────────────────────────────
             if trade_log:
-                last_trade_ts = trade_log[-1].get("ts", 0)
+                last_trade_ts = trade_log[-1].get("open_ts", 0)  # v8.2: use numeric open_ts, not ISO string ts
+                if isinstance(last_trade_ts, str):
+                    try: last_trade_ts = datetime.fromisoformat(last_trade_ts.replace("Z","")).timestamp()
+                    except Exception: last_trade_ts = 0
                 hours_since = (time.time() - last_trade_ts) / 3600 if last_trade_ts else float("inf")
                 if AUTOPILOT and hours_since > 24:
                     warnings.append(f"⚠️ Автопилот ВКЛ, но 0 сделок за {int(hours_since)}ч — проверь Q-min ({MIN_Q_SCORE})")
