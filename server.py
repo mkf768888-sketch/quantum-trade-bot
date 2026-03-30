@@ -699,20 +699,28 @@ async def sell_spot_to_usdt(symbol: str, size: float = 0) -> dict:
         if not info or info["available"] <= 0:
             return {"success": False, "msg": f"no {symbol} balance"}
         size = info["available"]
-    # KuCoin spot minSize check — we use a conservative floor
+    # KuCoin spot baseIncrement (precision) per pair
+    PRECISION = {"BTC-USDT": 8, "ETH-USDT": 4, "SOL-USDT": 2,
+                 "XRP-USDT": 1, "BNB-USDT": 4, "AVAX-USDT": 2,
+                 "ADA-USDT": 1, "LINK-USDT": 2, "LTC-USDT": 3,
+                 "DOGE-USDT": 0}
     MIN_SIZES = {"BTC-USDT": 0.00001, "ETH-USDT": 0.0001, "SOL-USDT": 0.01,
                  "XRP-USDT": 1.0, "BNB-USDT": 0.01, "AVAX-USDT": 0.01,
                  "ADA-USDT": 1.0, "LINK-USDT": 0.01, "LTC-USDT": 0.001}
+    prec = PRECISION.get(symbol, 6)
+    size = math.floor(size * 10**prec) / 10**prec  # floor to correct precision
     min_size = MIN_SIZES.get(symbol, 0.001)
     if size < min_size:
         return {"success": False, "msg": f"size {size} < minSize {min_size}"}
-    result = await place_spot_order(symbol, "sell", round(size, 8))
+    result = await place_spot_order(symbol, "sell", size)
     ok = result.get("code") == "200000"
+    # KuCoin error can be in 'msg' or nested in 'data'
+    err_msg = result.get("msg") or result.get("data", {}).get("msg") if isinstance(result.get("data"), dict) else result.get("msg", "?")
     if ok:
-        log_activity(f"[spot_sell] {symbol} SELL {size:.8f} OK orderId={result.get('data',{}).get('orderId','?')}")
+        log_activity(f"[spot_sell] {symbol} SELL {size} OK orderId={result.get('data',{}).get('orderId','?')}")
     else:
-        log_activity(f"[spot_sell] {symbol} SELL {size:.8f} FAILED: {result.get('msg', '?')}")
-    return {"success": ok, "result": result, "size": size}
+        log_activity(f"[spot_sell] {symbol} SELL {size} FAILED: {err_msg} | raw: {json.dumps(result)[:200]}")
+    return {"success": ok, "result": result, "size": size, "msg": err_msg if not ok else "ok"}
 
 async def get_futures_balance() -> dict:
     endpoint = "/api/v1/account-overview?currency=USDT"
@@ -825,7 +833,10 @@ async def place_spot_order(symbol: str, side: str, size: float) -> dict:
     try:
         async with aiohttp.ClientSession() as s:
             r = await s.post(KUCOIN_BASE_URL + endpoint, headers=kucoin_headers("POST", endpoint, body), data=body, timeout=aiohttp.ClientTimeout(total=10))
-            return await r.json()
+            resp = await r.json()
+            if resp.get("code") != "200000":
+                log_activity(f"[spot_order] {symbol} {side} size={size} ERR: {json.dumps(resp)[:300]}")
+            return resp
     except Exception as e:
         return {"code": "error", "msg": str(e)}
 
