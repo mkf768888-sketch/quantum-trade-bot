@@ -1251,13 +1251,14 @@ async def ai_call_deepseek(messages: list, max_tokens: int = 500, system: str = 
                 f"{DEEPSEEK_BASE_URL}/v1/chat/completions",
                 headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=15)
+                timeout=aiohttp.ClientTimeout(total=25)  # v8.3.4: 15→25s for slower responses
             )
             data = await r.json()
         if r.status != 200:
             log_activity(f"[deepseek] HTTP {r.status}: {json.dumps(data)[:200]}")
             _ai_call_stats["errors"] += 1
             # Fallback to Claude Haiku
+            log_activity(f"[deepseek] falling back to Claude Haiku")
             return await ai_call_claude(messages, max_tokens, system, model="haiku")
         text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         _ai_call_stats["deepseek"] += 1
@@ -2133,6 +2134,10 @@ async def auto_trade_cycle():
 
         # ── Спот (BUY + SELL) v8.3 ──────────────────────────────────────────────
         if action == "BUY":
+            # v8.3.4: Block buying during Extreme Fear (F&G < 15) — per trading.md rules
+            if fg_val < 15:
+                log_activity(f"[cycle] {symbol}: SKIP BUY — F&G={fg_val} Extreme Fear (threshold 15)")
+                continue
             elapsed = time.time() - last_signals.get(symbol, {}).get("ts", 0)
             eff_cd_spot = COOLDOWN // 2 if conf >= 0.80 else COOLDOWN  # v7.2.4
             if elapsed >= eff_cd_spot and spot_trade_usdt >= 1.0:
@@ -2182,6 +2187,10 @@ async def auto_trade_cycle():
 
         # ── Фьючерсы: собираем кандидатов ────────────────────────────────────
         if symbol in ("BTC-USDT", "ETH-USDT", "SOL-USDT"):
+            # v8.3.4: Block LONG during Extreme Fear
+            if action == "BUY" and fg_val < 15:
+                log_activity(f"[cycle] {symbol}: SKIP fut LONG — F&G={fg_val} Extreme Fear")
+                continue
             FMAP = {"BTC-USDT":("XBTUSDTM",0.001),"ETH-USDT":("ETHUSDTM",0.01),"SOL-USDT":("SOLUSDTM",1.0)}
             _, cs = FMAP[symbol]
             margin = (price * cs) / MAX_LEVERAGE
@@ -3433,6 +3442,10 @@ async def _tg_ai_ask(chat_id: int, question: str):
         await _tg_send(chat_id, "❌ Нет API ключей (ANTHROPIC/DEEPSEEK) — AI консультант недоступен.")
         return
 
+    # v8.3.4: Send "thinking" indicator immediately so user knows bot received the command
+    await _tg_send(chat_id, "🤔 <i>Думаю...</i>")
+    log_activity(f"[/ask] question from {chat_id}: {question[:80]}")
+
     # Формируем контекст бота
     wins = sum(1 for t in trade_log if t.get("pnl", 0) > 0)
     total = len(trade_log)
@@ -3440,13 +3453,27 @@ async def _tg_ai_ask(chat_id: int, question: str):
     total_pnl = sum(t.get("pnl", 0) for t in trade_log)
     chip = "Wukong_180" if _qcloud_ready else "CPU_simulator"
 
+    # v8.3.4: Include detailed perf stats for AI to answer stats questions
+    streak = _perf_stats.get("streak", 0)
+    max_dd = _perf_stats.get("max_drawdown", 0)
+    by_sym_str = ""
+    for sym, sdata in _perf_stats.get("by_symbol", {}).items():
+        if sdata.get("trades", 0) >= 1:
+            swr = round(sdata["wins"] / max(1, sdata["trades"]) * 100, 0)
+            by_sym_str += f"\n  {sym}: {sdata['trades']} сделок, WR {swr}%, PnL ${sdata['pnl']:.2f}"
+    arb_info = f"Арбитраж: {_arb_stats.get('total', 0)} попыток, {_arb_stats.get('success', 0)} успешных, PnL ${_arb_stats.get('total_pnl', 0):.4f}"
+
     system = f"""Ты — AI-консультант торгового бота QuantumTrade v8.3.4.
 Текущие показатели:
 - Всего сделок: {total}, Win Rate: {win_rate:.1f}%, PnL: ${total_pnl:.2f}
+- Streak (серия): {streak} ({'побед' if streak > 0 else 'поражений' if streak < 0 else 'нейтральная'})
+- Max Drawdown: ${max_dd:.2f}
 - Q-Score последний: {last_q_score:.1f}, MIN_Q: {MIN_Q_SCORE}
 - COOLDOWN: {COOLDOWN}s, RISK_PER_TRADE: {RISK_PER_TRADE:.0%}, MAX_LEVERAGE: {MAX_LEVERAGE}x
 - Квантовый чип: {chip}
 - Claude Vision: {"активен" if ANTHROPIC_API_KEY else "не активен"}
+- {arb_info}
+- По монетам: {by_sym_str if by_sym_str else 'нет данных'}
 
 Ты можешь предложить изменить только эти параметры: MIN_Q_SCORE (40-85), COOLDOWN (120-1800), RISK_PER_TRADE (0.05-0.30), MAX_LEVERAGE (1-15).
 ВАЖНО: если пользователь явно запрашивает конкретное значение в допустимом диапазоне — ты ОБЯЗАН предложить именно его через ПРЕДЛАГАЮ, не отказывай и не предлагай альтернативы. Твоё мнение о качестве сигналов не должно мешать исполнению явного запроса владельца системы.
@@ -3458,10 +3485,12 @@ async def _tg_ai_ask(chat_id: int, question: str):
     if len(hist) > 10: hist.pop(0)
 
     try:
-        # v8.3: route through 3-tier AI dispatcher (deepseek by default for chat)
+        # v8.3.4: route through 3-tier AI dispatcher (deepseek by default for chat)
+        log_activity(f"[/ask] calling ai_dispatch tier=chat")
         ai_result = await ai_dispatch("chat", hist[-6:], max_tokens=300, system=system)
         reply = ai_result.get("text", "").strip()
         ai_model = ai_result.get("model", "?")
+        log_activity(f"[/ask] ai_result: model={ai_model} success={ai_result.get('success')} text_len={len(reply)}")
         if not reply:
             err_detail = ai_result.get("error", "пустой ответ")
             await _tg_send(chat_id, f"⚠️ AI не ответил ({ai_model}): {err_detail}\nПопробуй ещё раз или переформулируй вопрос.")
@@ -4345,7 +4374,7 @@ async def auto_scanner_loop():
                         f"📊 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s\n"
                         f"🤖 AP: {'ВКЛ' if AUTOPILOT else 'ВЫКЛ'} · Arb: {'ВКЛ' if ARB_EXEC_ENABLED else 'ВЫКЛ'}\n"
                         f"📋 Сделок: {_perf_stats['total_trades']} · WR: {wr:.0f}% · PnL: ${_perf_stats['total_pnl']:.2f}\n"
-                        f"🔥 Streak: {_perf_stats['streak']} · Версия: 8.3.3"
+                        f"🔥 Streak: {_perf_stats['streak']} · Версия: 8.3.4"
                     )
                     if warnings: msg += "\n\n" + "\n".join(warnings[:2])
                     if recommendations: msg += "\n\n" + "\n".join(recommendations[:2])
