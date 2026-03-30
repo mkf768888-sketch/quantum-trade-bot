@@ -97,14 +97,16 @@ _ai_chat_rl: dict = {}   # ip → (count, window_start_ts)
 _AI_CHAT_LIMIT = 20      # макс 20 запросов
 _AI_CHAT_WINDOW = 60     # в минуту с одного IP
 
-RISK_PER_TRADE = 0.25  # v6.9: Strategy C (25% of balance)
+RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.08"))  # v8.3.2: 8% (was 25%) — safe default per trading.md
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
-MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "55"))  # v7.2.2: 65→55 (dead zone 45-55 вместо 35-65)
-# v7.2.2: per-pair Q thresholds = MIN_Q_SCORE - 1, чтобы не блокировать торговлю при изменении MIN_Q_SCORE
-PAIR_Q_THRESHOLDS: dict = {"BTC-USDT": 54, "ETH-USDT": 54, "SOL-USDT": 54,
-                            "BNB-USDT": 54, "XRP-USDT": 54, "AVAX-USDT": 54}
-COOLDOWN       = int(os.getenv("COOLDOWN_STD", os.getenv("COOLDOWN", "450")))  # v7.3.2: читает COOLDOWN_STD из Railway
-MAX_LEVERAGE   = int(os.getenv("MAX_LEVERAGE", "5"))   # v6.9: Strategy C default
+MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "77"))  # v8.3.2: 77 (was 55) — per trading.md
+# v7.2.2: per-pair Q thresholds = MIN_Q_SCORE - 1
+PAIR_Q_THRESHOLDS: dict = {"BTC-USDT": 76, "ETH-USDT": 76, "SOL-USDT": 76,
+                            "BNB-USDT": 76, "XRP-USDT": 76, "AVAX-USDT": 76}
+COOLDOWN       = int(os.getenv("COOLDOWN_STD", os.getenv("COOLDOWN", "600")))  # v8.3.2: 600s (was 450)
+MAX_LEVERAGE   = int(os.getenv("MAX_LEVERAGE", "3"))   # v8.3.2: 3x (was 5x) — per trading.md
+# v8.3.2: Reserve USDT for arbitrage — never enter trades if balance drops below this
+ARB_RESERVE_USDT = float(os.getenv("ARB_RESERVE_USDT", "10"))  # keep $10 minimum for arb
 # v7.2.3: TP/SL ratio улучшен до 3:1 (было 2:1) — исправляет асимметрию убытков
 TP_PCT         = 0.06   # v7.2.3: 6% (было 5%)
 SL_PCT         = 0.02   # v7.2.3: 2% (было 2.5%) → ratio 3:1 вместо 2:1
@@ -112,7 +114,7 @@ TRAIL_TRIGGER  = 0.025  # v7.2.4: trailing stop при +2.5% прибыли
 TRAIL_PCT      = 0.015  # v7.2.4: закрывать при откате 1.5% от пика
 TEST_MODE      = os.getenv("TEST_MODE", "false").lower() == "true"  # v6.7: default LIVE mode
 if TEST_MODE:
-    RISK_PER_TRADE = 0.10
+    RISK_PER_TRADE = min(RISK_PER_TRADE, 0.05)  # v8.3.2: test mode even more conservative
 
 AUTOPILOT  = True
 SPOT_PAIRS = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT", "AVAX-USDT"]
@@ -1446,14 +1448,19 @@ async def place_futures_stop_order(symbol: str, side: str, size: int,
 async def execute_futures_trade(symbol, signal, vision, price, available_usdt):
     FUTURES_MAP = {"BTC-USDT": ("XBTUSDTM", 0.001), "ETH-USDT": ("ETHUSDTM", 0.01), "SOL-USDT": ("SOLUSDTM", 1.0)}
     if symbol not in FUTURES_MAP: return False
+    # v8.3.2: Reserve check — keep funds for arbitrage
+    tradeable_usdt = max(0, available_usdt - ARB_RESERVE_USDT)
+    if tradeable_usdt < 5:
+        log_activity(f"[futures] {symbol}: SKIP — ${available_usdt:.2f} available, ${ARB_RESERVE_USDT:.0f} reserved for arb")
+        return False
     fut_symbol, contract_size = FUTURES_MAP[symbol]
     side = "buy" if signal["action"] == "BUY" else "sell"
-    trade_usdt = available_usdt * RISK_PER_TRADE
+    trade_usdt = tradeable_usdt * RISK_PER_TRADE
     contract_value = price * contract_size
     n_contracts = max(1, int(trade_usdt * MAX_LEVERAGE / contract_value))
     margin_needed = contract_value / MAX_LEVERAGE
-    if margin_needed > available_usdt:
-        log_activity(f"[futures] {symbol}: SKIP — need ${margin_needed:.2f}, have ${available_usdt:.2f}")
+    if margin_needed > tradeable_usdt:
+        log_activity(f"[futures] {symbol}: SKIP — need ${margin_needed:.2f}, have ${tradeable_usdt:.2f} (after reserve)")
         return False
     print(f"[futures] {symbol} -> {fut_symbol}: {side.upper()} {n_contracts} @ ${price:.2f}")
     result = await place_futures_order(fut_symbol, side, n_contracts, MAX_LEVERAGE)
@@ -1778,7 +1785,9 @@ async def auto_trade_cycle():
 
     spot_usdt       = spot_bal.get("total_usdt", 0)
     fut_usdt        = fut_bal.get("available_balance", 0)
-    spot_trade_usdt = spot_usdt * RISK_PER_TRADE
+    # v8.3.2: subtract arb reserve before calculating trade size
+    spot_tradeable  = max(0, spot_usdt - ARB_RESERVE_USDT)
+    spot_trade_usdt = spot_tradeable * RISK_PER_TRADE
     fg_val = fg_data.get("value", 50)
     # Cache prices for arb monitor
     _cache_set("all_prices", prices_data)
@@ -3810,7 +3819,7 @@ async def update_settings(body: dict, _auth=Depends(verify_api_key)):  # v7.3.3:
         changed["autopilot"] = AUTOPILOT
     if "test_mode" in body:
         TEST_MODE = bool(body["test_mode"])
-        RISK_PER_TRADE = 0.10 if TEST_MODE else 0.25  # v6.9: Strategy C default in live mode
+        RISK_PER_TRADE = 0.05 if TEST_MODE else 0.08  # v8.3.2: safe defaults per trading.md
         changed["test_mode"] = TEST_MODE
         changed["risk_per_trade"] = RISK_PER_TRADE
     if "max_leverage" in body:
