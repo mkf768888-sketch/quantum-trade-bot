@@ -49,6 +49,8 @@ app = FastAPI(title="QuantumTrade AI", version="10.0.0")
 # ── v10.0: Security Hardening — CORS ─────────────────────────────────────────
 # Telegram WebApp sends Origin: https://web.telegram.org or tg-specific origins.
 # Railway domain is the only other legitimate origin for the dashboard.
+# NOTE: RAILWAY_PUBLIC_DOMAIN defined early here, also used later in config block
+RAILWAY_PUBLIC_DOMAIN= os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
 _railway_origin = f"https://{RAILWAY_PUBLIC_DOMAIN}" if RAILWAY_PUBLIC_DOMAIN else None
 _ALLOWED_ORIGINS = [o for o in [
     "https://web.telegram.org",
@@ -134,7 +136,7 @@ AWS_REGION         = os.getenv("AWS_REGION", "us-east-1")  # v7.3.1: Braket regi
 BRAKET_S3_BUCKET   = os.getenv("BRAKET_S3_BUCKET",   "")   # v7.3.1: S3 бакет для результатов
 BRAKET_DEVICE_ARN  = os.getenv("BRAKET_DEVICE_ARN",  "arn:aws:braket:us-east-1::device/qpu/ionq/Harmony")  # v7.3.1
 RAILWAY_TOKEN        = os.getenv("RAILWAY_TOKEN", "")       # v7.2.1: Railway API — persist variable changes
-RAILWAY_PUBLIC_DOMAIN= os.getenv("RAILWAY_PUBLIC_DOMAIN", "")  # v7.4.0: авто-URL Railway сервиса
+# RAILWAY_PUBLIC_DOMAIN — defined early (line 53) for CORS config
 WEBAPP_URL           = os.getenv("WEBAPP_URL", "")          # v7.4.0: если не задан — берётся из Railway URL
 API_SECRET           = os.getenv("API_SECRET", "")          # v7.3.3: защита приватных эндпоинтов
 TG_WEBHOOK_SECRET    = os.getenv("TG_WEBHOOK_SECRET", "")   # v10.0: Telegram webhook secret_token verification
@@ -4263,20 +4265,20 @@ async def _tg_diag(chat_id: int):
 
     # 14. v10.0: LunarCrush
     lc_ok = "✅" if _lunarcrush_cache else "❌ No data"
-    lc_age = int(time.time() - _lunarcrush_cache_ts) if _lunarcrush_cache_ts else 0
-    lc_coins = len(_lunarcrush_cache) if _lunarcrush_cache else 0
+    lc_age = int(time.time() - _lunarcrush_ts) if _lunarcrush_ts else 0
+    lc_coins = len(_lunarcrush_cache.get("coins", {})) if _lunarcrush_cache else 0
     results.append(f"<b>🌙 LunarCrush:</b> {lc_ok} coins={lc_coins} age={lc_age}s")
 
     # 15. v10.0: Reddit Sentiment
     rd_ok = "✅" if _reddit_cache else "❌ No data"
-    rd_age = int(time.time() - _reddit_cache_ts) if _reddit_cache_ts else 0
+    rd_age = int(time.time() - _reddit_ts) if _reddit_ts else 0
     results.append(f"<b>🔴 Reddit:</b> {rd_ok} age={rd_age}s")
 
     # 16. v10.0: Self-Learning v2
     sl_avoid = len(_learning_insights.get("avoid_symbols", []))
     sl_best_fg = _learning_insights.get("best_fg_range", "?")
     sl_best_hr = _learning_insights.get("best_hour", "?")
-    sl_opt_q = _learning_insights.get("optimal_q_score", "?")
+    sl_opt_q = _learning_insights.get("optimal_q", "?")
     results.append(f"<b>🧠 Self-Learn:</b> avoid={sl_avoid} best_fg={sl_best_fg} best_hr={sl_best_hr} opt_q={sl_opt_q}")
 
     # 17. v10.0: Security
