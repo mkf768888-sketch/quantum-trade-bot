@@ -81,6 +81,12 @@ RAILWAY_PUBLIC_DOMAIN= os.getenv("RAILWAY_PUBLIC_DOMAIN", "")  # v7.4.0: авт�
 WEBAPP_URL           = os.getenv("WEBAPP_URL", "")          # v7.4.0: если не задан — берётся из Railway URL
 API_SECRET           = os.getenv("API_SECRET", "")          # v7.3.3: защита приватных эндпоинтов
 
+# ── v9.0: ByBit Multi-Exchange ─────────────────────────────────────────────
+BYBIT_API_KEY     = os.getenv("BYBIT_API_KEY", "")
+BYBIT_API_SECRET  = os.getenv("BYBIT_API_SECRET", "")
+BYBIT_BASE_URL    = os.getenv("BYBIT_BASE_URL", "https://api.bybit.com")
+BYBIT_ENABLED     = bool(BYBIT_API_KEY and BYBIT_API_SECRET)
+
 # ── v7.3.3: API-аутентификация ──────────────────────────────────────────────
 async def verify_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
     """Проверяет X-API-Key заголовок на всех приватных эндпоинтах.
@@ -649,6 +655,202 @@ def kucoin_headers(method: str, endpoint: str, body: str = "") -> dict:
         "KC-API-TIMESTAMP": timestamp, "KC-API-PASSPHRASE": pp,
         "KC-API-KEY-VERSION": "2", "Content-Type": "application/json",
     }
+
+
+# ── v9.0: ByBit V5 API ─────────────────────────────────────────────────────────
+_bybit_stats = {"calls": 0, "errors": 0, "last_call": 0}
+
+def bybit_headers(method: str, endpoint: str, body: str = "") -> dict:
+    """ByBit V5 HMAC-SHA256 auth headers."""
+    timestamp = str(int(time.time() * 1000))
+    recv_window = "5000"
+    if method.upper() == "GET":
+        # For GET: timestamp + api_key + recv_window + query_string
+        param_str = timestamp + BYBIT_API_KEY + recv_window + body  # body = query string for GET
+    else:
+        param_str = timestamp + BYBIT_API_KEY + recv_window + body
+    signature = hmac.new(
+        BYBIT_API_SECRET.encode(), param_str.encode(), hashlib.sha256
+    ).hexdigest()
+    return {
+        "X-BAPI-API-KEY": BYBIT_API_KEY,
+        "X-BAPI-SIGN": signature,
+        "X-BAPI-SIGN-TYPE": "2",
+        "X-BAPI-TIMESTAMP": timestamp,
+        "X-BAPI-RECV-WINDOW": recv_window,
+        "Content-Type": "application/json",
+    }
+
+
+async def bybit_request(method: str, endpoint: str, params: dict = None) -> dict:
+    """Universal ByBit V5 API request handler."""
+    if not BYBIT_ENABLED:
+        return {"success": False, "error": "ByBit not configured"}
+    _bybit_stats["calls"] += 1
+    _bybit_stats["last_call"] = time.time()
+    url = BYBIT_BASE_URL + endpoint
+    try:
+        async with aiohttp.ClientSession() as s:
+            if method.upper() == "GET":
+                qs = "&".join(f"{k}={v}" for k, v in sorted((params or {}).items()))
+                headers = bybit_headers("GET", endpoint, qs)
+                r = await s.get(url + ("?" + qs if qs else ""),
+                                headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=10))
+            else:
+                body = json.dumps(params or {})
+                headers = bybit_headers("POST", endpoint, body)
+                r = await s.post(url, headers=headers, data=body,
+                                 timeout=aiohttp.ClientTimeout(total=10))
+            data = await r.json()
+            if data.get("retCode") == 0:
+                return {"success": True, "data": data.get("result", {}), "raw": data}
+            else:
+                _bybit_stats["errors"] += 1
+                return {"success": False, "error": data.get("retMsg", "unknown"),
+                        "code": data.get("retCode")}
+    except Exception as e:
+        _bybit_stats["errors"] += 1
+        log_activity(f"[bybit] API error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def bybit_get_balance() -> dict:
+    """Get ByBit unified account balance."""
+    result = await bybit_request("GET", "/v5/account/wallet-balance",
+                                  {"accountType": "UNIFIED"})
+    if not result["success"]:
+        return {"total_usdt": 0, "success": False, "error": result.get("error")}
+    coins = result["data"].get("list", [{}])[0].get("coin", [])
+    total_usdt = 0
+    balances = {}
+    for c in coins:
+        cur = c.get("coin", "")
+        eq = float(c.get("equity", 0))
+        usd_val = float(c.get("usdValue", 0))
+        if eq > 0:
+            balances[cur] = {"equity": eq, "usd_value": round(usd_val, 2),
+                             "available": float(c.get("availableToWithdraw", 0))}
+        if cur == "USDT":
+            total_usdt = eq
+    return {"total_usdt": round(total_usdt, 2), "balances": balances,
+            "success": True}
+
+
+async def bybit_get_ticker(symbol: str) -> float:
+    """Get last price for symbol on ByBit. Symbol format: BTCUSDT (no dash)."""
+    bb_symbol = symbol.replace("-", "")
+    result = await bybit_request("GET", "/v5/market/tickers",
+                                  {"category": "spot", "symbol": bb_symbol})
+    if result["success"]:
+        tickers = result["data"].get("list", [])
+        if tickers:
+            return float(tickers[0].get("lastPrice", 0))
+    return 0.0
+
+
+async def bybit_get_funding_rate(symbol: str) -> dict:
+    """Get current funding rate for a perpetual contract."""
+    bb_symbol = symbol.replace("-", "").replace("USDT", "USDT")
+    result = await bybit_request("GET", "/v5/market/funding/history",
+                                  {"category": "linear", "symbol": bb_symbol, "limit": "1"})
+    if result["success"]:
+        items = result["data"].get("list", [])
+        if items:
+            return {"rate": float(items[0].get("fundingRate", 0)),
+                    "time": items[0].get("fundingRateTimestamp", ""),
+                    "success": True}
+    return {"rate": 0, "success": False}
+
+
+async def bybit_spot_prices(symbols: list) -> dict:
+    """Get prices for multiple symbols from ByBit. Returns {symbol: price}."""
+    prices = {}
+    for sym in symbols:
+        p = await bybit_get_ticker(sym)
+        if p > 0:
+            prices[sym] = p
+    return prices
+
+
+# ── v9.0: Cross-Exchange Arbitrage Monitor ─────────────────────────────────────
+_xarb_stats = {"checks": 0, "opportunities": 0, "executions": 0,
+               "total_pnl": 0.0, "best_spread": 0.0, "last_check": 0}
+_xarb_history: list = []  # last 50 opportunities
+
+XARB_MIN_SPREAD = float(os.getenv("XARB_MIN_SPREAD", "0.003"))   # 0.3% min spread
+XARB_SYMBOLS = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]              # monitored pairs
+XARB_ENABLED = os.getenv("XARB_ENABLED", "true").lower() == "true"
+
+async def check_cross_exchange_arb() -> list:
+    """v9.0: Compare prices between KuCoin and ByBit for arb opportunities.
+    Returns list of opportunities with spread > XARB_MIN_SPREAD."""
+    if not BYBIT_ENABLED or not XARB_ENABLED:
+        return []
+
+    opportunities = []
+    _xarb_stats["checks"] += 1
+    _xarb_stats["last_check"] = time.time()
+
+    for symbol in XARB_SYMBOLS:
+        try:
+            # Get prices from both exchanges
+            kc_price = await get_ticker(symbol)
+            bb_price = await bybit_get_ticker(symbol)
+
+            if kc_price <= 0 or bb_price <= 0:
+                continue
+
+            # Calculate spread
+            spread = abs(kc_price - bb_price) / min(kc_price, bb_price)
+
+            # Which direction?
+            if kc_price < bb_price:
+                direction = "BUY_KC_SELL_BB"
+                buy_ex, sell_ex = "KuCoin", "ByBit"
+                buy_price, sell_price = kc_price, bb_price
+            else:
+                direction = "BUY_BB_SELL_KC"
+                buy_ex, sell_ex = "ByBit", "KuCoin"
+                buy_price, sell_price = bb_price, kc_price
+
+            opp = {
+                "symbol": symbol, "spread": round(spread, 6),
+                "spread_pct": round(spread * 100, 3),
+                "kc_price": kc_price, "bb_price": bb_price,
+                "direction": direction, "buy_ex": buy_ex, "sell_ex": sell_ex,
+                "buy_price": buy_price, "sell_price": sell_price,
+                "ts": time.time(),
+            }
+
+            if spread > _xarb_stats["best_spread"]:
+                _xarb_stats["best_spread"] = round(spread, 6)
+
+            if spread >= XARB_MIN_SPREAD:
+                _xarb_stats["opportunities"] += 1
+                opportunities.append(opp)
+                log_activity(f"[xarb] {symbol}: {spread*100:.3f}% spread! "
+                             f"KC=${kc_price:,.2f} BB=${bb_price:,.2f} → {direction}")
+
+                # Keep history
+                _xarb_history.append(opp)
+                if len(_xarb_history) > 50:
+                    _xarb_history.pop(0)
+
+        except Exception as e:
+            log_activity(f"[xarb] {symbol} error: {e}")
+
+    return opportunities
+
+
+async def bybit_get_funding_rates_all() -> dict:
+    """Get funding rates for monitored symbols — useful for funding rate arb."""
+    rates = {}
+    for sym in XARB_SYMBOLS:
+        fr = await bybit_get_funding_rate(sym)
+        if fr["success"]:
+            rates[sym] = fr["rate"]
+    return rates
 
 
 # ── KuCoin API ─────────────────────────────────────────────────────────────────
@@ -3262,7 +3464,23 @@ async def _tg_diag(chat_id: int):
     # 8. AI call stats
     results.append(f"<b>AI Calls:</b> DS={_ai_call_stats['deepseek']} H={_ai_call_stats['haiku']} O={_ai_call_stats['opus']} err={_ai_call_stats['errors']}")
 
-    # 9. MiroFish Lite
+    # 9. ByBit
+    if BYBIT_ENABLED:
+        try:
+            bb_bal = await bybit_get_balance()
+            if bb_bal["success"]:
+                results.append(f"<b>🟡 ByBit:</b> ✅ Connected (${bb_bal['total_usdt']:.2f} USDT) | calls={_bybit_stats['calls']} err={_bybit_stats['errors']}")
+            else:
+                results.append(f"<b>🟡 ByBit:</b> ⚠️ {bb_bal.get('error', 'unknown')}")
+        except Exception as e:
+            results.append(f"<b>🟡 ByBit:</b> ❌ {str(e)[:80]}")
+    else:
+        results.append(f"<b>🟡 ByBit:</b> ❌ Not configured")
+
+    # 10. Cross-Exchange Arb
+    results.append(f"<b>🔀 X-Arb:</b> {'✅' if XARB_ENABLED and BYBIT_ENABLED else '❌'} checks={_xarb_stats['checks']} opps={_xarb_stats['opportunities']} best={_xarb_stats['best_spread']*100:.4f}%")
+
+    # 11. MiroFish Lite
     mf_en = "✅ Enabled" if MIROFISH_ENABLED else "❌ Disabled"
     mf_calls = _mirofish_stats['calls']
     mf_cache = _mirofish_stats['cache_hits']
@@ -3337,6 +3555,84 @@ async def _tg_mirofish(chat_id: int, raw: str):
         f"<b>Агенты:</b>\n" + "\n".join(agent_lines) + "\n\n"
         f"<i>Model: {result.get('model', '?')} | Calls: {_mirofish_stats['calls']}</i>"
     )
+    await _tg_send(chat_id, text)
+
+
+async def _tg_bybit(chat_id: int):
+    """v9.0: ByBit account status and balance."""
+    if not BYBIT_ENABLED:
+        await _tg_send(chat_id, "❌ ByBit не подключен. Добавь BYBIT_API_KEY и BYBIT_API_SECRET в Railway Variables.")
+        return
+    await _tg_send(chat_id, "🔄 <i>Проверяю ByBit...</i>")
+    bal = await bybit_get_balance()
+    if not bal["success"]:
+        await _tg_send(chat_id, f"❌ ByBit ошибка: {bal.get('error', '?')}")
+        return
+
+    coins_lines = []
+    for cur, info in sorted(bal.get("balances", {}).items(), key=lambda x: -x[1]["usd_value"]):
+        coins_lines.append(f"  {cur}: <code>{info['equity']:.4f}</code> (${info['usd_value']:.2f})")
+
+    # Get funding rates
+    rates_txt = ""
+    try:
+        rates = await bybit_get_funding_rates_all()
+        if rates:
+            rate_lines = [f"  {sym}: <code>{rate*100:.4f}%</code>" for sym, rate in rates.items()]
+            rates_txt = "\n\n<b>📊 Funding Rates:</b>\n" + "\n".join(rate_lines)
+    except Exception:
+        pass
+
+    text = (
+        f"🟡 <b>ByBit — Статус</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"💰 USDT: <code>${bal['total_usdt']:,.2f}</code>\n"
+        f"\n<b>Балансы:</b>\n" + ("\n".join(coins_lines) if coins_lines else "  (пусто)") +
+        rates_txt +
+        f"\n\n<b>📈 API Stats:</b> calls={_bybit_stats['calls']} err={_bybit_stats['errors']}"
+    )
+    await _tg_send(chat_id, text)
+
+
+async def _tg_xarb(chat_id: int):
+    """v9.0: Cross-exchange arbitrage status."""
+    if not BYBIT_ENABLED:
+        await _tg_send(chat_id, "❌ ByBit не подключен — кросс-арбитраж недоступен.")
+        return
+
+    await _tg_send(chat_id, "🔄 <i>Сканирую спреды KuCoin ↔ ByBit...</i>")
+    opps = await check_cross_exchange_arb()
+
+    # Current spreads for all symbols
+    spread_lines = []
+    for symbol in XARB_SYMBOLS:
+        kc = await get_ticker(symbol)
+        bb = await bybit_get_ticker(symbol)
+        if kc > 0 and bb > 0:
+            spread = abs(kc - bb) / min(kc, bb) * 100
+            emoji = "🟢" if spread >= XARB_MIN_SPREAD * 100 else "⚪"
+            spread_lines.append(f"  {emoji} {symbol}: KC=<code>${kc:,.2f}</code> BB=<code>${bb:,.2f}</code> → <code>{spread:.4f}%</code>")
+
+    recent = _xarb_history[-5:] if _xarb_history else []
+    hist_lines = []
+    for h in reversed(recent):
+        ago = int(time.time() - h["ts"])
+        hist_lines.append(f"  {h['symbol']}: {h['spread_pct']:.3f}% ({ago}s ago)")
+
+    text = (
+        f"🔀 <b>Cross-Exchange Arbitrage</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<b>Текущие спреды:</b>\n" + "\n".join(spread_lines) +
+        f"\n\nMin spread: <code>{XARB_MIN_SPREAD*100:.2f}%</code>\n"
+        f"Checks: <code>{_xarb_stats['checks']}</code> | "
+        f"Opportunities: <code>{_xarb_stats['opportunities']}</code> | "
+        f"Best: <code>{_xarb_stats['best_spread']*100:.4f}%</code>\n"
+    )
+    if hist_lines:
+        text += f"\n<b>Последние возможности:</b>\n" + "\n".join(hist_lines)
+    else:
+        text += "\n<i>Пока нет возможностей выше порога</i>"
+
     await _tg_send(chat_id, text)
 
 
@@ -3864,6 +4160,8 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/arb":                 await _tg_arb(chat_id)
         elif cmd == "/spot":                await _tg_spot_status(chat_id)
         elif cmd.startswith("/mirofish"):   await _tg_mirofish(chat_id, raw)
+        elif cmd == "/bybit":               await _tg_bybit(chat_id)
+        elif cmd == "/xarb":                await _tg_xarb(chat_id)
         elif cmd.startswith("/sell"):       await _tg_universal_sell(chat_id, raw)
         elif cmd.startswith("/buy"):
             if not cmd.startswith("/buy ") and cmd == "/buy":
@@ -4124,6 +4422,20 @@ async def trading_loop():
     while True:
         try: await auto_trade_cycle()
         except Exception as e: log_activity(f"[loop] error: {e}")
+        # v9.0: Cross-exchange arb check every cycle
+        if BYBIT_ENABLED and XARB_ENABLED:
+            try:
+                opps = await check_cross_exchange_arb()
+                if opps:
+                    for opp in opps:
+                        await notify(
+                            f"🔀 <b>Cross-Exchange Arb</b>\n"
+                            f"{opp['symbol']}: спред <code>{opp['spread_pct']:.3f}%</code>\n"
+                            f"KuCoin: <code>${opp['kc_price']:,.2f}</code> | ByBit: <code>${opp['bb_price']:,.2f}</code>\n"
+                            f"→ {opp['direction']}"
+                        )
+            except Exception as e:
+                log_activity(f"[xarb_loop] error: {e}")
         await asyncio.sleep(15)  # v7.2.0: 60→15s (4x faster signal response)
 
 
@@ -4325,6 +4637,8 @@ async def arb_stats_api():
         "stats": _arb_stats,
         "opus_gate": _opus_gate_stats,
         "mirofish": {**_mirofish_stats, "enabled": MIROFISH_ENABLED},
+        "bybit": {**_bybit_stats, "enabled": BYBIT_ENABLED},
+        "xarb": {**_xarb_stats, "enabled": XARB_ENABLED and BYBIT_ENABLED},
         "ws": {"connected": _ws_connected, "prices_count": len(_ws_prices), "reconnects": _ws_reconnects},
         "config": {
             "exec_enabled": ARB_EXEC_ENABLED, "exec_usdt": ARB_EXEC_USDT,
