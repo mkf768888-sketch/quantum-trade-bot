@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-<title>QuantumTrade AI v8.3</title>
+<title>QuantumTrade AI v8.3.3</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -455,23 +455,47 @@
     <!-- SECTION 3: MEV Arbitrage (Coming Soon)         -->
     <!-- ═══════════════════════════════════════════════ -->
     <div class="section" id="sec-mev">
-      <div class="soon-page">
-        <div class="soon-icon">⚡</div>
-        <div class="soon-title">MEV Арбитраж на DEX</div>
-        <div class="soon-phase">◆ ФАЗА 3 · ЗАПУСК Q4 2026</div>
-        <div class="soon-desc">Квантовая оптимизация маршрутов MEV через DEX-ы. QAOA находит оптимальный путь через 5-10 пулов ликвидности одновременно.</div>
-        <div class="soon-stats">
-          <div class="soon-stat"><div class="soon-stat-val">$50-500</div><div class="soon-stat-label">в день / ETH</div></div>
-          <div class="soon-stat"><div class="soon-stat-val">$30-300</div><div class="soon-stat-label">в день / SOL</div></div>
-          <div class="soon-stat"><div class="soon-stat-val">3 сети</div><div class="soon-stat-label">ETH + SOL + ARB</div></div>
-          <div class="soon-stat"><div class="soon-stat-val">Flashbots</div><div class="soon-stat-label">приватный relay</div></div>
+      <!-- v8.3.3: Live Arbitrage Dashboard -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Статус арбитража</div>
+          <div class="badge" id="arbWsBadge">--</div>
         </div>
-        <div class="soon-features">
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(249,115,22,0.12);color:#f97316">◎</div>Мониторинг mempool в реальном времени</div>
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(249,115,22,0.12);color:#f97316">◎</div>QAOA-оптимизация арбитражных путей</div>
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(249,115,22,0.12);color:#f97316">◎</div>Flash-бандлы для атомарных транзакций</div>
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(249,115,22,0.12);color:#f97316">◎</div>Uniswap V3, Jupiter, Raydium, Camelot</div>
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(249,115,22,0.12);color:#f97316">◎</div>Jito MEV для Solana</div>
+        <div class="stats-grid" style="grid-template-columns:1fr 1fr 1fr">
+          <div class="stat-item"><div class="stat-val" id="arbActive">--</div><div class="stat-label">Связок</div></div>
+          <div class="stat-item"><div class="stat-val" id="arbExec">--</div><div class="stat-label">Исполнение</div></div>
+          <div class="stat-item"><div class="stat-val" id="arbScanSpeed">--</div><div class="stat-label">Скан (сек)</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Статистика</div>
+          <div class="badge badge-p" id="arbPnlBadge">$0</div>
+        </div>
+        <div class="stats-grid" style="grid-template-columns:1fr 1fr 1fr 1fr">
+          <div class="stat-item"><div class="stat-val" id="arbFound">0</div><div class="stat-label">Найдено</div></div>
+          <div class="stat-item"><div class="stat-val positive" id="arbSuccess">0</div><div class="stat-label">Успех</div></div>
+          <div class="stat-item"><div class="stat-val negative" id="arbFailed">0</div><div class="stat-label">Ошибки</div></div>
+          <div class="stat-item"><div class="stat-val" id="arbBestSpread">0%</div><div class="stat-label">Лучший</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Opus Gate</div>
+          <div class="badge badge-p">AI Risk</div>
+        </div>
+        <div class="stats-grid" style="grid-template-columns:1fr 1fr 1fr">
+          <div class="stat-item"><div class="stat-val" id="opusAsked">0</div><div class="stat-label">Запросов</div></div>
+          <div class="stat-item"><div class="stat-val positive" id="opusApproved">0</div><div class="stat-label">Одобрено</div></div>
+          <div class="stat-item"><div class="stat-val negative" id="opusRejected">0</div><div class="stat-label">Отклонено</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Последние возможности</div>
+        </div>
+        <div id="arbHistoryList" style="display:flex;flex-direction:column;gap:6px;max-height:250px;overflow-y:auto">
+          <div style="color:var(--text3);font-size:12px;text-align:center;padding:20px 0">Загрузка...</div>
         </div>
       </div>
     </div>
@@ -540,9 +564,9 @@
     <div class="nav-icon">📡</div>
     <div class="nav-label">QaaS</div>
   </div>
-  <div class="nav-item soon" onclick="showSection('mev')" id="nav-mev">
+  <div class="nav-item" onclick="showSection('mev');loadArbStats()" id="nav-mev">
     <div class="nav-icon">⚡</div>
-    <div class="nav-label">MEV</div>
+    <div class="nav-label">Арбитраж</div>
   </div>
   <div class="nav-item soon" onclick="showSection('defi')" id="nav-defi">
     <div class="nav-icon">🛡</div>
@@ -900,6 +924,55 @@ function showToast(msg){
   const t=document.createElement('div');
   t.style.cssText='position:fixed;bottom:72px;left:50%;transform:translateX(-50%);background:rgba(10,11,16,0.96);border:1px solid rgba(99,102,241,0.25);color:#f1f5f9;padding:8px 16px;border-radius:10px;font-size:12px;z-index:999;backdrop-filter:blur(12px);white-space:nowrap;max-width:90vw;text-align:center';
   t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),3000);
+}
+
+// ── v8.3.3: Arb Dashboard ──
+async function loadArbStats(){
+  if(!BASE_URL)return;
+  try{
+    const d=await fetch(BASE_URL+'/api/arb/stats',{signal:AbortSignal.timeout(10000)}).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.json();});
+    const s=d.stats||{}, c=d.config||{}, w=d.ws||{}, o=d.opus_gate||{}, h=d.history||[];
+    // Status
+    const wsBadge=document.getElementById('arbWsBadge');
+    if(w.connected){wsBadge.textContent='WS Live';wsBadge.className='badge badge-g';}
+    else{wsBadge.textContent='WS Offline';wsBadge.className='badge badge-r';}
+    document.getElementById('arbActive').textContent=c.active+'/'+c.total_triangles;
+    document.getElementById('arbExec').textContent=c.exec_enabled?'ВКЛ':'ВЫКЛ';
+    document.getElementById('arbScanSpeed').textContent=w.connected?'5':'30';
+    // Stats
+    document.getElementById('arbFound').textContent=s.opportunities_found||0;
+    document.getElementById('arbSuccess').textContent=s.success||0;
+    document.getElementById('arbFailed').textContent=s.failed||0;
+    const best=Math.abs(s.best_spread||0);
+    document.getElementById('arbBestSpread').textContent=best.toFixed(2)+'%';
+    const pnlBadge=document.getElementById('arbPnlBadge');
+    pnlBadge.textContent='$'+(s.total_pnl||0).toFixed(2);
+    pnlBadge.className='badge '+((s.total_pnl||0)>=0?'badge-g':'badge-r');
+    // Opus Gate
+    document.getElementById('opusAsked').textContent=o.asked||0;
+    document.getElementById('opusApproved').textContent=o.approved||0;
+    document.getElementById('opusRejected').textContent=o.rejected||0;
+    // History
+    const list=document.getElementById('arbHistoryList');
+    if(h.length===0){
+      list.innerHTML='<div style="color:var(--text3);font-size:12px;text-align:center;padding:20px 0">Пока нет арбитражных возможностей</div>';
+    }else{
+      list.innerHTML=h.slice().reverse().map(e=>{
+        const dt=new Date(e.ts*1000);
+        const time=dt.toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'});
+        const spread=Math.abs(e.spread||0).toFixed(3);
+        const icon=e.executed?'✅':'🔍';
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:rgba(255,255,255,0.03);border-radius:8px;font-size:11px">
+          <div style="display:flex;align-items:center;gap:6px">
+            <span>${icon}</span>
+            <span style="color:var(--accent2);font-family:var(--mono)">${e.cross||'?'}</span>
+          </div>
+          <div style="color:var(--text2)">${spread}%</div>
+          <div style="color:var(--text3)">${time}</div>
+        </div>`;
+      }).join('');
+    }
+  }catch(e){console.log('[arb] load error:',e);}
 }
 
 // ── Init ──
