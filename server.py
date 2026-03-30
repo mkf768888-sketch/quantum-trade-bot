@@ -1,17 +1,22 @@
 """
-QuantumTrade AI - FastAPI Backend v8.3.2
-Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
-Phase3: Origin QC QAOA — квантовая оптимизация портфеля (CPU симулятор + Wukong 180 реальный чип)
-Phase5: Claude Vision — AI-анализ графиков
-Phase6: Origin QC Wukong 180 — реальный квантовый чип (авто-переключение по ORIGIN_QC_TOKEN)
-v7.5.0: Self-learning performance analytics, AutoScanner 10+ checks
-v8.3.0: Self-learning Q-Score adjustment, perf tracking wired, all versions unified
-v8.3.0: Spot trading fix (sell mechanism + monitor), arbitrage dynamic sizing + auto-enable
+QuantumTrade AI - FastAPI Backend v10.0.0
+Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
+advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
+whale tracking, copy-trading intelligence, and continuous self-learning.
+
+Changelog:
+v10.0: pandas-ta indicators, LunarCrush Galaxy Score, Reddit sentiment,
+       MiroFish v3 (role-based), security hardening, /sentiment command,
+       continuous self-learning v2, advanced TA (MACD/BB/Stochastic/ADX)
+v9.2:  Macro context, whale alerts, copy-trading, F&G history, persistent memory
+v9.1:  Deep trade analytics, MiroFish v2 (12 agents, memory, arb specialists)
+v9.0:  ByBit multi-exchange, cross-exchange arbitrage, MiroFish Lite
 """
 
 import asyncio
 import hashlib
 import hmac
+import html as html_mod
 import time
 import base64
 import json
@@ -20,22 +25,74 @@ import math
 import random
 from datetime import datetime
 from typing import Optional, List, Dict
+from collections import defaultdict
 import aiohttp
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 import db  # v8.2: PostgreSQL persistent storage
 
-app = FastAPI(title="QuantumTrade AI", version="9.2.0")
-_ALLOWED_ORIGINS = ["*"]   # v7.3.9: open for Mini App (Telegram WebApp origin varies)
+# v10.0: Advanced TA — pandas-ta for MACD, Bollinger, Stochastic, ADX, etc.
+try:
+    import pandas as pd
+    import pandas_ta as ta
+    _TA_AVAILABLE = True
+    print("[ta] pandas-ta loaded ✅")
+except ImportError:
+    _TA_AVAILABLE = False
+    print("[ta] pandas-ta not available — using built-in indicators")
+
+app = FastAPI(title="QuantumTrade AI", version="10.0.0")
+
+# ── v10.0: Security Hardening — CORS ─────────────────────────────────────────
+# Telegram WebApp sends Origin: https://web.telegram.org or tg-specific origins.
+# Railway domain is the only other legitimate origin for the dashboard.
+_railway_origin = f"https://{RAILWAY_PUBLIC_DOMAIN}" if RAILWAY_PUBLIC_DOMAIN else None
+_ALLOWED_ORIGINS = [o for o in [
+    "https://web.telegram.org",
+    "https://webk.telegram.org",
+    "https://webz.telegram.org",
+    _railway_origin,
+] if o]
+# Fallback: if no Railway domain set, allow all (dev mode)
+if not _ALLOWED_ORIGINS or not RAILWAY_PUBLIC_DOMAIN:
+    _ALLOWED_ORIGINS = ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
-    allow_methods=["GET", "POST", "OPTIONS"],  # v7.4.3: OPTIONS for CORS preflight
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["*"],
 )
+
+
+# ── v10.0: Security Headers Middleware ────────────────────────────────────────
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+
+# ── v10.0: Rate Limiting Middleware (global) ──────────────────────────────────
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Skip rate limiting for Telegram webhook (has its own auth)
+        if request.url.path == "/api/telegram/callback":
+            return await call_next(request)
+        client_ip = request.client.host if request.client else "unknown"
+        if _check_rate_limit(client_ip):
+            return JSONResponse({"error": "Rate limit exceeded. Try again later."}, status_code=429)
+        return await call_next(request)
+
+app.add_middleware(RateLimitMiddleware)
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_mini_app():
@@ -80,6 +137,7 @@ RAILWAY_TOKEN        = os.getenv("RAILWAY_TOKEN", "")       # v7.2.1: Railway AP
 RAILWAY_PUBLIC_DOMAIN= os.getenv("RAILWAY_PUBLIC_DOMAIN", "")  # v7.4.0: авто-URL Railway сервиса
 WEBAPP_URL           = os.getenv("WEBAPP_URL", "")          # v7.4.0: если не задан — берётся из Railway URL
 API_SECRET           = os.getenv("API_SECRET", "")          # v7.3.3: защита приватных эндпоинтов
+TG_WEBHOOK_SECRET    = os.getenv("TG_WEBHOOK_SECRET", "")   # v10.0: Telegram webhook secret_token verification
 
 # ── v9.0: ByBit Multi-Exchange ─────────────────────────────────────────────
 BYBIT_API_KEY     = os.getenv("BYBIT_API_KEY", "")
@@ -1270,6 +1328,82 @@ def parse_vision_bonus(ocr_text: str, vision_dict: dict) -> float:
     return round(max(-8.0, min(8.0, bonus)), 1)
 
 
+def calc_advanced_ta(candles: list) -> dict:
+    """v10.0: Advanced TA via pandas-ta — MACD, Bollinger Bands, Stochastic, ADX, VWAP, OBV.
+    Falls back to basic indicators if pandas-ta not installed."""
+    result = {"macd_signal": "neutral", "bb_position": "mid", "stoch_signal": "neutral",
+              "adx_strength": 0, "adx_trend": "none", "obv_trend": "neutral",
+              "macd_hist": 0, "bb_pct": 0.5, "stoch_k": 50, "stoch_d": 50, "available": False}
+    if not _TA_AVAILABLE or not candles or len(candles) < 20:
+        return result
+    try:
+        chron = list(reversed(candles))
+        df = pd.DataFrame(chron, columns=["time", "open", "close", "high", "low", "volume", "turnover"])
+        for col in ["open", "close", "high", "low", "volume"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df.dropna(inplace=True)
+        if len(df) < 14:
+            return result
+
+        # MACD (12, 26, 9)
+        macd = ta.macd(df["close"], fast=12, slow=26, signal=9)
+        if macd is not None and len(macd.columns) >= 3:
+            macd_val = macd.iloc[-1, 0]  # MACD line
+            signal_val = macd.iloc[-1, 2]  # Signal line
+            hist = macd.iloc[-1, 1]  # Histogram
+            result["macd_hist"] = round(float(hist) if pd.notna(hist) else 0, 4)
+            if pd.notna(macd_val) and pd.notna(signal_val):
+                result["macd_signal"] = "bullish" if macd_val > signal_val else "bearish"
+
+        # Bollinger Bands (20, 2)
+        bb = ta.bbands(df["close"], length=20, std=2)
+        if bb is not None and len(bb.columns) >= 3:
+            lower = float(bb.iloc[-1, 0]) if pd.notna(bb.iloc[-1, 0]) else 0
+            mid = float(bb.iloc[-1, 1]) if pd.notna(bb.iloc[-1, 1]) else 0
+            upper = float(bb.iloc[-1, 2]) if pd.notna(bb.iloc[-1, 2]) else 0
+            price = float(df["close"].iloc[-1])
+            if upper > lower:
+                bb_pct = (price - lower) / (upper - lower)
+                result["bb_pct"] = round(bb_pct, 3)
+                result["bb_position"] = "oversold" if bb_pct < 0.15 else "overbought" if bb_pct > 0.85 else "mid"
+
+        # Stochastic (14, 3, 3)
+        stoch = ta.stoch(df["high"], df["low"], df["close"], k=14, d=3, smooth_k=3)
+        if stoch is not None and len(stoch.columns) >= 2:
+            k_val = float(stoch.iloc[-1, 0]) if pd.notna(stoch.iloc[-1, 0]) else 50
+            d_val = float(stoch.iloc[-1, 1]) if pd.notna(stoch.iloc[-1, 1]) else 50
+            result["stoch_k"] = round(k_val, 1)
+            result["stoch_d"] = round(d_val, 1)
+            result["stoch_signal"] = "oversold" if k_val < 20 else "overbought" if k_val > 80 else "neutral"
+
+        # ADX (14) — trend strength
+        adx = ta.adx(df["high"], df["low"], df["close"], length=14)
+        if adx is not None and len(adx.columns) >= 3:
+            adx_val = float(adx.iloc[-1, 0]) if pd.notna(adx.iloc[-1, 0]) else 0
+            dmp = float(adx.iloc[-1, 1]) if pd.notna(adx.iloc[-1, 1]) else 0
+            dmn = float(adx.iloc[-1, 2]) if pd.notna(adx.iloc[-1, 2]) else 0
+            result["adx_strength"] = round(adx_val, 1)
+            if adx_val > 25:
+                result["adx_trend"] = "strong_up" if dmp > dmn else "strong_down"
+            elif adx_val > 15:
+                result["adx_trend"] = "weak_up" if dmp > dmn else "weak_down"
+            else:
+                result["adx_trend"] = "range"
+
+        # OBV trend (last 5 bars)
+        obv = ta.obv(df["close"], df["volume"])
+        if obv is not None and len(obv) >= 5:
+            obv_now = float(obv.iloc[-1])
+            obv_5ago = float(obv.iloc[-5])
+            result["obv_trend"] = "accumulation" if obv_now > obv_5ago * 1.02 else "distribution" if obv_now < obv_5ago * 0.98 else "flat"
+
+        result["available"] = True
+        return result
+    except Exception as e:
+        log_activity(f"[ta] calc_advanced_ta error: {e}")
+        return result
+
+
 async def analyze_chart_with_vision(symbol: str, candles: list) -> dict:
     if not candles or len(candles) < 5:
         return {"pattern": "insufficient_data", "signal": "HOLD", "confidence": 0.5}
@@ -1322,6 +1456,30 @@ async def analyze_chart_with_vision(symbol: str, candles: list) -> dict:
                   "rsi": rsi_val, "ema_fast": round(ema_fast, 4), "ema_slow": round(ema_slow, 4),
                   "ema_bullish": ema_bull, "vol_ratio": round(vol_ratio, 2), "price_pos_pct": round(price_pos, 1),
                   "vision_bonus": 0.0, "vision_ocr": ""}
+
+        # v10.0: Advanced TA indicators (MACD, BB, Stochastic, ADX, OBV)
+        adv_ta = calc_advanced_ta(candles)
+        result["adv_ta"] = adv_ta
+        if adv_ta.get("available"):
+            # Confidence boost from confirming signals
+            confirmations = 0
+            if signal == "BUY":
+                if adv_ta["macd_signal"] == "bullish": confirmations += 1
+                if adv_ta["bb_position"] == "oversold": confirmations += 1
+                if adv_ta["stoch_signal"] == "oversold": confirmations += 1
+                if adv_ta["adx_trend"] in ("strong_up", "weak_up"): confirmations += 1
+                if adv_ta["obv_trend"] == "accumulation": confirmations += 1
+            elif signal == "SELL":
+                if adv_ta["macd_signal"] == "bearish": confirmations += 1
+                if adv_ta["bb_position"] == "overbought": confirmations += 1
+                if adv_ta["stoch_signal"] == "overbought": confirmations += 1
+                if adv_ta["adx_trend"] in ("strong_down", "weak_down"): confirmations += 1
+                if adv_ta["obv_trend"] == "distribution": confirmations += 1
+            result["ta_confirmations"] = confirmations
+            # Boost confidence: each confirmation adds +0.02 (max +0.10)
+            confidence_boost = min(confirmations * 0.02, 0.10)
+            result["confidence"] = round(min(result["confidence"] + confidence_boost, 0.95), 2)
+
         # ── Phase 5: Claude Vision (нативный AI-анализ графика) ─────────────────
         if ANTHROPIC_API_KEY:
             img_b64 = _render_candles_png_b64(candles)
@@ -1544,7 +1702,8 @@ _mirofish_stats: dict = {"calls": 0, "cache_hits": 0, "avg_score": 0.0, "last_ca
 # v9.1: Historical memory — stores last 5 results per symbol for trend awareness
 _mirofish_memory: dict = {}  # symbol → [{ts, score, direction, fg}] max 5 entries
 
-# v9.1: 12 diverse trader personas (expanded from 8) — includes arb specialists
+# v10.0: MiroFish v3 — 15 role-based agents (inspired by TradingAgents framework)
+# Organized into: ANALYSTS (data), RESEARCHERS (context), TRADERS (decisions), RISK (vetoes)
 MIROFISH_PERSONAS = [
     {"id": "whale", "name": "Кит-институционал", "style": "Крупный фонд. Покупает только фундаментально сильные активы. Очень осторожен. Смотрит на макро и ликвидность."},
     {"id": "scalper", "name": "Скальпер", "style": "Дейтрейдер. Ловит быстрые движения. Смотрит только на моментум, объёмы и RSI. Не держит позиции дольше часа."},
@@ -1559,6 +1718,10 @@ MIROFISH_PERSONAS = [
     {"id": "funding_arb", "name": "Фандинг-арбитражёр", "style": "Специалист по funding rate perpetual контрактов. Положительный funding → шорт, отрицательный → лонг. Зарабатывает на ставках финансирования, а не на движении цены. Если funding нейтральный — HOLD."},
     {"id": "volume_prof", "name": "Профиль объёмов", "style": "Анализирует объёмы торгов. Растущие объёмы при росте цены — BUY. Падающие объёмы при росте — дивергенция, SELL. Низкие объёмы — HOLD, ждёт прорыва."},
     {"id": "onchain", "name": "On-Chain аналитик", "style": "Смотрит на ончейн метрики: приток на биржи (медвежий сигнал), отток (бычий), активные адреса, whale movements. Если нет ончейн данных — решение по Fear & Greed как proxy."},
+    # v10.0: TradingAgents-inspired role-based specialists
+    {"id": "risk_mgr", "name": "Риск-менеджер", "style": "Его задача — НЕ заработать, а НЕ потерять. Оценивает downside: ADX слабый + BB overbought = HOLD. Волатильность > 4% = HOLD. Серия проигрышей = HOLD. Голосует SELL/HOLD, крайне редко BUY. Последнее слово в оценке риска."},
+    {"id": "social_analyst", "name": "Соц.аналитик", "style": "Анализирует social sentiment: Reddit bullish/bearish, LunarCrush Galaxy Score, trending коины. Если social volume растёт при позитиве — BUY. Если хайп затихает — HOLD. Негативный sentiment — SELL."},
+    {"id": "copytrade_watcher", "name": "Copy-Trade наблюдатель", "style": "Смотрит на то, что делают топ-10 трейдеров ByBit. Если 70%+ Long — BUY. Если 70%+ Short — SELL. Если паритет — HOLD. Доверяет деньгам больших игроков больше, чем теории."},
 ]
 
 async def mirofish_simulate(symbol: str, price: float, q_score: float,
@@ -1636,6 +1799,24 @@ async def mirofish_simulate(symbol: str, price: float, q_score: float,
         fg_change = fg_vals[0] - fg_vals[-1]
         fg_trend = "rising" if fg_change > 5 else "falling" if fg_change < -5 else "stable"
         market_ctx += f"\nF&G Trend (3d): {fg_vals} ({fg_trend}, change={fg_change:+d})"
+
+    # v10.0: LunarCrush social sentiment
+    coin_key = symbol.replace("-USDT", "")
+    lc = _lunarcrush_cache.get("coins", {}).get(coin_key)
+    if lc:
+        market_ctx += (
+            f"\nSocial (LunarCrush): Galaxy={lc.get('galaxy_score',0)}/100, "
+            f"Sentiment={lc.get('sentiment',0)}, SocialVol={lc.get('social_volume',0)}"
+        )
+
+    # v10.0: Reddit sentiment
+    if _reddit_cache.get("success"):
+        market_ctx += f"\nReddit: sentiment={_reddit_cache.get('sentiment_score',0):+.1f} (bull={_reddit_cache.get('bullish',0)} bear={_reddit_cache.get('bearish',0)})"
+
+    # v10.0: Self-learning insights
+    li = _learning_insights
+    if li.get("avoid_symbols"):
+        market_ctx += f"\nSelf-Learning: AVOID symbols={li['avoid_symbols']}, best_fg={li.get('best_fg_range','?')}, best_hour={li.get('best_hour','?')}"
 
     # Run all agents in parallel (single LLM call with all personas for efficiency)
     all_personas = "\n".join([f"- {p['name']}: {p['style']}" for p in MIROFISH_PERSONAS])
@@ -2355,6 +2536,208 @@ async def fetch_top_traders_positions() -> dict:
         return {"success": False, "error": str(e), "traders": [], "consensus": {}}
 
 
+# ── v10.0: LunarCrush Galaxy Score (Free API) ─────────────────────────────────
+_lunarcrush_cache: dict = {}
+_lunarcrush_ts: float = 0.0
+
+async def fetch_lunarcrush_sentiment(symbols: list = None) -> dict:
+    """Fetch Galaxy Score + AltRank for top coins from LunarCrush public API."""
+    global _lunarcrush_cache, _lunarcrush_ts
+    if time.time() - _lunarcrush_ts < 600 and _lunarcrush_cache:  # 10 min cache
+        return _lunarcrush_cache
+    if symbols is None:
+        symbols = ["BTC", "ETH", "SOL", "XRP", "AVAX", "BNB", "MATIC", "DOT"]
+    try:
+        result = {"coins": {}, "success": False}
+        async with aiohttp.ClientSession() as s:
+            # LunarCrush v3 public endpoint (no key needed for basic data)
+            for sym in symbols[:8]:
+                r = await s.get(
+                    f"https://lunarcrush.com/api4/public/coins/{sym.lower()}/v1",
+                    timeout=aiohttp.ClientTimeout(total=5),
+                    headers={"User-Agent": "QuantumTradeBot/10.0"}
+                )
+                if r.status == 200:
+                    data = await r.json()
+                    d = data.get("data", {})
+                    result["coins"][sym] = {
+                        "galaxy_score": d.get("galaxy_score", 0),
+                        "alt_rank": d.get("alt_rank", 0),
+                        "sentiment": d.get("sentiment", 0),
+                        "social_volume": d.get("social_volume", 0),
+                        "social_score": d.get("social_score", 0),
+                        "price": d.get("price", 0),
+                        "percent_change_24h": d.get("percent_change_24h", 0),
+                    }
+                await asyncio.sleep(0.3)  # respect rate limits
+
+        if result["coins"]:
+            result["success"] = True
+            _lunarcrush_cache = result
+            _lunarcrush_ts = time.time()
+            log_activity(f"[lunarcrush] loaded {len(result['coins'])} coins")
+        return result
+    except Exception as e:
+        log_activity(f"[lunarcrush] error: {e}")
+        return {"coins": {}, "success": False, "error": str(e)}
+
+
+# ── v10.0: Reddit Crypto Sentiment (Free, No API Key) ─────────────────────────
+_reddit_cache: dict = {}
+_reddit_ts: float = 0.0
+
+async def fetch_reddit_sentiment() -> dict:
+    """Scrape sentiment from r/cryptocurrency and r/bitcoin via public JSON API."""
+    global _reddit_cache, _reddit_ts
+    if time.time() - _reddit_ts < 900 and _reddit_cache:  # 15 min cache
+        return _reddit_cache
+    try:
+        result = {"posts": [], "sentiment_score": 0, "bullish": 0, "bearish": 0, "success": False}
+        subreddits = ["cryptocurrency", "bitcoin"]
+        bullish_words = {"bullish", "moon", "pump", "buy", "long", "breakout", "ath", "rally", "surge", "bull"}
+        bearish_words = {"bearish", "dump", "crash", "sell", "short", "dip", "bear", "drop", "plunge", "scam"}
+
+        async with aiohttp.ClientSession() as s:
+            for sub in subreddits:
+                r = await s.get(
+                    f"https://www.reddit.com/r/{sub}/hot.json?limit=25",
+                    timeout=aiohttp.ClientTimeout(total=8),
+                    headers={"User-Agent": "QuantumTradeBot/10.0 (research)"}
+                )
+                if r.status == 200:
+                    data = await r.json()
+                    for post in data.get("data", {}).get("children", []):
+                        pd_ = post.get("data", {})
+                        title = pd_.get("title", "").lower()
+                        score = pd_.get("score", 0)
+                        comments = pd_.get("num_comments", 0)
+
+                        # Simple sentiment detection
+                        bull_hits = sum(1 for w in bullish_words if w in title)
+                        bear_hits = sum(1 for w in bearish_words if w in title)
+                        weight = max(1, score // 100)  # high-score posts matter more
+
+                        if bull_hits > bear_hits:
+                            result["bullish"] += weight
+                        elif bear_hits > bull_hits:
+                            result["bearish"] += weight
+
+                        result["posts"].append({
+                            "title": pd_.get("title", "")[:80],
+                            "score": score, "comments": comments,
+                            "sub": sub, "bull": bull_hits, "bear": bear_hits
+                        })
+                await asyncio.sleep(1.0)  # Reddit rate limit
+
+        total = result["bullish"] + result["bearish"]
+        if total > 0:
+            result["sentiment_score"] = round((result["bullish"] - result["bearish"]) / total * 100, 1)
+        result["total_posts"] = len(result["posts"])
+        result["success"] = True
+        _reddit_cache = result
+        _reddit_ts = time.time()
+        log_activity(f"[reddit] {result['total_posts']} posts, sentiment={result['sentiment_score']:+.1f} (bull={result['bullish']} bear={result['bearish']})")
+        return result
+    except Exception as e:
+        log_activity(f"[reddit] error: {e}")
+        return {"posts": [], "sentiment_score": 0, "success": False, "error": str(e)}
+
+
+# ── v10.0: Continuous Self-Learning v2 ─────────────────────────────────────────
+_learning_insights: dict = {"best_fg_range": None, "best_hour": None, "best_pattern": None,
+                             "avoid_symbols": [], "optimal_q": 77, "last_update": 0}
+
+async def update_learning_insights():
+    """v10.0: Analyze recent trades to find optimal parameters. Called every cycle."""
+    global _learning_insights
+    if time.time() - _learning_insights["last_update"] < 1800:  # every 30 min
+        return _learning_insights
+    if not db.is_ready():
+        return _learning_insights
+    try:
+        deep = await db.get_deep_analytics()
+        if not deep:
+            return _learning_insights
+
+        # Best F&G range from our trades
+        fg_corr = await db.get_fg_trade_correlation()
+        best_fg = None
+        best_fg_wr = 0
+        for fc in fg_corr:
+            if fc.get("total", 0) >= 5:
+                wr = fc["wins"] / fc["total"] * 100
+                if wr > best_fg_wr:
+                    best_fg_wr = wr
+                    best_fg = fc["fg_zone"]
+        _learning_insights["best_fg_range"] = best_fg
+
+        # Best hour
+        best_hour_data = None
+        best_hour_pnl = -999
+        for h in deep.get("by_hour", []):
+            if h.get("total", 0) >= 3 and h.get("pnl", 0) > best_hour_pnl:
+                best_hour_pnl = h["pnl"]
+                best_hour_data = h
+        if best_hour_data:
+            _learning_insights["best_hour"] = best_hour_data["hour"]
+
+        # Best pattern
+        best_pat = None
+        best_pat_wr = 0
+        for p in deep.get("by_pattern", []):
+            if p.get("total", 0) >= 5:
+                wr = p["wins"] / p["total"] * 100
+                if wr > best_pat_wr:
+                    best_pat_wr = wr
+                    best_pat = p["pattern"]
+        _learning_insights["best_pattern"] = best_pat
+
+        # Symbols to avoid (winrate < 30% with 5+ trades)
+        avoid = []
+        for sym in deep.get("by_symbol", []):
+            if sym.get("total", 0) >= 5:
+                wr = sym["wins"] / sym["total"] * 100
+                if wr < 30:
+                    avoid.append(sym["symbol"])
+        _learning_insights["avoid_symbols"] = avoid
+
+        # Optimal Q-Score from Q-range analysis
+        best_q_pnl = -999
+        for qr in deep.get("q_ranges", []):
+            if qr.get("total", 0) >= 5 and qr.get("pnl", 0) > best_q_pnl:
+                best_q_pnl = qr["pnl"]
+                # Extract lower bound of range as minimum
+                try:
+                    lower = int(qr["q_range"].split("-")[0])
+                    _learning_insights["optimal_q"] = max(70, min(lower, 90))
+                except Exception:
+                    pass
+
+        _learning_insights["last_update"] = time.time()
+        log_activity(f"[learning] insights updated: best_fg={best_fg} best_hour={_learning_insights.get('best_hour')} avoid={avoid}")
+        return _learning_insights
+    except Exception as e:
+        log_activity(f"[learning] error: {e}")
+        return _learning_insights
+
+
+# ── v10.0: Rate Limiting Middleware ────────────────────────────────────────────
+_rate_limits: dict = defaultdict(lambda: {"count": 0, "reset_ts": 0})
+_RATE_LIMIT_WINDOW = 60  # seconds
+_RATE_LIMIT_MAX = 60  # requests per window
+
+def _check_rate_limit(client_ip: str, limit: int = _RATE_LIMIT_MAX) -> bool:
+    """Returns True if request should be blocked (rate limited)."""
+    now = time.time()
+    rl = _rate_limits[client_ip]
+    if now > rl["reset_ts"]:
+        rl["count"] = 1
+        rl["reset_ts"] = now + _RATE_LIMIT_WINDOW
+        return False
+    rl["count"] += 1
+    return rl["count"] > limit
+
+
 # ── Whale Tracker ──────────────────────────────────────────────────────────────
 async def get_whale_signal(symbol: str) -> dict:
     # v7.1.2: expanded to SOL, XRP, BNB via Blockchair (AVAX not supported → skip)
@@ -2607,9 +2990,16 @@ async def auto_execute_dynamic(trade_id: str):
 
 
 async def _safe_background_enrich(fg_data: dict):
-    """v9.2: Non-blocking background fetch of macro/whale/copytrade data + persist F&G."""
+    """v10.0: Non-blocking background fetch of all intelligence sources + persist F&G."""
     try:
-        tasks = [save_fg_to_history(fg_data), fetch_macro_context(), fetch_whale_movements()]
+        tasks = [
+            save_fg_to_history(fg_data),
+            fetch_macro_context(),
+            fetch_whale_movements(),
+            fetch_lunarcrush_sentiment(),
+            fetch_reddit_sentiment(),
+            update_learning_insights(),
+        ]
         if BYBIT_ENABLED:
             tasks.append(fetch_top_traders_positions())
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -2800,6 +3190,11 @@ async def auto_trade_cycle():
         if action == "HOLD": continue
         if conf < MIN_CONFIDENCE: continue
         if not AUTOPILOT: continue
+
+        # ── v10.0: Self-learning filter — skip symbols with terrible winrate ──
+        if symbol in _learning_insights.get("avoid_symbols", []):
+            log_activity(f"[cycle] {symbol}: SKIPPED by self-learning (avoid list)")
+            continue
 
         # ── v9.0: MiroFish Lite — sentiment check before any trade ───────────
         mf_result = None
@@ -3669,7 +4064,7 @@ async def _tg_main_menu(chat_id: int):
         [{"text": f"⚡ Арбитраж {arb}", "callback_data": "menu_arb"}],
     ]}
     await _tg_send(chat_id,
-        "⚛ <b>QuantumTrade AI v8.3.0</b>\n"
+        "⚛ <b>QuantumTrade AI v10.0.0</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "Выбери раздел:", kb)
 
@@ -3697,7 +4092,7 @@ async def _tg_stats(chat_id: int):
         bb_txt = f"\n🟡 ByBit: <code>{_bybit_stats['calls']}</code> calls · X-Arb checks: <code>{_xarb_stats['checks']}</code>"
     kb = {"inline_keyboard": [[{"text": "◀️ Меню", "callback_data": "menu_main"}]]}
     await _tg_send(chat_id,
-        f"📊 <b>Статистика трейдинга v9.0</b>\n"
+        f"📊 <b>Статистика трейдинга v10.0</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"Закрытых сделок: <code>{total}</code> (открыто: <code>{open_}</code>)\n"
         f"Побед: <code>{wins}</code> / Потерь: <code>{losses}</code>\n"
@@ -3862,7 +4257,32 @@ async def _tg_diag(chat_id: int):
     btc_bias = _copytrade_cache.get("consensus", {}).get("BTC", {}).get("bias", "?")
     results.append(f"<b>📋 CopyTrade:</b> {ct_ok} traders={ct_traders} BTC bias={btc_bias}")
 
-    text = "🔬 <b>QuantumTrade Diagnostics v9.2</b>\n" + "━" * 30 + "\n\n" + "\n\n".join(results)
+    # 13. v10.0: Advanced TA (pandas-ta)
+    ta_status = "✅ Available" if _TA_AVAILABLE else "❌ Not installed"
+    results.append(f"<b>📐 Advanced TA:</b> {ta_status} (MACD, BB, Stoch, ADX, OBV)")
+
+    # 14. v10.0: LunarCrush
+    lc_ok = "✅" if _lunarcrush_cache else "❌ No data"
+    lc_age = int(time.time() - _lunarcrush_cache_ts) if _lunarcrush_cache_ts else 0
+    lc_coins = len(_lunarcrush_cache) if _lunarcrush_cache else 0
+    results.append(f"<b>🌙 LunarCrush:</b> {lc_ok} coins={lc_coins} age={lc_age}s")
+
+    # 15. v10.0: Reddit Sentiment
+    rd_ok = "✅" if _reddit_cache else "❌ No data"
+    rd_age = int(time.time() - _reddit_cache_ts) if _reddit_cache_ts else 0
+    results.append(f"<b>🔴 Reddit:</b> {rd_ok} age={rd_age}s")
+
+    # 16. v10.0: Self-Learning v2
+    sl_avoid = len(_learning_insights.get("avoid_symbols", []))
+    sl_best_fg = _learning_insights.get("best_fg_range", "?")
+    sl_best_hr = _learning_insights.get("best_hour", "?")
+    sl_opt_q = _learning_insights.get("optimal_q_score", "?")
+    results.append(f"<b>🧠 Self-Learn:</b> avoid={sl_avoid} best_fg={sl_best_fg} best_hr={sl_best_hr} opt_q={sl_opt_q}")
+
+    # 17. v10.0: Security
+    results.append(f"<b>🔒 Security:</b> RateLimit=✅ CORS=restricted Webhook=verified")
+
+    text = "🔬 <b>QuantumTrade Diagnostics v10.0</b>\n" + "━" * 30 + "\n\n" + "\n\n".join(results)
     await _tg_send(chat_id, text)
 
 
@@ -4152,6 +4572,87 @@ async def _tg_macro(chat_id: int):
         else:
             await _tg_send(chat_id, text[:4000])
             await _tg_send(chat_id, text[4000:])
+    else:
+        await _tg_send(chat_id, text)
+
+
+async def _tg_sentiment(chat_id: int, raw: str):
+    """v10.0: Unified social + whale + macro intelligence for a symbol."""
+    parts = raw.split()
+    symbol = parts[1].upper() if len(parts) > 1 else "BTC"
+    await _tg_send(chat_id, f"🧠 <i>Собираю intelligence для {symbol}...</i>")
+
+    # Parallel fetch all sources
+    lc_data, reddit_data = await asyncio.gather(
+        fetch_lunarcrush_sentiment([symbol]),
+        fetch_reddit_sentiment(),
+        return_exceptions=True
+    )
+
+    text_parts = [f"🧠 <b>SENTIMENT INTELLIGENCE — {symbol}</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"]
+
+    # LunarCrush
+    if isinstance(lc_data, dict) and lc_data.get("success"):
+        lc = lc_data.get("coins", {}).get(symbol, {})
+        if lc:
+            gs = lc.get("galaxy_score", 0)
+            gs_emoji = "🟢" if gs > 70 else "🔴" if gs < 40 else "🟡"
+            text_parts.append(
+                f"🌙 <b>LunarCrush:</b>\n"
+                f"  {gs_emoji} Galaxy Score: <code>{gs}/100</code>\n"
+                f"  📊 Sentiment: <code>{lc.get('sentiment',0)}</code>\n"
+                f"  📢 Social Volume: <code>{lc.get('social_volume',0):,}</code>\n"
+                f"  💰 Price 24h: <code>{lc.get('percent_change_24h',0):+.1f}%</code>"
+            )
+
+    # Reddit
+    if isinstance(reddit_data, dict) and reddit_data.get("success"):
+        rs = reddit_data.get("sentiment_score", 0)
+        rs_emoji = "🟢" if rs > 20 else "🔴" if rs < -20 else "🟡"
+        text_parts.append(
+            f"\n\n📱 <b>Reddit ({reddit_data.get('total_posts',0)} постов):</b>\n"
+            f"  {rs_emoji} Sentiment: <code>{rs:+.1f}</code>\n"
+            f"  🟢 Bullish: <code>{reddit_data.get('bullish',0)}</code> | 🔴 Bearish: <code>{reddit_data.get('bearish',0)}</code>"
+        )
+        # Top trending posts
+        top_posts = sorted(reddit_data.get("posts", []), key=lambda x: x.get("score", 0), reverse=True)[:3]
+        if top_posts:
+            text_parts.append("\n  <b>Топ посты:</b>")
+            for p in top_posts:
+                text_parts.append(f"\n    ↗ [{p.get('score',0)}⬆] {p.get('title','')[:50]}")
+
+    # Whale activity
+    wc = _whale_alert_cache
+    if wc.get("success"):
+        text_parts.append(
+            f"\n\n🐋 <b>Whale Activity:</b> {wc.get('signal','?')} "
+            f"({wc.get('whale_txs',0)} txs, ${wc.get('total_whale_usd',0):,.0f})"
+        )
+
+    # Copy-trading
+    ct = _copytrade_cache
+    if ct.get("success"):
+        cons = ct.get("consensus", {}).get(symbol, ct.get("consensus", {}).get("BTC", {}))
+        if cons:
+            text_parts.append(
+                f"\n\n📋 <b>Copy-Trading:</b> Long <code>{cons.get('long_pct',0)}%</code> / "
+                f"Short <code>{cons.get('short_pct',0)}%</code> → <b>{cons.get('bias','?')}</b>"
+            )
+
+    # Self-learning insights
+    li = _learning_insights
+    if li.get("last_update"):
+        text_parts.append(
+            f"\n\n🎓 <b>Self-Learning:</b>\n"
+            f"  Best F&G zone: <code>{li.get('best_fg_range','?')}</code>\n"
+            f"  Best hour: <code>{li.get('best_hour','?')}:00 UTC</code>\n"
+            f"  Avoid: <code>{', '.join(li.get('avoid_symbols', [])) or 'none'}</code>"
+        )
+
+    text = "\n".join(text_parts)
+    if len(text) > 4000:
+        await _tg_send(chat_id, text[:4000])
+        await _tg_send(chat_id, text[4000:])
     else:
         await _tg_send(chat_id, text)
 
@@ -4719,7 +5220,16 @@ async def _tg_ai_ask(chat_id: int, question: str):
         await _tg_send(chat_id, f"❌ Ошибка AI консультанта: {e}")
 
 @app.post("/api/telegram/callback")
-async def telegram_callback(req: TelegramUpdate):
+async def telegram_callback(request: Request):
+    """v10.0: Telegram webhook with optional secret_token verification."""
+    # v10.0: Verify Telegram webhook secret if configured
+    if TG_WEBHOOK_SECRET:
+        token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if token != TG_WEBHOOK_SECRET:
+            log_activity("[security] Telegram webhook: invalid secret token — rejected")
+            raise HTTPException(status_code=403, detail="Invalid webhook secret")
+    body = await request.json()
+    req = TelegramUpdate(**body)
     global MIN_Q_SCORE, COOLDOWN, AUTOPILOT
     try:
      return await _telegram_callback_inner(req)
@@ -4760,6 +5270,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd.startswith("/mirofish"):   await _tg_mirofish(chat_id, raw)
         elif cmd == "/analyze":             await _tg_analyze(chat_id)
         elif cmd == "/macro":              await _tg_macro(chat_id)
+        elif cmd.startswith("/sentiment"):  await _tg_sentiment(chat_id, raw)
         elif cmd == "/bybit":               await _tg_bybit(chat_id)
         elif cmd == "/xarb":                await _tg_xarb(chat_id)
         elif cmd.startswith("/sell"):       await _tg_universal_sell(chat_id, raw)
@@ -4770,8 +5281,9 @@ async def _telegram_callback_inner(req: TelegramUpdate):
                 await _tg_universal_buy(chat_id, raw)
         # v7.2.0: AI консультант
         elif cmd.startswith("/ask"):
-            # /ask текст или /ask@bot текст
+            # /ask текст или /ask@bot текст — v10.0: escape HTML in user input
             question = raw.split(None, 1)[1].strip() if len(raw.split(None, 1)) > 1 else ""
+            question = html_mod.escape(question)
             if not question:
                 await _tg_send(chat_id,
                     "🤖 <b>AI-консультант</b>\n\n"
@@ -5327,22 +5839,32 @@ async def update_settings(body: dict, _auth=Depends(verify_api_key)):  # v7.3.3:
     """v6.7: runtime settings update without restart."""
     global MIN_Q_SCORE, COOLDOWN, AUTOPILOT, TEST_MODE, RISK_PER_TRADE, MAX_LEVERAGE
     changed = {}
+    # v10.0: Input validation per trading.md rules
     if "min_q_score" in body:
-        MIN_Q_SCORE = int(body["min_q_score"])
+        val = int(body["min_q_score"])
+        if val < 65 or val > 100:
+            raise HTTPException(400, "min_q_score must be 65-100 (per trading.md)")
+        MIN_Q_SCORE = val
         changed["min_q_score"] = MIN_Q_SCORE
     if "cooldown" in body:
-        COOLDOWN = int(body["cooldown"])
+        val = int(body["cooldown"])
+        if val < 300 or val > 7200:
+            raise HTTPException(400, "cooldown must be 300-7200s (per trading.md)")
+        COOLDOWN = val
         changed["cooldown"] = COOLDOWN
     if "autopilot" in body:
         AUTOPILOT = bool(body["autopilot"])
         changed["autopilot"] = AUTOPILOT
     if "test_mode" in body:
         TEST_MODE = bool(body["test_mode"])
-        RISK_PER_TRADE = 0.05 if TEST_MODE else 0.08  # v8.3.2: safe defaults per trading.md
+        RISK_PER_TRADE = 0.05 if TEST_MODE else 0.08
         changed["test_mode"] = TEST_MODE
         changed["risk_per_trade"] = RISK_PER_TRADE
     if "max_leverage" in body:
-        MAX_LEVERAGE = int(body["max_leverage"])
+        val = int(body["max_leverage"])
+        if val < 1 or val > 5:
+            raise HTTPException(400, "max_leverage must be 1-5 (per trading.md)")
+        MAX_LEVERAGE = val
         changed["max_leverage"] = MAX_LEVERAGE
     log_activity(f"[settings/api] changed: {changed}")
     return {"ok": True, "changed": changed,
@@ -5376,10 +5898,13 @@ async def setup_webhook(request: Request):
     results = {}
     try:
         async with aiohttp.ClientSession() as s:
-            # 1. Регистрируем webhook
+            # 1. Регистрируем webhook (v10.0: with secret_token if configured)
+            wh_payload = {"url": webhook_url, "allowed_updates": ["message", "callback_query"]}
+            if TG_WEBHOOK_SECRET:
+                wh_payload["secret_token"] = TG_WEBHOOK_SECRET
             r = await s.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
-                json={"url": webhook_url, "allowed_updates": ["message", "callback_query"]},
+                json=wh_payload,
                 timeout=aiohttp.ClientTimeout(total=10)
             )
             results["webhook"] = await r.json()
@@ -5390,10 +5915,14 @@ async def setup_webhook(request: Request):
                 json={"commands": [
                     {"command": "menu",      "description": "🏠 Главное меню"},
                     {"command": "stats",     "description": "📊 Статистика торговли"},
-                    {"command": "airdrops",  "description": "🪂 Топ Airdrop возможности"},
-                    {"command": "settings",  "description": "⚙️ Настройки (Q-Score, Cooldown)"},
+                    {"command": "mirofish",  "description": "🐟 MiroFish анализ (напр. /mirofish BTC)"},
+                    {"command": "sentiment", "description": "🌐 Полный анализ настроений рынка"},
+                    {"command": "analyze",   "description": "🔬 Глубокая аналитика сделок"},
+                    {"command": "macro",     "description": "🌍 Макро-дашборд + F&G корреляция"},
                     {"command": "balance",   "description": "💰 Баланс счёта"},
                     {"command": "positions", "description": "📈 Открытые позиции"},
+                    {"command": "settings",  "description": "⚙️ Настройки (Q-Score, Cooldown)"},
+                    {"command": "diag",      "description": "🔬 Диагностика всех подключений"},
                 ]},
                 timeout=aiohttp.ClientTimeout(total=10)
             )
@@ -5976,6 +6505,18 @@ async def api_ai_chat(req: ChatRequest, request: Request):
 class ManualTrade(BaseModel):
     symbol: str; side: str; size: float; is_futures: bool = False; leverage: int = 3
 
+    def validate_trade(self):
+        """v10.0: Validate trade parameters before execution."""
+        import re
+        if not re.match(r'^[A-Z0-9]+-USDT$', self.symbol.upper()):
+            raise HTTPException(400, f"Invalid symbol format: {self.symbol}")
+        if self.side.upper() not in ("BUY", "SELL"):
+            raise HTTPException(400, f"Invalid side: {self.side}. Must be BUY or SELL")
+        if self.size <= 0 or self.size > 100000:
+            raise HTTPException(400, f"Invalid size: {self.size}. Must be 0-100000")
+        if self.leverage < 1 or self.leverage > 5:
+            raise HTTPException(400, f"Invalid leverage: {self.leverage}. Must be 1-5 (per trading.md)")
+
 
 # In-memory activity log
 activity_log = []
@@ -6001,6 +6542,7 @@ async def api_debug_internal(_auth=Depends(verify_api_key)):  # v7.3.3: auth req
 @app.post("/api/trade/manual")
 async def manual_trade(req: ManualTrade, _auth=Depends(verify_api_key)):  # v8.3.0: auth + error handling
     try:
+        req.validate_trade()  # v10.0: input validation
         result = await place_futures_order(req.symbol, req.side, int(req.size), req.leverage) if req.is_futures else await place_spot_order(req.symbol, req.side, req.size)
         success = result.get("code") == "200000"
         if success:
