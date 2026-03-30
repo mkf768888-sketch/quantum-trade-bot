@@ -3036,6 +3036,87 @@ async def _tg_airdrops(chat_id: int):
     ]}
     await _tg_send(chat_id, "\n".join(lines), kb)
 
+async def _tg_diag(chat_id: int):
+    """v8.3.4: Full diagnostic check of all API connections."""
+    await _tg_send(chat_id, "🔍 <i>Running diagnostics...</i>")
+    results = []
+
+    # 1. DeepSeek API
+    ds_status = "❌ No API key"
+    if DEEPSEEK_API_KEY:
+        try:
+            async with aiohttp.ClientSession() as s:
+                r = await s.post(
+                    f"{DEEPSEEK_BASE_URL}/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                    json={"model": "deepseek-chat", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 5},
+                    timeout=aiohttp.ClientTimeout(total=15)
+                )
+                data = await r.json()
+                if r.status == 200:
+                    ds_status = f"✅ OK (HTTP 200, model: {data.get('model', '?')})"
+                else:
+                    err = data.get("error", {}).get("message", str(data)[:100])
+                    ds_status = f"⚠️ HTTP {r.status}: {err}"
+        except asyncio.TimeoutError:
+            ds_status = "❌ Timeout (15s) — API не отвечает"
+        except Exception as e:
+            ds_status = f"❌ Error: {str(e)[:80]}"
+    results.append(f"<b>DeepSeek V3:</b> {ds_status}")
+
+    # 2. Claude API (Haiku)
+    cl_status = "❌ No API key"
+    if ANTHROPIC_API_KEY:
+        try:
+            async with aiohttp.ClientSession() as s:
+                r = await s.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                    json={"model": "claude-haiku-4-5-20251001", "max_tokens": 5, "messages": [{"role": "user", "content": "ping"}]},
+                    timeout=aiohttp.ClientTimeout(total=10)
+                )
+                data = await r.json()
+                if r.status == 200:
+                    cl_status = f"✅ OK (Haiku)"
+                else:
+                    err = data.get("error", {}).get("message", str(data)[:100])
+                    cl_status = f"⚠️ HTTP {r.status}: {err}"
+        except Exception as e:
+            cl_status = f"❌ Error: {str(e)[:80]}"
+    results.append(f"<b>Claude API:</b> {cl_status}")
+
+    # 3. KuCoin Spot
+    try:
+        bal = await get_balance()
+        if bal.get("success"):
+            results.append(f"<b>KuCoin Spot:</b> ✅ OK (${bal.get('total_usdt', 0):.2f} USDT)")
+        else:
+            results.append(f"<b>KuCoin Spot:</b> ⚠️ {bal.get('error', 'unknown')}")
+    except Exception as e:
+        results.append(f"<b>KuCoin Spot:</b> ❌ {str(e)[:80]}")
+
+    # 4. WebSocket
+    results.append(f"<b>WebSocket:</b> {'✅ Connected' if _ws_connected else '❌ Disconnected'} ({len(_ws_prices)} prices, {_ws_reconnects} reconnects)")
+
+    # 5. PostgreSQL
+    pg_ok = db.is_ready() if hasattr(db, 'is_ready') else False
+    results.append(f"<b>PostgreSQL:</b> {'✅ Connected' if pg_ok else '❌ Disconnected'}")
+
+    # 6. Arb status
+    active_tri = sum(1 for _, _, c, _ in ARB_TRIANGLES if c not in _arb_dead_pairs)
+    results.append(f"<b>Arbitrage:</b> {active_tri}/{len(ARB_TRIANGLES)} active, {_arb_stats.get('total', 0)} attempts, PnL ${_arb_stats.get('total_pnl', 0):.4f}")
+
+    # 7. Performance
+    wr = _perf_stats["wins"] / max(1, _perf_stats["total_trades"]) * 100
+    results.append(f"<b>Performance:</b> {_perf_stats['total_trades']} trades, WR {wr:.1f}%, PnL ${_perf_stats['total_pnl']:.2f}, streak {_perf_stats['streak']}")
+
+    # 8. AI call stats
+    results.append(f"<b>AI Calls:</b> DS={_ai_call_stats['deepseek']} H={_ai_call_stats['haiku']} O={_ai_call_stats['opus']} err={_ai_call_stats['errors']}")
+
+    text = "🔬 <b>QuantumTrade Diagnostics v8.3.4</b>\n" + "━" * 30 + "\n\n" + "\n\n".join(results)
+    await _tg_send(chat_id, text)
+
+
 async def _tg_settings(chat_id: int):
     """Карточка настроек с рабочими кнопками."""
     ap_icon  = "🟢 ВКЛ" if AUTOPILOT        else "🔴 ВЫКЛ"
@@ -3554,6 +3635,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/stats":               await _tg_stats(chat_id)
         elif cmd in ["/airdrops", "/air"]: await _tg_airdrops(chat_id)
         elif cmd == "/settings":            await _tg_settings(chat_id)
+        elif cmd == "/diag":                await _tg_diag(chat_id)
         elif cmd == "/balance":             await _tg_balance(chat_id)
         elif cmd == "/positions":           await _tg_positions(chat_id)
         elif cmd == "/arb":                 await _tg_arb(chat_id)
