@@ -104,7 +104,7 @@ MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "77"))  # v8.3.2: 77 (was 55) — 
 PAIR_Q_THRESHOLDS: dict = {"BTC-USDT": 76, "ETH-USDT": 76, "SOL-USDT": 76,
                             "BNB-USDT": 76, "XRP-USDT": 76, "AVAX-USDT": 76}
 COOLDOWN       = int(os.getenv("COOLDOWN_STD", os.getenv("COOLDOWN", "600")))  # v8.3.2: 600s (was 450)
-MAX_LEVERAGE   = int(os.getenv("MAX_LEVERAGE", "3"))   # v8.3.2: 3x (was 5x) — per trading.md
+MAX_LEVERAGE   = min(int(os.getenv("MAX_LEVERAGE", "3")), 5)  # v8.3.3: cap at 5x even if env says higher
 # v8.3.2: Reserve USDT for arbitrage — never enter trades if balance drops below this
 ARB_RESERVE_USDT = float(os.getenv("ARB_RESERVE_USDT", "10"))  # keep $10 minimum for arb
 # v7.2.3: TP/SL ratio улучшен до 3:1 (было 2:1) — исправляет асимметрию убытков
@@ -1795,9 +1795,10 @@ pending_strategies: dict = {}  # trade_id → {symbol, signal, vision, price, fu
 STRATEGIES = {
     # v7.2.3: TP/SL ratio улучшен до 3:1 во всех стратегиях (было 2:1)
     "A": {"name": "Консервативная", "risk": 0.05, "leverage": 2, "tp": 0.03, "sl": 0.01,  "emoji": "🛡",  "tag": "real"},
-    "B": {"name": "Стандартная",    "risk": 0.10, "leverage": 3, "tp": 0.045,"sl": 0.015, "emoji": "⚖️", "tag": "real"},
-    "C": {"name": "Бонусная",       "risk": 0.25, "leverage": 5, "tp": 0.06, "sl": 0.02,  "emoji": "🚀",  "tag": "bonus"},
+    "B": {"name": "Стандартная",    "risk": 0.08, "leverage": 3, "tp": 0.045,"sl": 0.015, "emoji": "⚖️", "tag": "real"},
+    "C": {"name": "Бонусная",       "risk": 0.12, "leverage": 3, "tp": 0.06, "sl": 0.02,  "emoji": "🚀",  "tag": "bonus"},
 }
+# v8.3.3: C was 25%/5x — reduced to 12%/3x per trading.md (max risk 15%, max leverage 5x)
 # DUAL: одновременно B (реальный) + C (бонусный агрессивный)
 STRATEGY_TIMEOUT = 60   # 1 минута
 
@@ -1814,9 +1815,9 @@ async def send_strategy_choice(trade_id, symbol, action, price, q, pattern, fg, 
         f"Q-Score: `{q}` · Паттерн: `{pattern}`\n"
         f"{ctx}\n\n"
         f"*Выбери стратегию:*\n"
-        f"🛡 *A* — Консерватив (5%, TP 3%, SL 1%) [3:1]\n"
-        f"⚖️ *B* — Стандарт (10%, TP 4.5%, SL 1.5%) [3:1]\n"
-        f"🚀 *C* — Бонусная (25%, TP 6%, SL 2%) [3:1]\n"
+        f"🛡 *A* — Консерватив (5%, TP 3%, SL 1%) 3:1\n"
+        f"⚖️ *B* — Стандарт (8%, TP 4.5%, SL 1.5%) 3:1\n"
+        f"🚀 *C* — Бонусная (12%, TP 6%, SL 2%) 3:1\n"
         f"💥 *DUAL* — B + C одновременно\n\n"
         f"_Нет ответа 1 мин → авто стратегия B_"
     )
@@ -1926,16 +1927,16 @@ async def auto_execute_dynamic(trade_id: str):
     pending = pending_strategies.pop(trade_id, None)
     if not pending: return
     q = pending["signal"]["q_score"]
-    # v6.9 Dynamic strategy: Q≥85→DUAL(B+C), Q≥65→C (оптимально для медвежьего рынка), else→B
+    # v8.3.3: Conservative auto-strategy — only use C for very strong signals
     if q >= 85:
-        auto_strategy = "D"
-        label = "DUAL (B+C)"
-    elif q >= 65:
         auto_strategy = "C"
-        label = "C (агрессивная 🚀)"
-    else:
+        label = "C (сильный сигнал 🚀)"
+    elif q >= 75:
         auto_strategy = "B"
         label = "B (стандартная)"
+    else:
+        auto_strategy = "A"
+        label = "A (консервативная)"
     log_activity(f"[strategy] timeout {trade_id} Q={q:.1f} → авто {label}")
     await notify(f"⏱ <i>Таймаут — Q={q:.0f} → стратегия {label}</i>")
     if auto_strategy == "D":
@@ -4326,7 +4327,7 @@ async def auto_scanner_loop():
                         f"📊 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s\n"
                         f"🤖 AP: {'ВКЛ' if AUTOPILOT else 'ВЫКЛ'} · Arb: {'ВКЛ' if ARB_EXEC_ENABLED else 'ВЫКЛ'}\n"
                         f"📋 Сделок: {_perf_stats['total_trades']} · WR: {wr:.0f}% · PnL: ${_perf_stats['total_pnl']:.2f}\n"
-                        f"🔥 Streak: {_perf_stats['streak']} · Версия: 8.3.0"
+                        f"🔥 Streak: {_perf_stats['streak']} · Версия: 8.3.3"
                     )
                     if warnings: msg += "\n\n" + "\n".join(warnings[:2])
                     if recommendations: msg += "\n\n" + "\n".join(recommendations[:2])
