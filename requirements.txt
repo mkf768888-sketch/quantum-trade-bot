@@ -1,12 +1,10 @@
 fastapi
-uvicorn
+uvicorn[standard]
 aiohttp
 python-telegram-bot
 pydantic
 Pillow
-pyqpanda3
-amazon-braket-sdk
-boto3
 asyncpg
 pandas
 pandas-ta
+starlette
