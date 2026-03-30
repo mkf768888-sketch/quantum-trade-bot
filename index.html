@@ -67,6 +67,8 @@
   .section.active{display:flex}
   .subpage{display:none;flex-direction:column;gap:10px}
   .subpage.active{display:flex}
+  .arb-sub{display:none;flex-direction:column;gap:10px}
+  .arb-sub.active{display:flex}
 
   /* ── CARD ── */
   .card{background:rgba(18,20,31,0.85);backdrop-filter:blur(10px);border:1px solid var(--border);border-radius:14px;padding:13px 14px;position:relative;overflow:hidden}
@@ -455,7 +457,13 @@
     <!-- SECTION 3: MEV Arbitrage (Coming Soon)         -->
     <!-- ═══════════════════════════════════════════════ -->
     <div class="section" id="sec-mev">
-      <!-- v8.3.3: Live Arbitrage Dashboard -->
+      <!-- v8.3.3: Arb sub-tabs: CEX (live) + MEV (roadmap) -->
+      <div class="sub-tabs" id="arbSubTabs">
+        <div class="sub-tab active" onclick="showArbSub('cex')">⚡ CEX Арбитраж</div>
+        <div class="sub-tab" onclick="showArbSub('mev')">🔮 MEV DEX</div>
+      </div>
+      <div class="arb-sub active" id="arb-sub-cex">
+      <!-- Live Arbitrage Dashboard -->
       <div class="card">
         <div class="card-header">
           <div class="card-title">Статус арбитража</div>
@@ -498,6 +506,28 @@
           <div style="color:var(--text3);font-size:12px;text-align:center;padding:20px 0">Загрузка...</div>
         </div>
       </div>
+      </div><!-- /arb-sub-cex -->
+      <div class="arb-sub" id="arb-sub-mev" style="display:none">
+        <div class="soon-page">
+          <div class="soon-icon">🔮</div>
+          <div class="soon-title">MEV Арбитраж на DEX</div>
+          <div class="soon-phase">◆ ФАЗА 5 · В РАЗРАБОТКЕ</div>
+          <div class="soon-desc">Квантовая оптимизация маршрутов MEV через DEX-ы. QAOA находит оптимальный путь через 5-10 пулов ликвидности одновременно.</div>
+          <div class="soon-stats">
+            <div class="soon-stat"><div class="soon-stat-val">$50-500</div><div class="soon-stat-label">в день / ETH</div></div>
+            <div class="soon-stat"><div class="soon-stat-val">$30-300</div><div class="soon-stat-label">в день / SOL</div></div>
+            <div class="soon-stat"><div class="soon-stat-val">3 сети</div><div class="soon-stat-label">ETH + SOL + ARB</div></div>
+            <div class="soon-stat"><div class="soon-stat-val">Flashbots</div><div class="soon-stat-label">приватный relay</div></div>
+          </div>
+          <div class="soon-features">
+            <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(249,115,22,0.12);color:#f97316">◎</div>Мониторинг mempool в реальном времени</div>
+            <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(249,115,22,0.12);color:#f97316">◎</div>QAOA-оптимизация арбитражных путей</div>
+            <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(249,115,22,0.12);color:#f97316">◎</div>Flash-бандлы для атомарных транзакций</div>
+            <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(249,115,22,0.12);color:#f97316">◎</div>Uniswap V3, Jupiter, Raydium, Camelot</div>
+            <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(249,115,22,0.12);color:#f97316">◎</div>Jito MEV для Solana</div>
+          </div>
+        </div>
+      </div><!-- /arb-sub-mev -->
     </div>
 
     <!-- ═══════════════════════════════════════════════ -->
@@ -924,6 +954,15 @@ function showToast(msg){
   const t=document.createElement('div');
   t.style.cssText='position:fixed;bottom:72px;left:50%;transform:translateX(-50%);background:rgba(10,11,16,0.96);border:1px solid rgba(99,102,241,0.25);color:#f1f5f9;padding:8px 16px;border-radius:10px;font-size:12px;z-index:999;backdrop-filter:blur(12px);white-space:nowrap;max-width:90vw;text-align:center';
   t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),3000);
+}
+
+// ── v8.3.3: Arb sub-tabs ──
+function showArbSub(id){
+  document.querySelectorAll('.arb-sub').forEach(s=>s.style.display='none');
+  document.querySelectorAll('#arbSubTabs .sub-tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('arb-sub-'+id).style.display='flex';
+  event.target.classList.add('active');
+  if(id==='cex') loadArbStats();
 }
 
 // ── v8.3.3: Arb Dashboard ──
