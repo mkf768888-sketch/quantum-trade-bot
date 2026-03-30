@@ -27,7 +27,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 import db  # v8.2: PostgreSQL persistent storage
 
-app = FastAPI(title="QuantumTrade AI", version="9.1.0")
+app = FastAPI(title="QuantumTrade AI", version="9.2.0")
 _ALLOWED_ORIGINS = ["*"]   # v7.3.9: open for Mini App (Telegram WebApp origin varies)
 app.add_middleware(
     CORSMiddleware,
@@ -625,11 +625,20 @@ async def _braket_qaoa_run(changes_list: list, live_corr: list) -> list:
 
 
 def log_trade(symbol, side, price, size, tp, sl, confidence, q_score, pattern, account="spot", strategy="B"):
+    # v9.2: capture F&G and macro context at trade time for correlation analysis
+    fg_now = _cache_get("fear_greed", 7200)  # use cached F&G if available
+    fg_val = fg_now.get("value", 0) if fg_now else 0
+    extra = {"fg_value": fg_val}
+    if _macro_cache.get("btc_dominance"):
+        extra["btc_dom"] = _macro_cache["btc_dominance"]
+    if _whale_alert_cache.get("signal"):
+        extra["whale_signal"] = _whale_alert_cache["signal"]
     trade = {
         "id": len(trade_log) + 1, "ts": datetime.utcnow().isoformat(), "open_ts": time.time(),
         "symbol": symbol, "side": side, "price": price, "size": size,
         "tp": tp, "sl": sl, "confidence": confidence, "q_score": q_score,
         "pattern": pattern, "account": account, "strategy": strategy, "status": "open", "pnl": None,
+        "extra": extra,
     }
     trade_log.append(trade)
     if len(trade_log) > 2000:
@@ -1586,6 +1595,48 @@ async def mirofish_simulate(symbol: str, price: float, q_score: float,
             f"scores={prev_scores}, directions={prev_dirs}, trend={trend}"
         )
 
+    # v9.2: Enriched context — macro data, whale activity, copy-trading consensus
+    if _macro_cache.get("success"):
+        mc = _macro_cache
+        market_ctx += (
+            f"\nMacro: BTC dominance={mc.get('btc_dominance',0)}%, "
+            f"Total MCap=${mc.get('total_mcap',0)}B ({mc.get('mcap_change_24h',0):+.1f}% 24h), "
+            f"ETH/BTC={mc.get('eth_btc_ratio',0)}"
+        )
+        trending = mc.get("trending", [])
+        if trending:
+            market_ctx += f", Trending: {', '.join(t['symbol'] for t in trending[:5])}"
+
+    if _whale_alert_cache.get("success"):
+        wc = _whale_alert_cache
+        market_ctx += (
+            f"\nWhale Activity: {wc.get('whale_txs',0)} large txs, "
+            f"${wc.get('total_whale_usd',0):,.0f} total, signal={wc.get('signal','?')}"
+        )
+
+    if _copytrade_cache.get("success"):
+        cons = _copytrade_cache.get("consensus", {})
+        coin_key = symbol.replace("-USDT", "")
+        if coin_key in cons:
+            cc = cons[coin_key]
+            market_ctx += (
+                f"\nByBit Copy-Trading: {coin_key} Long={cc['long_pct']}% Short={cc['short_pct']}% "
+                f"Bias={cc['bias']}"
+            )
+        # Top traders summary
+        traders = _copytrade_cache.get("traders", [])
+        if traders:
+            avg_wr = round(sum(t.get("win_rate", 0) for t in traders) / len(traders), 1) if traders else 0
+            market_ctx += f", Top 10 traders avg WR={avg_wr}%"
+
+    # v9.2: F&G trend context
+    fg_hist = await db.get_fg_history(3)
+    if len(fg_hist) >= 2:
+        fg_vals = [h["value"] for h in fg_hist[:5]]
+        fg_change = fg_vals[0] - fg_vals[-1]
+        fg_trend = "rising" if fg_change > 5 else "falling" if fg_change < -5 else "stable"
+        market_ctx += f"\nF&G Trend (3d): {fg_vals} ({fg_trend}, change={fg_change:+d})"
+
     # Run all agents in parallel (single LLM call with all personas for efficiency)
     all_personas = "\n".join([f"- {p['name']}: {p['style']}" for p in MIROFISH_PERSONAS])
 
@@ -1637,7 +1688,7 @@ async def mirofish_simulate(symbol: str, price: float, q_score: float,
         n = _mirofish_stats["calls"]
         _mirofish_stats["avg_score"] = round((_mirofish_stats["avg_score"] * (n-1) + score) / n, 1)
 
-        # v9.1: Save to historical memory (max 10 per symbol)
+        # v9.1: Save to historical memory (max 10 per symbol) + v9.2: persist to DB
         if symbol not in _mirofish_memory:
             _mirofish_memory[symbol] = []
         _mirofish_memory[symbol].append({
@@ -1646,6 +1697,13 @@ async def mirofish_simulate(symbol: str, price: float, q_score: float,
         })
         if len(_mirofish_memory[symbol]) > 10:
             _mirofish_memory[symbol] = _mirofish_memory[symbol][-10:]
+        # Persist to PostgreSQL (non-blocking)
+        if db.is_ready():
+            asyncio.create_task(db.save_mirofish_memory(
+                symbol, score, direction, fg_value, rsi,
+                buy_count, sell_count, hold_count,
+                json.dumps(agents)
+            ))
 
         log_activity(f"[mirofish] {symbol}: score={score:+d} ({direction}) buy={buy_count} sell={sell_count} hold={hold_count} agents={total}")
         return {**result_data, "cached": False}
@@ -2054,6 +2112,249 @@ async def get_fear_greed() -> dict:
         return {"value": 50, "classification": "Neutral", "bonus": 0, "success": False, "error": str(e)}
 
 
+# ── v9.2: F&G History + Auto-save ─────────────────────────────────────────────
+async def save_fg_to_history(fg_data: dict):
+    """Auto-save F&G value to history after each fetch."""
+    if fg_data.get("success") and db.is_ready():
+        await db.save_fg_value(fg_data["value"], fg_data.get("classification", ""))
+
+async def get_fg_trend() -> dict:
+    """Analyze F&G trend over last 7 days from our stored history."""
+    history = await db.get_fg_history(7)
+    if len(history) < 2:
+        return {"trend": "insufficient_data", "values": [], "change": 0}
+    values = [h["value"] for h in history]
+    latest = values[0]  # most recent
+    oldest = values[-1]  # oldest in window
+    avg = round(sum(values) / len(values), 1)
+    change = latest - oldest
+    trend = "rising" if change > 5 else "falling" if change < -5 else "stable"
+    return {
+        "trend": trend, "latest": latest, "oldest": oldest,
+        "avg": avg, "change": change, "samples": len(values),
+        "values": values[:10]  # last 10 for context
+    }
+
+
+# ── v9.2: Macro Market Data (FREE APIs) ───────────────────────────────────────
+_macro_cache: dict = {}
+_macro_cache_ts: float = 0.0
+
+async def fetch_macro_context() -> dict:
+    """Fetch BTC dominance, total MCap, ETH/BTC ratio, top gainers/losers from CoinGecko."""
+    global _macro_cache, _macro_cache_ts
+    if time.time() - _macro_cache_ts < 900 and _macro_cache:  # 15 min cache
+        return _macro_cache
+    try:
+        result = {}
+        async with aiohttp.ClientSession() as s:
+            # 1. Global market data — BTC dominance, total MCap
+            r = await s.get("https://api.coingecko.com/api/v3/global",
+                            timeout=aiohttp.ClientTimeout(total=8))
+            if r.status == 200:
+                gd = (await r.json()).get("data", {})
+                result["btc_dominance"] = round(gd.get("market_cap_percentage", {}).get("btc", 0), 2)
+                result["eth_dominance"] = round(gd.get("market_cap_percentage", {}).get("eth", 0), 2)
+                result["total_mcap"] = round(gd.get("total_market_cap", {}).get("usd", 0) / 1e9, 1)  # billions
+                result["mcap_change_24h"] = round(gd.get("market_cap_change_percentage_24h_usd", 0), 2)
+                result["active_cryptos"] = gd.get("active_cryptocurrencies", 0)
+
+            # 2. Top gainers/losers — trending coins
+            r2 = await s.get("https://api.coingecko.com/api/v3/search/trending",
+                              timeout=aiohttp.ClientTimeout(total=8))
+            if r2.status == 200:
+                trending = (await r2.json()).get("coins", [])
+                result["trending"] = [
+                    {"name": c["item"]["name"], "symbol": c["item"]["symbol"],
+                     "rank": c["item"]["market_cap_rank"]}
+                    for c in trending[:7]
+                ]
+
+            # 3. ETH/BTC price ratio
+            r3 = await s.get("https://api.coingecko.com/api/v3/simple/price?ids=ethereum,bitcoin&vs_currencies=usd,btc",
+                              timeout=aiohttp.ClientTimeout(total=5))
+            if r3.status == 200:
+                prices = await r3.json()
+                result["eth_btc_ratio"] = round(prices.get("ethereum", {}).get("btc", 0), 6)
+                result["btc_usd"] = prices.get("bitcoin", {}).get("usd", 0)
+                result["eth_usd"] = prices.get("ethereum", {}).get("usd", 0)
+
+        result["success"] = True
+        result["ts"] = time.time()
+        _macro_cache = result
+        _macro_cache_ts = time.time()
+
+        # Persist to DB
+        if db.is_ready():
+            await db.save_macro_snapshot(
+                btc_dom=result.get("btc_dominance", 0),
+                total_mcap=result.get("total_mcap", 0),
+                eth_btc=result.get("eth_btc_ratio", 0),
+                gainers=[],
+                losers=[],
+                extra={"trending": result.get("trending", []), "mcap_change_24h": result.get("mcap_change_24h", 0)}
+            )
+
+        log_activity(f"[macro] BTC dom={result.get('btc_dominance')}% MCap=${result.get('total_mcap')}B ETH/BTC={result.get('eth_btc_ratio')}")
+        return result
+    except Exception as e:
+        log_activity(f"[macro] fetch error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ── v9.2: Whale Alert — Large Transactions from Free APIs ─────────────────────
+_whale_alert_cache: dict = {}
+_whale_alert_ts: float = 0.0
+
+async def fetch_whale_movements() -> dict:
+    """Fetch large BTC/ETH movements from blockchain.info and Blockchair."""
+    global _whale_alert_cache, _whale_alert_ts
+    if time.time() - _whale_alert_ts < 300 and _whale_alert_cache:  # 5 min cache
+        return _whale_alert_cache
+    try:
+        movements = []
+        async with aiohttp.ClientSession() as s:
+            # 1. Bitcoin large transactions via blockchain.info (free, no key)
+            r = await s.get("https://blockchain.info/unconfirmed-transactions?format=json&limit=20",
+                            timeout=aiohttp.ClientTimeout(total=8))
+            if r.status == 200:
+                data = await r.json()
+                for tx in data.get("txs", []):
+                    total_out = sum(o.get("value", 0) for o in tx.get("out", [])) / 1e8  # satoshi → BTC
+                    usd_val = total_out * _macro_cache.get("btc_usd", 85000)
+                    if usd_val >= 500_000:  # Only $500K+
+                        # Determine direction: exchange → wallet = bullish, wallet → exchange = bearish
+                        movements.append({
+                            "symbol": "BTC", "amount_btc": round(total_out, 4),
+                            "amount_usd": round(usd_val), "hash": tx.get("hash", "")[:12],
+                            "type": "large_tx"
+                        })
+
+            # 2. Exchange net flow estimate from Blockchair (free tier)
+            r2 = await s.get("https://api.blockchair.com/bitcoin/stats",
+                              timeout=aiohttp.ClientTimeout(total=6))
+            if r2.status == 200:
+                stats = (await r2.json()).get("data", {})
+                mempool_size = stats.get("mempool_transactions", 0)
+                mempool_val = stats.get("mempool_total_fee_usd", 0)
+                movements.append({
+                    "type": "mempool_stats",
+                    "mempool_txs": mempool_size,
+                    "mempool_fees_usd": round(mempool_val, 2),
+                    "hashrate": stats.get("hashrate_24h", 0),
+                })
+
+        # Analyze sentiment from movements
+        large_txs = [m for m in movements if m.get("type") == "large_tx"]
+        total_whale_usd = sum(m.get("amount_usd", 0) for m in large_txs)
+        whale_count = len(large_txs)
+
+        result = {
+            "success": True, "whale_txs": whale_count,
+            "total_whale_usd": round(total_whale_usd),
+            "movements": movements[:10],
+            "signal": "heavy" if total_whale_usd > 10_000_000 else "moderate" if total_whale_usd > 2_000_000 else "calm",
+            "ts": time.time()
+        }
+
+        # Save significant events to DB
+        if db.is_ready() and whale_count > 0:
+            for m in large_txs[:5]:
+                await db.save_whale_event(
+                    event_type="large_btc_tx", symbol="BTC",
+                    amount_usd=m.get("amount_usd", 0),
+                    source="blockchain.info"
+                )
+
+        _whale_alert_cache = result
+        _whale_alert_ts = time.time()
+        if whale_count > 0:
+            log_activity(f"[whale] {whale_count} large txs, total ${total_whale_usd:,.0f}, signal={result['signal']}")
+        return result
+    except Exception as e:
+        log_activity(f"[whale_alert] error: {e}")
+        return {"success": False, "whale_txs": 0, "signal": "error", "error": str(e)}
+
+
+# ── v9.2: Copy-Trading Intelligence (ByBit Leaderboard) ───────────────────────
+_copytrade_cache: dict = {}
+_copytrade_ts: float = 0.0
+
+async def fetch_top_traders_positions() -> dict:
+    """Fetch top traders' positions from ByBit copy trading leaderboard (public API)."""
+    global _copytrade_cache, _copytrade_ts
+    if time.time() - _copytrade_ts < 600 and _copytrade_cache:  # 10 min cache
+        return _copytrade_cache
+    if not BYBIT_ENABLED:
+        return {"success": False, "error": "ByBit not configured"}
+    try:
+        result = {"traders": [], "consensus": {}}
+        async with aiohttp.ClientSession() as s:
+            # ByBit copy trade leaderboard — public endpoint
+            r = await s.get(
+                f"{BYBIT_BASE_URL}/v5/copy-trading/leaderboard/get-leader-list",
+                params={"sortBy": "TOTAL_PNL", "limit": "10"},
+                timeout=aiohttp.ClientTimeout(total=8)
+            )
+            if r.status == 200:
+                data = await r.json()
+                leaders = data.get("result", {}).get("list", [])
+                for leader in leaders[:10]:
+                    result["traders"].append({
+                        "name": leader.get("nickName", "?"),
+                        "pnl": round(float(leader.get("totalPnl") or 0), 2),
+                        "win_rate": round(float(leader.get("winRate") or 0) * 100, 1),
+                        "followers": int(leader.get("followerNum") or 0),
+                        "roi": round(float(leader.get("totalRoi") or 0) * 100, 1),
+                    })
+
+            # Try to get aggregate position data
+            r2 = await s.get(
+                f"{BYBIT_BASE_URL}/v5/market/account-ratio",
+                params={"category": "linear", "symbol": "BTCUSDT", "period": "1h", "limit": "1"},
+                timeout=aiohttp.ClientTimeout(total=5)
+            )
+            if r2.status == 200:
+                data2 = await r2.json()
+                ratios = data2.get("result", {}).get("list", [])
+                if ratios:
+                    buy_ratio = float(ratios[0].get("buyRatio", 0.5))
+                    sell_ratio = float(ratios[0].get("sellRatio", 0.5))
+                    result["consensus"]["BTC"] = {
+                        "long_pct": round(buy_ratio * 100, 1),
+                        "short_pct": round(sell_ratio * 100, 1),
+                        "bias": "LONG" if buy_ratio > 0.55 else "SHORT" if sell_ratio > 0.55 else "NEUTRAL"
+                    }
+
+            # ETH ratio too
+            r3 = await s.get(
+                f"{BYBIT_BASE_URL}/v5/market/account-ratio",
+                params={"category": "linear", "symbol": "ETHUSDT", "period": "1h", "limit": "1"},
+                timeout=aiohttp.ClientTimeout(total=5)
+            )
+            if r3.status == 200:
+                data3 = await r3.json()
+                ratios3 = data3.get("result", {}).get("list", [])
+                if ratios3:
+                    buy_ratio = float(ratios3[0].get("buyRatio", 0.5))
+                    sell_ratio = float(ratios3[0].get("sellRatio", 0.5))
+                    result["consensus"]["ETH"] = {
+                        "long_pct": round(buy_ratio * 100, 1),
+                        "short_pct": round(sell_ratio * 100, 1),
+                        "bias": "LONG" if buy_ratio > 0.55 else "SHORT" if sell_ratio > 0.55 else "NEUTRAL"
+                    }
+
+        result["success"] = True
+        result["ts"] = time.time()
+        _copytrade_cache = result
+        _copytrade_ts = time.time()
+        log_activity(f"[copytrade] loaded {len(result['traders'])} top traders, BTC consensus: {result.get('consensus', {}).get('BTC', {}).get('bias', '?')}")
+        return result
+    except Exception as e:
+        log_activity(f"[copytrade] error: {e}")
+        return {"success": False, "error": str(e), "traders": [], "consensus": {}}
+
+
 # ── Whale Tracker ──────────────────────────────────────────────────────────────
 async def get_whale_signal(symbol: str) -> dict:
     # v7.1.2: expanded to SOL, XRP, BNB via Blockchair (AVAX not supported → skip)
@@ -2305,6 +2606,17 @@ async def auto_execute_dynamic(trade_id: str):
             pending["vision"], pending["price"], pending["fut_usdt"])
 
 
+async def _safe_background_enrich(fg_data: dict):
+    """v9.2: Non-blocking background fetch of macro/whale/copytrade data + persist F&G."""
+    try:
+        tasks = [save_fg_to_history(fg_data), fetch_macro_context(), fetch_whale_movements()]
+        if BYBIT_ENABLED:
+            tasks.append(fetch_top_traders_positions())
+        await asyncio.gather(*tasks, return_exceptions=True)
+    except Exception as e:
+        log_activity(f"[enrich] background error: {e}")
+
+
 async def auto_trade_cycle():
     global last_q_score, MIN_Q_SCORE, COOLDOWN, AUTOPILOT
     log_activity(f"[cycle start] {datetime.utcnow().strftime('%H:%M:%S')}")
@@ -2319,6 +2631,9 @@ async def auto_trade_cycle():
         log_activity("[cycle] data fetch timeout — skipping"); return
     if not prices_data.get("success"):
         log_activity("[cycle] prices fetch FAILED"); return
+
+    # v9.2: Background enrichment — macro, whale, copy-trading (non-blocking)
+    asyncio.create_task(_safe_background_enrich(fg_data))
 
     spot_usdt       = spot_bal.get("total_usdt", 0)
     fut_usdt        = fut_bal.get("available_balance", 0)
@@ -3533,7 +3848,21 @@ async def _tg_diag(chat_id: int):
         mf_last = f", last {ago}s ago"
     results.append(f"<b>🐟 MiroFish v2:</b> {mf_en} | agents={len(MIROFISH_PERSONAS)} calls={mf_calls} cache={mf_cache} avg={mf_avg:+.1f} mem={mf_mem}{mf_last}")
 
-    text = "🔬 <b>QuantumTrade Diagnostics v9.1</b>\n" + "━" * 30 + "\n\n" + "\n\n".join(results)
+    # 12. v9.2: Macro + Whale + Copy-Trading
+    macro_ok = "✅" if _macro_cache.get("success") else "❌"
+    macro_age = int(time.time() - _macro_cache_ts) if _macro_cache_ts else 0
+    results.append(f"<b>🌍 Macro:</b> {macro_ok} BTC dom={_macro_cache.get('btc_dominance','?')}% MCap=${_macro_cache.get('total_mcap','?')}B age={macro_age}s")
+
+    whale_ok = "✅" if _whale_alert_cache.get("success") else "❌"
+    whale_sig = _whale_alert_cache.get("signal", "?")
+    results.append(f"<b>🐋 Whales:</b> {whale_ok} signal={whale_sig} txs={_whale_alert_cache.get('whale_txs',0)}")
+
+    ct_ok = "✅" if _copytrade_cache.get("success") else "❌"
+    ct_traders = len(_copytrade_cache.get("traders", []))
+    btc_bias = _copytrade_cache.get("consensus", {}).get("BTC", {}).get("bias", "?")
+    results.append(f"<b>📋 CopyTrade:</b> {ct_ok} traders={ct_traders} BTC bias={btc_bias}")
+
+    text = "🔬 <b>QuantumTrade Diagnostics v9.2</b>\n" + "━" * 30 + "\n\n" + "\n\n".join(results)
     await _tg_send(chat_id, text)
 
 
@@ -3719,6 +4048,104 @@ async def _tg_analyze(chat_id: int):
     # Telegram limit 4096 chars — split if needed
     if len(text) > 4000:
         mid = text.find("🏆 <b>Лучшие")
+        if mid > 0:
+            await _tg_send(chat_id, text[:mid])
+            await _tg_send(chat_id, text[mid:])
+        else:
+            await _tg_send(chat_id, text[:4000])
+            await _tg_send(chat_id, text[4000:])
+    else:
+        await _tg_send(chat_id, text)
+
+
+async def _tg_macro(chat_id: int):
+    """v9.2: Show macro market context — BTC dominance, MCap, trends, whale activity."""
+    await _tg_send(chat_id, "🌍 <i>Собираю макро-данные...</i>")
+
+    # Fetch fresh data
+    macro, whales, fg_trend = await asyncio.gather(
+        fetch_macro_context(),
+        fetch_whale_movements(),
+        get_fg_trend(),
+        return_exceptions=True
+    )
+
+    parts = ["🌍 <b>MACRO DASHBOARD v9.2</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"]
+
+    # Macro
+    if isinstance(macro, dict) and macro.get("success"):
+        parts.append(
+            f"📊 <b>Рынок:</b>\n"
+            f"  BTC Dominance: <code>{macro.get('btc_dominance',0)}%</code>\n"
+            f"  ETH Dominance: <code>{macro.get('eth_dominance',0)}%</code>\n"
+            f"  Total MCap: <code>${macro.get('total_mcap',0)}B</code> ({macro.get('mcap_change_24h',0):+.1f}% 24h)\n"
+            f"  ETH/BTC: <code>{macro.get('eth_btc_ratio',0)}</code>\n"
+            f"  BTC: <code>${macro.get('btc_usd',0):,.0f}</code> | ETH: <code>${macro.get('eth_usd',0):,.0f}</code>"
+        )
+        trending = macro.get("trending", [])
+        if trending:
+            trend_txt = ", ".join(f"{t['symbol']}(#{t.get('rank','?')})" for t in trending[:5])
+            parts.append(f"\n🔥 <b>Trending:</b> {trend_txt}")
+
+    # F&G Trend
+    if isinstance(fg_trend, dict) and fg_trend.get("trend") != "insufficient_data":
+        emoji = "📈" if fg_trend["trend"] == "rising" else "📉" if fg_trend["trend"] == "falling" else "↔️"
+        parts.append(
+            f"\n\n😱 <b>Fear & Greed тренд (3д):</b>\n"
+            f"  {emoji} {fg_trend['trend'].upper()} | Сейчас: <code>{fg_trend.get('latest',0)}</code> "
+            f"→ Было: <code>{fg_trend.get('oldest',0)}</code> (Δ{fg_trend.get('change',0):+d})\n"
+            f"  Значения: {fg_trend.get('values',[])} "
+        )
+
+    # Whale activity
+    if isinstance(whales, dict) and whales.get("success"):
+        signal_emoji = "🔴" if whales["signal"] == "heavy" else "🟡" if whales["signal"] == "moderate" else "🟢"
+        parts.append(
+            f"\n\n🐋 <b>Whale Activity:</b>\n"
+            f"  {signal_emoji} Signal: <code>{whales['signal']}</code>\n"
+            f"  Крупных транзакций: <code>{whales['whale_txs']}</code>\n"
+            f"  Общий объём: <code>${whales.get('total_whale_usd',0):,.0f}</code>"
+        )
+        mempool = [m for m in whales.get("movements", []) if m.get("type") == "mempool_stats"]
+        if mempool:
+            mp = mempool[0]
+            parts.append(f"\n  Mempool: <code>{mp.get('mempool_txs',0):,}</code> txs, fees: ${mp.get('mempool_fees_usd',0):,.0f}")
+
+    # Copy-trading consensus
+    ct = _copytrade_cache
+    if ct.get("success"):
+        parts.append(f"\n\n📋 <b>Copy-Trading (ByBit Top Traders):</b>")
+        for coin, data in ct.get("consensus", {}).items():
+            bias_emoji = "🟢" if data["bias"] == "LONG" else "🔴" if data["bias"] == "SHORT" else "⚪"
+            parts.append(
+                f"\n  {bias_emoji} {coin}: Long <code>{data['long_pct']}%</code> / "
+                f"Short <code>{data['short_pct']}%</code> → <b>{data['bias']}</b>"
+            )
+        traders = ct.get("traders", [])
+        if traders:
+            parts.append(f"\n  Топ трейдеры ({len(traders)}):")
+            for t in traders[:5]:
+                parts.append(
+                    f"\n    {'🏆' if t.get('roi',0)>100 else '👤'} {t['name']}: "
+                    f"ROI <code>{t['roi']}%</code> WR <code>{t['win_rate']}%</code> "
+                    f"({t['followers']} followers)"
+                )
+
+    # F&G correlation with our trades
+    fg_corr = await db.get_fg_trade_correlation()
+    if fg_corr:
+        parts.append(f"\n\n🎯 <b>F&G → Наш WR (корреляция):</b>")
+        for fc in fg_corr:
+            if fc["total"] > 0:
+                wr = round(fc["wins"] / fc["total"] * 100)
+                emoji = "🟢" if fc["pnl"] > 0 else "🔴"
+                parts.append(
+                    f"\n  {emoji} {fc['fg_zone']}: {wr}% WR ({fc['total']} сделок) PnL: ${fc['pnl']}"
+                )
+
+    text = "\n".join(parts)
+    if len(text) > 4000:
+        mid = text.find("📋 <b>Copy-Trading")
         if mid > 0:
             await _tg_send(chat_id, text[:mid])
             await _tg_send(chat_id, text[mid:])
@@ -4332,6 +4759,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/spot":                await _tg_spot_status(chat_id)
         elif cmd.startswith("/mirofish"):   await _tg_mirofish(chat_id, raw)
         elif cmd == "/analyze":             await _tg_analyze(chat_id)
+        elif cmd == "/macro":              await _tg_macro(chat_id)
         elif cmd == "/bybit":               await _tg_bybit(chat_id)
         elif cmd == "/xarb":                await _tg_xarb(chat_id)
         elif cmd.startswith("/sell"):       await _tg_universal_sell(chat_id, raw)
@@ -4537,6 +4965,14 @@ async def startup():
         if db_stats:
             _perf_stats.update(db_stats)
             print(f"[startup] perf stats loaded from PostgreSQL")
+
+        # v9.2: Restore MiroFish memory from PostgreSQL
+        global _mirofish_memory
+        mem_data = await db.load_all_mirofish_memory()
+        if mem_data:
+            _mirofish_memory.update(mem_data)
+            total_mem = sum(len(v) for v in mem_data.values())
+            print(f"[startup] MiroFish memory restored: {total_mem} entries for {len(mem_data)} symbols")
 
     # Phase 6: пробуем подключить Origin QC Wukong 180
     qc_ok = await asyncio.get_event_loop().run_in_executor(None, _init_qcloud)

@@ -106,6 +106,60 @@ async def _create_tables():
             CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
             CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(ts);
             CREATE INDEX IF NOT EXISTS idx_qscore_ts ON q_score_history(ts);
+
+            -- v9.2: Fear & Greed history tracking
+            CREATE TABLE IF NOT EXISTS fg_history (
+                id SERIAL PRIMARY KEY,
+                ts TIMESTAMPTZ DEFAULT NOW(),
+                value INT NOT NULL,
+                classification VARCHAR(32)
+            );
+            CREATE INDEX IF NOT EXISTS idx_fg_ts ON fg_history(ts);
+
+            -- v9.2: MiroFish memory persistence
+            CREATE TABLE IF NOT EXISTS mirofish_memory (
+                id SERIAL PRIMARY KEY,
+                ts TIMESTAMPTZ DEFAULT NOW(),
+                symbol VARCHAR(32) NOT NULL,
+                score INT,
+                direction VARCHAR(8),
+                fg_value INT,
+                rsi DOUBLE PRECISION,
+                buy_count INT,
+                sell_count INT,
+                hold_count INT,
+                agents_json JSONB DEFAULT '[]'
+            );
+            CREATE INDEX IF NOT EXISTS idx_mf_mem_symbol ON mirofish_memory(symbol);
+            CREATE INDEX IF NOT EXISTS idx_mf_mem_ts ON mirofish_memory(ts);
+
+            -- v9.2: Macro context snapshots (DXY, S&P500, BTC dominance)
+            CREATE TABLE IF NOT EXISTS macro_snapshots (
+                id SERIAL PRIMARY KEY,
+                ts TIMESTAMPTZ DEFAULT NOW(),
+                btc_dominance DOUBLE PRECISION,
+                total_mcap DOUBLE PRECISION,
+                eth_btc_ratio DOUBLE PRECISION,
+                top_gainers JSONB DEFAULT '[]',
+                top_losers JSONB DEFAULT '[]',
+                extra JSONB DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_macro_ts ON macro_snapshots(ts);
+
+            -- v9.2: Whale & large player movements
+            CREATE TABLE IF NOT EXISTS whale_events (
+                id SERIAL PRIMARY KEY,
+                ts TIMESTAMPTZ DEFAULT NOW(),
+                event_type VARCHAR(32),
+                symbol VARCHAR(32),
+                amount_usd DOUBLE PRECISION,
+                from_entity VARCHAR(64),
+                to_entity VARCHAR(64),
+                direction VARCHAR(16),
+                source VARCHAR(32),
+                extra JSONB DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_whale_ts ON whale_events(ts);
         """)
         print("[db] tables ready ✅")
 
@@ -275,6 +329,218 @@ async def load_perf_stats() -> Optional[dict]:
     except Exception as e:
         print(f"[db] load_perf_stats error: {e}")
     return None
+
+
+# ── v9.2: Fear & Greed History ──────────────────────────────────────────────
+
+async def save_fg_value(value: int, classification: str = ""):
+    """Store F&G value for historical tracking."""
+    if not is_ready():
+        return
+    try:
+        async with _pool.acquire() as conn:
+            # Avoid duplicates within same hour
+            existing = await conn.fetchval(
+                "SELECT id FROM fg_history WHERE ts > NOW() - INTERVAL '50 minutes' ORDER BY ts DESC LIMIT 1"
+            )
+            if not existing:
+                await conn.execute(
+                    "INSERT INTO fg_history (value, classification) VALUES ($1, $2)",
+                    value, classification
+                )
+    except Exception as e:
+        print(f"[db] save_fg_value error: {e}")
+
+
+async def get_fg_history(days: int = 30) -> list:
+    """Get F&G history for last N days."""
+    if not is_ready():
+        return []
+    try:
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT ts, value, classification FROM fg_history
+                WHERE ts > NOW() - INTERVAL '%s days'
+                ORDER BY ts DESC
+            """ % days)
+            return [{"ts": str(r["ts"]), "value": r["value"], "class": r["classification"]} for r in rows]
+    except Exception as e:
+        print(f"[db] get_fg_history error: {e}")
+        return []
+
+
+async def get_fg_trade_correlation() -> list:
+    """Correlate F&G ranges with trade outcomes — the money query."""
+    if not is_ready():
+        return []
+    try:
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT
+                    CASE
+                        WHEN (extra->>'fg_value')::int < 20 THEN 'Extreme Fear (0-19)'
+                        WHEN (extra->>'fg_value')::int < 40 THEN 'Fear (20-39)'
+                        WHEN (extra->>'fg_value')::int < 60 THEN 'Neutral (40-59)'
+                        WHEN (extra->>'fg_value')::int < 80 THEN 'Greed (60-79)'
+                        ELSE 'Extreme Greed (80-100)'
+                    END as fg_zone,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END) as wins,
+                    ROUND(SUM(pnl_usdt)::numeric, 2) as pnl,
+                    ROUND(AVG(pnl_usdt)::numeric, 2) as avg_pnl
+                FROM trades
+                WHERE status = 'closed' AND extra->>'fg_value' IS NOT NULL
+                GROUP BY fg_zone ORDER BY fg_zone
+            """)
+            return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[db] get_fg_trade_correlation error: {e}")
+        return []
+
+
+# ── v9.2: MiroFish Memory Persistence ──────────────────────────────────────
+
+async def save_mirofish_memory(symbol: str, score: int, direction: str,
+                                fg_value: int, rsi: float,
+                                buy_count: int, sell_count: int, hold_count: int,
+                                agents_json: str = "[]"):
+    """Persist MiroFish analysis to DB for cross-restart memory."""
+    if not is_ready():
+        return
+    try:
+        async with _pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO mirofish_memory (symbol, score, direction, fg_value, rsi,
+                                              buy_count, sell_count, hold_count, agents_json)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            """, symbol, score, direction, fg_value, rsi, buy_count, sell_count, hold_count, agents_json)
+    except Exception as e:
+        print(f"[db] save_mirofish_memory error: {e}")
+
+
+async def load_mirofish_memory(symbol: str, limit: int = 10) -> list:
+    """Load last N MiroFish analyses for a symbol."""
+    if not is_ready():
+        return []
+    try:
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT ts, score, direction, fg_value, rsi, buy_count, sell_count, hold_count
+                FROM mirofish_memory WHERE symbol = $1
+                ORDER BY ts DESC LIMIT $2
+            """, symbol, limit)
+            return [dict(r) for r in reversed(rows)]  # oldest first
+    except Exception as e:
+        print(f"[db] load_mirofish_memory error: {e}")
+        return []
+
+
+async def load_all_mirofish_memory() -> dict:
+    """Load latest MiroFish memory for all symbols (for startup restore)."""
+    if not is_ready():
+        return {}
+    try:
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT DISTINCT ON (symbol) symbol, score, direction, fg_value, rsi,
+                       buy_count, sell_count, ts
+                FROM mirofish_memory ORDER BY symbol, ts DESC
+            """)
+            result = {}
+            for r in rows:
+                sym = r["symbol"]
+                # Load last 10 for this symbol
+                mem_rows = await conn.fetch("""
+                    SELECT score, direction, fg_value, rsi, buy_count, sell_count,
+                           EXTRACT(EPOCH FROM ts) as ts_epoch
+                    FROM mirofish_memory WHERE symbol = $1
+                    ORDER BY ts DESC LIMIT 10
+                """, sym)
+                result[sym] = [
+                    {"ts": r2["ts_epoch"], "score": r2["score"], "direction": r2["direction"],
+                     "fg": r2["fg_value"], "rsi": r2["rsi"],
+                     "buy": r2["buy_count"], "sell": r2["sell_count"]}
+                    for r2 in reversed(mem_rows)
+                ]
+            return result
+    except Exception as e:
+        print(f"[db] load_all_mirofish_memory error: {e}")
+        return {}
+
+
+# ── v9.2: Macro Snapshots ──────────────────────────────────────────────────
+
+async def save_macro_snapshot(btc_dom: float, total_mcap: float, eth_btc: float,
+                               gainers: list = None, losers: list = None, extra: dict = None):
+    """Save macro market snapshot."""
+    if not is_ready():
+        return
+    try:
+        async with _pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO macro_snapshots (btc_dominance, total_mcap, eth_btc_ratio,
+                                              top_gainers, top_losers, extra)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            """, btc_dom, total_mcap, eth_btc,
+                json.dumps(gainers or []), json.dumps(losers or []),
+                json.dumps(extra or {}))
+    except Exception as e:
+        print(f"[db] save_macro_snapshot error: {e}")
+
+
+async def get_latest_macro() -> Optional[dict]:
+    """Get latest macro snapshot."""
+    if not is_ready():
+        return None
+    try:
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM macro_snapshots ORDER BY ts DESC LIMIT 1"
+            )
+            if row:
+                r = dict(row)
+                r["ts"] = str(r["ts"])
+                return r
+    except Exception as e:
+        print(f"[db] get_latest_macro error: {e}")
+    return None
+
+
+# ── v9.2: Whale Events ─────────────────────────────────────────────────────
+
+async def save_whale_event(event_type: str, symbol: str, amount_usd: float,
+                            from_entity: str = "", to_entity: str = "",
+                            direction: str = "", source: str = ""):
+    """Store whale movement event."""
+    if not is_ready():
+        return
+    try:
+        async with _pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO whale_events (event_type, symbol, amount_usd,
+                                           from_entity, to_entity, direction, source)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+            """, event_type, symbol, amount_usd, from_entity, to_entity, direction, source)
+    except Exception as e:
+        print(f"[db] save_whale_event error: {e}")
+
+
+async def get_recent_whale_events(hours: int = 24, min_usd: float = 1_000_000) -> list:
+    """Get whale events from last N hours above minimum USD threshold."""
+    if not is_ready():
+        return []
+    try:
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT ts, event_type, symbol, amount_usd, from_entity, to_entity, direction, source
+                FROM whale_events
+                WHERE ts > NOW() - INTERVAL '%s hours' AND amount_usd >= $1
+                ORDER BY ts DESC LIMIT 50
+            """ % hours, min_usd)
+            return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[db] get_recent_whale_events error: {e}")
+        return []
 
 
 # ── Analytics Queries ────────────────────────────────────────────────────────
