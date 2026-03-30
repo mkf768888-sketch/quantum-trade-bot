@@ -1234,10 +1234,15 @@ async def _analyze_chart_claude_vision(img_b64: str, symbol: str, tech: dict) ->
 # ──────────────────────────────────────────────────────────────────────────────
 
 _ai_call_stats: dict = {"deepseek": 0, "haiku": 0, "sonnet": 0, "opus": 0, "errors": 0}
+_deepseek_disabled_until: float = 0.0  # v8.3.5: skip DeepSeek for 1h after 402/401
 
 async def ai_call_deepseek(messages: list, max_tokens: int = 500, system: str = "") -> dict:
-    """Call DeepSeek V3 API (OpenAI-compatible). Falls back to Claude Haiku if no key."""
+    """Call DeepSeek V3 API (OpenAI-compatible). Falls back to Claude Haiku if no key or billing issue."""
+    global _deepseek_disabled_until
     if not DEEPSEEK_API_KEY:
+        return await ai_call_claude(messages, max_tokens, system, model="haiku")
+    # v8.3.5: Skip DeepSeek if recently got 402 (no balance) — don't waste time on dead API
+    if time.time() < _deepseek_disabled_until:
         return await ai_call_claude(messages, max_tokens, system, model="haiku")
     try:
         payload = {
@@ -1251,17 +1256,21 @@ async def ai_call_deepseek(messages: list, max_tokens: int = 500, system: str = 
                 f"{DEEPSEEK_BASE_URL}/v1/chat/completions",
                 headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=25)  # v8.3.4: 15→25s for slower responses
+                timeout=aiohttp.ClientTimeout(total=25)
             )
             data = await r.json()
         if r.status != 200:
             log_activity(f"[deepseek] HTTP {r.status}: {json.dumps(data)[:200]}")
             _ai_call_stats["errors"] += 1
-            # Fallback to Claude Haiku
-            log_activity(f"[deepseek] falling back to Claude Haiku")
+            # v8.3.5: If billing error (402/401), disable DeepSeek for 1 hour to save latency
+            if r.status in (401, 402, 429):
+                _deepseek_disabled_until = time.time() + 3600
+                log_activity(f"[deepseek] disabled for 1h (HTTP {r.status}), using Haiku")
             return await ai_call_claude(messages, max_tokens, system, model="haiku")
         text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         _ai_call_stats["deepseek"] += 1
+        # v8.3.5: DeepSeek worked! Reset disable timer
+        _deepseek_disabled_until = 0.0
         return {"success": True, "text": text, "model": "deepseek-v3", "tokens": data.get("usage", {}).get("total_tokens", 0)}
     except Exception as e:
         log_activity(f"[deepseek] error: {e}")
@@ -2350,7 +2359,7 @@ ARB_TRIANGLES = [
 # v8.3: Invalid pairs are auto-detected at runtime and silently skipped
 _arb_dead_pairs: set = set()  # pairs that returned 0 price → skip next time
 ARB_FEE       = 0.001   # 0.1% per trade, 0.3% for 3 trades
-ARB_MIN_SPREAD = 0.004  # минимальный спред 0.4% после комиссий
+ARB_MIN_SPREAD = 0.003  # v8.3.5: 0.3% (was 0.4%) — more opportunities on tight markets
 ARB_COOLDOWNS: dict = {}  # path → last_alert_ts (cooldown 5 мин)
 ARB_COOLDOWN_SEC = 300
 
@@ -2501,7 +2510,7 @@ async def _notify_arb(opp: dict):
 # ── v7.3.9: Triangular Arb EXECUTION (safe) ───────────────────────────────────
 ARB_EXEC_USDT     = float(os.getenv("ARB_EXEC_USDT", "5"))     # v8.3: lowered to $5 for small balance testing
 ARB_EXEC_ENABLED  = os.getenv("ARB_EXEC_ENABLED", "true").lower() == "true"  # v8.3: ON by default
-ARB_MIN_PROFIT_PCT = 0.5   # v8.3: lowered to 0.5% min profit (was 0.6%) for more opportunities
+ARB_MIN_PROFIT_PCT = 0.35  # v8.3.5: 0.35% (was 0.5%) — execute more arbs, still above 3x fee
 _arb_stats: dict   = {"total": 0, "success": 0, "failed": 0, "total_pnl": 0.0,
                        "opportunities_found": 0, "best_spread": 0.0, "last_opp_ts": 0}
 _arb_history: list = []  # last 50 arb events [{ts, path, spread, executed, pnl}]
@@ -3043,7 +3052,10 @@ async def _tg_diag(chat_id: int):
 
     # 1. DeepSeek API
     ds_status = "❌ No API key"
-    if DEEPSEEK_API_KEY:
+    if DEEPSEEK_API_KEY and time.time() < _deepseek_disabled_until:
+        remaining = int((_deepseek_disabled_until - time.time()) / 60)
+        ds_status = f"⏸ Disabled ({remaining}m left) — using Haiku fallback"
+    elif DEEPSEEK_API_KEY:
         try:
             async with aiohttp.ClientSession() as s:
                 r = await s.post(
@@ -3527,11 +3539,11 @@ async def _tg_ai_ask(chat_id: int, question: str):
     await _tg_send(chat_id, "🤔 <i>Думаю...</i>")
     log_activity(f"[/ask] question from {chat_id}: {question[:80]}")
 
-    # Формируем контекст бота
-    wins = sum(1 for t in trade_log if t.get("pnl", 0) > 0)
-    total = len(trade_log)
+    # v8.3.4c: Use _perf_stats for accurate closed-trade stats (not trade_log which includes open)
+    total = _perf_stats.get("total_trades", 0)
+    wins = _perf_stats.get("wins", 0)
     win_rate = (wins / total * 100) if total else 0
-    total_pnl = sum(t.get("pnl", 0) for t in trade_log)
+    total_pnl = _perf_stats.get("total_pnl", 0.0)
     chip = "Wukong_180" if _qcloud_ready else "CPU_simulator"
 
     # v8.3.4: Include detailed perf stats for AI to answer stats questions
