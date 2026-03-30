@@ -1537,16 +1537,17 @@ async def _ws_price_feed():
     """Connect to KuCoin WebSocket and stream real-time ticker prices.
     Used by arb scanner for near-instant price updates instead of REST polling."""
     global _ws_connected, _ws_reconnects
-    # Collect all symbols we need
-    symbols = set(SPOT_PAIRS)
-    for a, b, cross, _ in ARB_TRIANGLES:
-        symbols.add(a)
-        symbols.add(b)
-        if cross not in _arb_dead_pairs:
-            symbols.add(cross)
+    await asyncio.sleep(20)  # let REST fetch dead pairs first
 
     while True:
         try:
+            # Collect ALL symbols (don't filter by dead pairs — they may come alive)
+            symbols = set(SPOT_PAIRS)
+            for a, b, cross, _ in ARB_TRIANGLES:
+                symbols.add(a)
+                symbols.add(b)
+                symbols.add(cross)
+
             # Step 1: Get WS token from KuCoin
             async with aiohttp.ClientSession() as session:
                 r = await session.post(f"{KUCOIN_BASE_URL}/api/v1/bullet-public",
@@ -1557,15 +1558,17 @@ async def _ws_price_feed():
                 await asyncio.sleep(15)
                 continue
             token = data["data"]["token"]
-            endpoint = data["data"]["instanceServers"][0]["endpoint"]
+            srv = data["data"]["instanceServers"][0]
+            endpoint = srv["endpoint"]
+            ping_interval = srv.get("pingInterval", 18000) / 1000  # ms → sec
             ws_url = f"{endpoint}?token={token}&connectId=arb_{int(time.time())}"
 
             # Step 2: Connect and subscribe
             async with aiohttp.ClientSession() as session:
-                async with session.ws_connect(ws_url, heartbeat=20,
-                                               timeout=aiohttp.ClientTimeout(total=30)) as ws:
+                async with session.ws_connect(ws_url, heartbeat=None,
+                                               timeout=aiohttp.ClientTimeout(total=60)) as ws:
                     _ws_connected = True
-                    log_activity(f"[ws] connected — subscribing to {len(symbols)} symbols")
+                    log_activity(f"[ws] connected — subscribing to {len(symbols)} symbols, ping every {ping_interval:.0f}s")
 
                     # Subscribe in batches of 100 (KuCoin limit)
                     sym_list = list(symbols)
@@ -1576,19 +1579,42 @@ async def _ws_price_feed():
                             "type": "subscribe",
                             "topic": f"/market/ticker:{batch}",
                             "privateChannel": False,
-                            "response": False
+                            "response": True
                         })
 
-                    # Step 3: Read messages
-                    async for msg in ws:
+                    # Step 3: Read messages with KuCoin JSON ping
+                    last_ping = time.time()
+                    ping_id = 0
+                    while True:
+                        # Send KuCoin-level ping (JSON, not WebSocket ping)
+                        if time.time() - last_ping > ping_interval * 0.8:
+                            ping_id += 1
+                            try:
+                                await ws.send_json({"id": str(ping_id), "type": "ping"})
+                                last_ping = time.time()
+                            except Exception:
+                                break
+
+                        try:
+                            msg = await asyncio.wait_for(ws.receive(), timeout=ping_interval)
+                        except asyncio.TimeoutError:
+                            # No message received — send ping and continue
+                            continue
+
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             d = json.loads(msg.data)
-                            if d.get("type") == "message" and d.get("topic", "").startswith("/market/ticker:"):
+                            msg_type = d.get("type", "")
+                            if msg_type == "message" and d.get("topic", "").startswith("/market/ticker:"):
                                 sym = d["topic"].split(":")[-1]
                                 price = float(d["data"].get("price", 0))
                                 if price > 0:
                                     _ws_prices[sym] = {"price": price, "ts": time.time()}
+                            elif msg_type == "pong":
+                                pass  # healthy
+                            elif msg_type == "ack":
+                                pass  # subscription confirmed
                         elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
+                            log_activity(f"[ws] connection closed: {msg.type}")
                             break
 
         except Exception as e:
@@ -1596,7 +1622,8 @@ async def _ws_price_feed():
         finally:
             _ws_connected = False
             _ws_reconnects += 1
-            await asyncio.sleep(5)  # reconnect delay
+            delay = min(30, 5 * _ws_reconnects)  # backoff: 5, 10, 15... max 30s
+            await asyncio.sleep(delay)
 
 
 def _get_rt_price(symbol: str) -> float:
