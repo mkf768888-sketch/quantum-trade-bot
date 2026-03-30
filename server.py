@@ -726,11 +726,11 @@ async def bybit_get_balance() -> dict:
     balances = {}
     for c in coins:
         cur = c.get("coin", "")
-        eq = float(c.get("equity", 0))
-        usd_val = float(c.get("usdValue", 0))
+        eq = float(c.get("equity") or 0)
+        usd_val = float(c.get("usdValue") or 0)
         if eq > 0:
             balances[cur] = {"equity": eq, "usd_value": round(usd_val, 2),
-                             "available": float(c.get("availableToWithdraw", 0))}
+                             "available": float(c.get("availableToWithdraw") or 0)}
         if cur == "USDT":
             total_usdt = eq
     return {"total_usdt": round(total_usdt, 2), "balances": balances,
