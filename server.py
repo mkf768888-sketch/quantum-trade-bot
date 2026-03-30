@@ -27,7 +27,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 import db  # v8.2: PostgreSQL persistent storage
 
-app = FastAPI(title="QuantumTrade AI", version="8.3.4")
+app = FastAPI(title="QuantumTrade AI", version="9.1.0")
 _ALLOWED_ORIGINS = ["*"]   # v7.3.9: open for Mini App (Telegram WebApp origin varies)
 app.add_middleware(
     CORSMiddleware,
@@ -1532,8 +1532,10 @@ MIROFISH_CACHE_TTL = int(os.getenv("MIROFISH_CACHE_TTL", "1800"))  # 30 min cach
 
 _mirofish_cache: dict = {}  # symbol → {ts, score, agents, detail}
 _mirofish_stats: dict = {"calls": 0, "cache_hits": 0, "avg_score": 0.0, "last_call": 0}
+# v9.1: Historical memory — stores last 5 results per symbol for trend awareness
+_mirofish_memory: dict = {}  # symbol → [{ts, score, direction, fg}] max 5 entries
 
-# 8 diverse trader personas — each "votes" BUY/SELL/HOLD with reasoning
+# v9.1: 12 diverse trader personas (expanded from 8) — includes arb specialists
 MIROFISH_PERSONAS = [
     {"id": "whale", "name": "Кит-институционал", "style": "Крупный фонд. Покупает только фундаментально сильные активы. Очень осторожен. Смотрит на макро и ликвидность."},
     {"id": "scalper", "name": "Скальпер", "style": "Дейтрейдер. Ловит быстрые движения. Смотрит только на моментум, объёмы и RSI. Не держит позиции дольше часа."},
@@ -1543,6 +1545,11 @@ MIROFISH_PERSONAS = [
     {"id": "degen", "name": "Дегенерат", "style": "Агрессивный трейдер. Высокий риск, высокая награда. Любит волатильность. Покупает на хайпе и новостях."},
     {"id": "conservative", "name": "Консерватор", "style": "Пенсионный фонд. Покупает только BTC/ETH. Только при сильных сигналах. Предпочитает HOLD если не уверен."},
     {"id": "news_trader", "name": "Новостной трейдер", "style": "Торгует на новостях и настроениях. Polymarket, Twitter тренды, регуляции. Быстро реагирует на события."},
+    # v9.1: New specialized personas
+    {"id": "arb_hunter", "name": "Арбитражёр", "style": "Ищет ценовые расхождения между биржами и парами. Если спред маленький — HOLD. Если цена выше на одной бирже — сигнал на продажу здесь. Нейтрален к направлению рынка, смотрит только на неэффективности."},
+    {"id": "funding_arb", "name": "Фандинг-арбитражёр", "style": "Специалист по funding rate perpetual контрактов. Положительный funding → шорт, отрицательный → лонг. Зарабатывает на ставках финансирования, а не на движении цены. Если funding нейтральный — HOLD."},
+    {"id": "volume_prof", "name": "Профиль объёмов", "style": "Анализирует объёмы торгов. Растущие объёмы при росте цены — BUY. Падающие объёмы при росте — дивергенция, SELL. Низкие объёмы — HOLD, ждёт прорыва."},
+    {"id": "onchain", "name": "On-Chain аналитик", "style": "Смотрит на ончейн метрики: приток на биржи (медвежий сигнал), отток (бычий), активные адреса, whale movements. Если нет ончейн данных — решение по Fear & Greed как proxy."},
 ]
 
 async def mirofish_simulate(symbol: str, price: float, q_score: float,
@@ -1567,6 +1574,17 @@ async def mirofish_simulate(symbol: str, price: float, q_score: float,
     )
     if context:
         market_ctx += f"\nAdditional: {context}"
+
+    # v9.1: Historical memory — add trend context from last 5 analyses
+    mem = _mirofish_memory.get(symbol, [])
+    if mem:
+        prev_scores = [m["score"] for m in mem[-5:]]
+        prev_dirs = [m["direction"] for m in mem[-5:]]
+        trend = "bullish" if sum(prev_scores) > 50 else "bearish" if sum(prev_scores) < -50 else "mixed"
+        market_ctx += (
+            f"\nHistorical MiroFish (last {len(mem)} analyses): "
+            f"scores={prev_scores}, directions={prev_dirs}, trend={trend}"
+        )
 
     # Run all agents in parallel (single LLM call with all personas for efficiency)
     all_personas = "\n".join([f"- {p['name']}: {p['style']}" for p in MIROFISH_PERSONAS])
@@ -1619,7 +1637,17 @@ async def mirofish_simulate(symbol: str, price: float, q_score: float,
         n = _mirofish_stats["calls"]
         _mirofish_stats["avg_score"] = round((_mirofish_stats["avg_score"] * (n-1) + score) / n, 1)
 
-        log_activity(f"[mirofish] {symbol}: score={score:+d} ({direction}) buy={buy_count} sell={sell_count} hold={hold_count}")
+        # v9.1: Save to historical memory (max 10 per symbol)
+        if symbol not in _mirofish_memory:
+            _mirofish_memory[symbol] = []
+        _mirofish_memory[symbol].append({
+            "ts": time.time(), "score": score, "direction": direction,
+            "fg": fg_value, "rsi": rsi, "buy": buy_count, "sell": sell_count
+        })
+        if len(_mirofish_memory[symbol]) > 10:
+            _mirofish_memory[symbol] = _mirofish_memory[symbol][-10:]
+
+        log_activity(f"[mirofish] {symbol}: score={score:+d} ({direction}) buy={buy_count} sell={sell_count} hold={hold_count} agents={total}")
         return {**result_data, "cached": False}
 
     except json.JSONDecodeError as e:
@@ -3493,18 +3521,19 @@ async def _tg_diag(chat_id: int):
     # 10. Cross-Exchange Arb
     results.append(f"<b>🔀 X-Arb:</b> {'✅' if XARB_ENABLED and BYBIT_ENABLED else '❌'} checks={_xarb_stats['checks']} opps={_xarb_stats['opportunities']} best={_xarb_stats['best_spread']*100:.4f}%")
 
-    # 11. MiroFish Lite
+    # 11. MiroFish Lite v9.1
     mf_en = "✅ Enabled" if MIROFISH_ENABLED else "❌ Disabled"
     mf_calls = _mirofish_stats['calls']
     mf_cache = _mirofish_stats['cache_hits']
     mf_avg = _mirofish_stats['avg_score']
+    mf_mem = sum(len(v) for v in _mirofish_memory.values())
     mf_last = ""
     if _mirofish_stats['last_call'] > 0:
         ago = int(time.time() - _mirofish_stats['last_call'])
         mf_last = f", last {ago}s ago"
-    results.append(f"<b>🐟 MiroFish:</b> {mf_en} | calls={mf_calls} cache={mf_cache} avg={mf_avg:+.1f}{mf_last}")
+    results.append(f"<b>🐟 MiroFish v2:</b> {mf_en} | agents={len(MIROFISH_PERSONAS)} calls={mf_calls} cache={mf_cache} avg={mf_avg:+.1f} mem={mf_mem}{mf_last}")
 
-    text = "🔬 <b>QuantumTrade Diagnostics v9.0</b>\n" + "━" * 30 + "\n\n" + "\n\n".join(results)
+    text = "🔬 <b>QuantumTrade Diagnostics v9.1</b>\n" + "━" * 30 + "\n\n" + "\n\n".join(results)
     await _tg_send(chat_id, text)
 
 
@@ -3558,17 +3587,146 @@ async def _tg_mirofish(chat_id: int, raw: str):
     dir_emoji = "🟢" if result["direction"] == "BUY" else "🔴" if result["direction"] == "SELL" else "⚪"
     cached_txt = " (кэш)" if result.get("cached") else ""
 
+    # v9.1: Historical trend from memory
+    mem = _mirofish_memory.get(symbol, [])
+    mem_txt = ""
+    if len(mem) >= 2:
+        prev_scores = [m["score"] for m in mem[-5:]]
+        trend = "📈 бычий" if sum(prev_scores) > 50 else "📉 медвежий" if sum(prev_scores) < -50 else "↔️ смешанный"
+        mem_txt = f"\n🧠 Тренд ({len(mem)} анализов): {trend} [{', '.join(f'{s:+d}' for s in prev_scores)}]"
+
     text = (
-        f"🐟 <b>MiroFish Lite — {symbol}</b>{cached_txt}\n"
+        f"🐟 <b>MiroFish v2 — {symbol}</b>{cached_txt}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"💰 Цена: <code>${price:,.2f}</code> | F&G: <code>{fg_val}</code>\n"
         f"{dir_emoji} Решение: <b>{result['direction']}</b> (score: <code>{result['score']:+d}</code>)\n"
         f"📊 Уверенность: <code>{result['confidence']}%</code>\n"
-        f"🗳 Голоса: 🟢{result['buy']} 🔴{result['sell']} ⚪{result['hold']}\n\n"
-        f"<b>Агенты:</b>\n" + "\n".join(agent_lines) + "\n\n"
+        f"🗳 Голоса: 🟢{result['buy']} 🔴{result['sell']} ⚪{result['hold']}{mem_txt}\n\n"
+        f"<b>Агенты ({len(result.get('agents', []))}):</b>\n" + "\n".join(agent_lines) + "\n\n"
         f"<i>Model: {result.get('model', '?')} | Calls: {_mirofish_stats['calls']}</i>"
     )
-    await _tg_send(chat_id, text)
+    # Telegram 4096 char limit
+    if len(text) > 4000:
+        mid = text.find("<b>Агенты")
+        if mid > 0:
+            await _tg_send(chat_id, text[:mid])
+            await _tg_send(chat_id, text[mid:])
+        else:
+            await _tg_send(chat_id, text[:4000])
+    else:
+        await _tg_send(chat_id, text)
+
+
+async def _tg_analyze(chat_id: int):
+    """v9.1: Deep trade pattern analysis — finds what works and what doesn't."""
+    await _tg_send(chat_id, "🔬 <i>Анализирую все закрытые сделки...</i>")
+
+    data = await db.get_deep_analytics()
+    if not data:
+        await _tg_send(chat_id, "❌ Нет данных для анализа (PostgreSQL не подключена или нет закрытых сделок)")
+        return
+
+    DOW_NAMES = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"]
+
+    # ── Part 1: Symbol Performance ──
+    sym_lines = []
+    for s in data.get("by_symbol", [])[:10]:
+        wr = round(s["wins"] / s["total"] * 100) if s["total"] else 0
+        emoji = "🟢" if s["total_pnl"] > 0 else "🔴"
+        sym_lines.append(
+            f"  {emoji} <b>{s['symbol']}</b>: {wr}% WR ({s['wins']}/{s['total']}) "
+            f"PnL: <code>${s['total_pnl']}</code> avg: ${s['avg_pnl']}"
+        )
+
+    # ── Part 2: Best Hours ──
+    hour_lines = []
+    for h in data.get("by_hour", [])[:6]:
+        wr = round(h["wins"] / h["total"] * 100) if h["total"] else 0
+        emoji = "🟢" if h["pnl"] > 0 else "🔴"
+        hour_lines.append(f"  {emoji} {h['hour']:02d}:00 UTC: {wr}% WR ({h['total']} сд.) PnL: ${h['pnl']}")
+
+    # ── Part 3: Q-Score Ranges ──
+    q_lines = []
+    for q in data.get("q_ranges", []):
+        wr = round(q["wins"] / q["total"] * 100) if q["total"] else 0
+        emoji = "🟢" if q["pnl"] > 0 else "🔴"
+        q_lines.append(f"  {emoji} Q {q['q_range']}: {wr}% WR ({q['total']} сд.) avg: ${q['avg_pnl']}")
+
+    # ── Part 4: Patterns ──
+    pat_lines = []
+    for p in data.get("by_pattern", [])[:6]:
+        wr = round(p["wins"] / p["total"] * 100) if p["total"] else 0
+        emoji = "🟢" if p["pnl"] > 0 else "🔴"
+        pat_lines.append(f"  {emoji} {p['pattern']}: {wr}% WR ({p['total']} сд.) PnL: ${p['pnl']}")
+
+    # ── Part 5: Day of Week ──
+    dow_lines = []
+    for d in data.get("by_weekday", []):
+        wr = round(d["wins"] / d["total"] * 100) if d["total"] else 0
+        emoji = "🟢" if d["pnl"] > 0 else "🔴"
+        dow_lines.append(f"  {emoji} {DOW_NAMES[d['dow']]}: {wr}% ({d['total']} сд.) ${d['pnl']}")
+
+    # ── Part 6: Duration Buckets ──
+    dur_lines = []
+    for dd in data.get("by_duration", []):
+        wr = round(dd["wins"] / dd["total"] * 100) if dd["total"] else 0
+        emoji = "🟢" if dd["pnl"] > 0 else "🔴"
+        dur_lines.append(f"  {emoji} {dd['duration_bucket']}: {wr}% WR ({dd['total']} сд.) ${dd['pnl']}")
+
+    # ── Part 7: Best/Worst 5 ──
+    best_lines = []
+    for b in data.get("best5", []):
+        best_lines.append(f"  🏆 {b['symbol']} +${b['pnl_usdt']:.2f} Q:{b['q_score']:.0f} @{b['hour']}:00")
+    worst_lines = []
+    for w in data.get("worst5", []):
+        worst_lines.append(f"  💀 {w['symbol']} ${w['pnl_usdt']:.2f} Q:{w['q_score']:.0f} @{w['hour']}:00")
+
+    # ── Part 8: Strategy ──
+    strat_lines = []
+    for st in data.get("by_strategy", []):
+        wr = round(st["wins"] / st["total"] * 100) if st["total"] else 0
+        strat_lines.append(f"  {'🟢' if st['pnl'] > 0 else '🔴'} {st['strategy']}: {wr}% WR ({st['total']} сд.) PnL: ${st['pnl']}")
+
+    # ── Part 9: Account type ──
+    acc_lines = []
+    for a in data.get("by_account", []):
+        wr = round(a["wins"] / a["total"] * 100) if a["total"] else 0
+        acc_lines.append(f"  {a['account']}: {wr}% WR ({a['total']} сд.) PnL: ${a['pnl']}")
+
+    text = (
+        f"🔬 <b>DEEP TRADE ANALYSIS</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+        f"📊 <b>По символам (Top 10):</b>\n" + "\n".join(sym_lines) + "\n\n"
+
+        f"⏰ <b>Лучшие часы (UTC):</b>\n" + "\n".join(hour_lines) + "\n\n"
+
+        f"🎯 <b>Q-Score диапазоны:</b>\n" + "\n".join(q_lines) + "\n\n"
+
+        f"🔮 <b>Паттерны Vision:</b>\n" + "\n".join(pat_lines) + "\n\n"
+
+        f"📅 <b>Дни недели:</b>\n" + "\n".join(dow_lines) + "\n\n"
+
+        f"⏱ <b>Длительность сделки:</b>\n" + "\n".join(dur_lines) + "\n\n"
+
+        f"🏆 <b>Лучшие 5 сделок:</b>\n" + "\n".join(best_lines) + "\n\n"
+        f"💀 <b>Худшие 5 сделок:</b>\n" + "\n".join(worst_lines) + "\n\n"
+
+        f"📋 <b>Стратегии:</b>\n" + "\n".join(strat_lines) + "\n\n"
+        f"💼 <b>Тип аккаунта:</b>\n" + "\n".join(acc_lines)
+    )
+
+    # Telegram limit 4096 chars — split if needed
+    if len(text) > 4000:
+        mid = text.find("🏆 <b>Лучшие")
+        if mid > 0:
+            await _tg_send(chat_id, text[:mid])
+            await _tg_send(chat_id, text[mid:])
+        else:
+            await _tg_send(chat_id, text[:4000])
+            await _tg_send(chat_id, text[4000:])
+    else:
+        await _tg_send(chat_id, text)
 
 
 async def _tg_bybit(chat_id: int):
@@ -4173,6 +4331,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/arb":                 await _tg_arb(chat_id)
         elif cmd == "/spot":                await _tg_spot_status(chat_id)
         elif cmd.startswith("/mirofish"):   await _tg_mirofish(chat_id, raw)
+        elif cmd == "/analyze":             await _tg_analyze(chat_id)
         elif cmd == "/bybit":               await _tg_bybit(chat_id)
         elif cmd == "/xarb":                await _tg_xarb(chat_id)
         elif cmd.startswith("/sell"):       await _tg_universal_sell(chat_id, raw)
@@ -4649,7 +4808,7 @@ async def arb_stats_api():
     return {
         "stats": _arb_stats,
         "opus_gate": _opus_gate_stats,
-        "mirofish": {**_mirofish_stats, "enabled": MIROFISH_ENABLED},
+        "mirofish": {**_mirofish_stats, "enabled": MIROFISH_ENABLED, "agents": len(MIROFISH_PERSONAS), "memory_entries": sum(len(v) for v in _mirofish_memory.values())},
         "bybit": {**_bybit_stats, "enabled": BYBIT_ENABLED},
         "xarb": {**_xarb_stats, "enabled": XARB_ENABLED and BYBIT_ENABLED},
         "ws": {"connected": _ws_connected, "prices_count": len(_ws_prices), "reconnects": _ws_reconnects},

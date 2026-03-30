@@ -346,6 +346,159 @@ async def get_analytics() -> dict:
         return {}
 
 
+# ── Deep Analytics for Trade Pattern Analysis ────────────────────────────────
+
+async def get_deep_analytics() -> dict:
+    """v9.1: Deep trade pattern analysis — pairs, hours, F&G correlation, durations, streaks."""
+    if not is_ready():
+        return {}
+    try:
+        async with _pool.acquire() as conn:
+            # 1. Per-symbol detailed stats
+            by_symbol = await conn.fetch("""
+                SELECT symbol,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END) as wins,
+                       ROUND(SUM(pnl_usdt)::numeric, 2) as total_pnl,
+                       ROUND(AVG(pnl_usdt)::numeric, 2) as avg_pnl,
+                       ROUND(MAX(pnl_usdt)::numeric, 2) as best_trade,
+                       ROUND(MIN(pnl_usdt)::numeric, 2) as worst_trade,
+                       ROUND(AVG(duration_sec)::numeric, 0) as avg_duration_sec,
+                       ROUND(AVG(q_score)::numeric, 1) as avg_q
+                FROM trades WHERE status = 'closed'
+                GROUP BY symbol ORDER BY total_pnl DESC
+            """)
+
+            # 2. Win rate by hour (UTC)
+            by_hour = await conn.fetch("""
+                SELECT EXTRACT(HOUR FROM ts)::int as hour,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END) as wins,
+                       ROUND(SUM(pnl_usdt)::numeric, 2) as pnl,
+                       ROUND(AVG(pnl_usdt)::numeric, 2) as avg_pnl
+                FROM trades WHERE status = 'closed'
+                GROUP BY hour ORDER BY pnl DESC
+            """)
+
+            # 3. Win rate by strategy
+            by_strategy = await conn.fetch("""
+                SELECT strategy,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END) as wins,
+                       ROUND(SUM(pnl_usdt)::numeric, 2) as pnl,
+                       ROUND(AVG(q_score)::numeric, 1) as avg_q
+                FROM trades WHERE status = 'closed'
+                GROUP BY strategy ORDER BY pnl DESC
+            """)
+
+            # 4. Win rate by pattern (vision)
+            by_pattern = await conn.fetch("""
+                SELECT pattern,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END) as wins,
+                       ROUND(SUM(pnl_usdt)::numeric, 2) as pnl,
+                       ROUND(AVG(pnl_usdt)::numeric, 2) as avg_pnl
+                FROM trades WHERE status = 'closed' AND pattern IS NOT NULL
+                GROUP BY pattern ORDER BY total DESC
+            """)
+
+            # 5. Q-Score ranges analysis
+            q_ranges = await conn.fetch("""
+                SELECT
+                    CASE
+                        WHEN q_score < 78 THEN '70-77'
+                        WHEN q_score < 82 THEN '78-81'
+                        WHEN q_score < 86 THEN '82-85'
+                        WHEN q_score < 90 THEN '86-89'
+                        ELSE '90+'
+                    END as q_range,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END) as wins,
+                    ROUND(SUM(pnl_usdt)::numeric, 2) as pnl,
+                    ROUND(AVG(pnl_usdt)::numeric, 2) as avg_pnl
+                FROM trades WHERE status = 'closed'
+                GROUP BY q_range ORDER BY q_range
+            """)
+
+            # 6. Win rate by day of week
+            by_weekday = await conn.fetch("""
+                SELECT EXTRACT(DOW FROM ts)::int as dow,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END) as wins,
+                       ROUND(SUM(pnl_usdt)::numeric, 2) as pnl
+                FROM trades WHERE status = 'closed'
+                GROUP BY dow ORDER BY dow
+            """)
+
+            # 7. Close reason analysis
+            by_reason = await conn.fetch("""
+                SELECT close_reason,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END) as wins,
+                       ROUND(SUM(pnl_usdt)::numeric, 2) as pnl
+                FROM trades WHERE status = 'closed' AND close_reason IS NOT NULL
+                GROUP BY close_reason ORDER BY total DESC
+            """)
+
+            # 8. Duration buckets analysis
+            by_duration = await conn.fetch("""
+                SELECT
+                    CASE
+                        WHEN duration_sec < 300 THEN '<5min'
+                        WHEN duration_sec < 1800 THEN '5-30min'
+                        WHEN duration_sec < 3600 THEN '30-60min'
+                        WHEN duration_sec < 14400 THEN '1-4hr'
+                        ELSE '4hr+'
+                    END as duration_bucket,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END) as wins,
+                    ROUND(SUM(pnl_usdt)::numeric, 2) as pnl
+                FROM trades WHERE status = 'closed' AND duration_sec IS NOT NULL
+                GROUP BY duration_bucket ORDER BY total DESC
+            """)
+
+            # 9. Top 5 best and worst trades
+            best5 = await conn.fetch("""
+                SELECT symbol, pnl_usdt, pnl_pct, strategy, pattern,
+                       EXTRACT(HOUR FROM ts)::int as hour, q_score
+                FROM trades WHERE status = 'closed'
+                ORDER BY pnl_usdt DESC LIMIT 5
+            """)
+            worst5 = await conn.fetch("""
+                SELECT symbol, pnl_usdt, pnl_pct, strategy, pattern,
+                       EXTRACT(HOUR FROM ts)::int as hour, q_score
+                FROM trades WHERE status = 'closed'
+                ORDER BY pnl_usdt ASC LIMIT 5
+            """)
+
+            # 10. Account type (spot vs futures)
+            by_account = await conn.fetch("""
+                SELECT account,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END) as wins,
+                       ROUND(SUM(pnl_usdt)::numeric, 2) as pnl
+                FROM trades WHERE status = 'closed'
+                GROUP BY account ORDER BY pnl DESC
+            """)
+
+            return {
+                "by_symbol": [dict(r) for r in by_symbol],
+                "by_hour": [dict(r) for r in by_hour],
+                "by_strategy": [dict(r) for r in by_strategy],
+                "by_pattern": [dict(r) for r in by_pattern],
+                "q_ranges": [dict(r) for r in q_ranges],
+                "by_weekday": [dict(r) for r in by_weekday],
+                "by_reason": [dict(r) for r in by_reason],
+                "by_duration": [dict(r) for r in by_duration],
+                "best5": [dict(r) for r in best5],
+                "worst5": [dict(r) for r in worst5],
+                "by_account": [dict(r) for r in by_account],
+            }
+    except Exception as e:
+        print(f"[db] get_deep_analytics error: {e}")
+        return {}
+
+
 # ── Migrate from JSON ────────────────────────────────────────────────────────
 
 async def migrate_from_json(trade_log: list, perf_stats: dict):
