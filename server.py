@@ -1,11 +1,12 @@
 """
-QuantumTrade AI - FastAPI Backend v8.2.0
+QuantumTrade AI - FastAPI Backend v8.3.0
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
 Phase3: Origin QC QAOA — квантовая оптимизация портфеля (CPU симулятор + Wukong 180 реальный чип)
 Phase5: Claude Vision — AI-анализ графиков
 Phase6: Origin QC Wukong 180 — реальный квантовый чип (авто-переключение по ORIGIN_QC_TOKEN)
 v7.5.0: Self-learning performance analytics, AutoScanner 10+ checks
-v8.2.0: Self-learning Q-Score adjustment, perf tracking wired, all versions unified
+v8.3.0: Self-learning Q-Score adjustment, perf tracking wired, all versions unified
+v8.3.0: Spot trading fix (sell mechanism + monitor), arbitrage dynamic sizing + auto-enable
 """
 
 import asyncio
@@ -26,7 +27,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 import db  # v8.2: PostgreSQL persistent storage
 
-app = FastAPI(title="QuantumTrade AI", version="8.2.0")
+app = FastAPI(title="QuantumTrade AI", version="8.3.0")
 _ALLOWED_ORIGINS = ["*"]   # v7.3.9: open for Mini App (Telegram WebApp origin varies)
 app.add_middleware(
     CORSMiddleware,
@@ -654,6 +655,64 @@ async def get_balance() -> dict:
             return {"total_usdt": 0, "success": False, "error": data.get("msg")}
     except Exception as e:
         return {"total_usdt": 0, "success": False, "error": str(e)}
+
+
+async def get_spot_balances() -> dict:
+    """v8.3: Get all non-zero spot balances for position monitoring.
+    Returns {symbol: {available, balance, currency, usdt_value}} for coins with balance > 0."""
+    endpoint = "/api/v1/accounts?type=trade"
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(KUCOIN_BASE_URL + endpoint,
+                            headers=kucoin_headers("GET", endpoint),
+                            timeout=aiohttp.ClientTimeout(total=10))
+            data = await r.json()
+            if data.get("code") != "200000":
+                return {}
+            result = {}
+            for acc in data.get("data", []):
+                bal = float(acc.get("balance", 0))
+                avail = float(acc.get("available", 0))
+                cur = acc.get("currency", "")
+                if bal > 0 and cur not in ("USDT", "KCS"):
+                    pair = f"{cur}-USDT"
+                    price = await get_ticker(pair)
+                    if price > 0:
+                        result[pair] = {
+                            "currency": cur,
+                            "available": avail,
+                            "balance": bal,
+                            "price": price,
+                            "usdt_value": round(bal * price, 4),
+                        }
+            return result
+    except Exception as e:
+        log_activity(f"[spot_bal] error: {e}")
+        return {}
+
+
+async def sell_spot_to_usdt(symbol: str, size: float = 0) -> dict:
+    """v8.3: Sell spot coin back to USDT. If size=0, sell all available."""
+    if size <= 0:
+        balances = await get_spot_balances()
+        info = balances.get(symbol)
+        if not info or info["available"] <= 0:
+            return {"success": False, "msg": f"no {symbol} balance"}
+        size = info["available"]
+    # KuCoin spot minSize check — we use a conservative floor
+    MIN_SIZES = {"BTC-USDT": 0.00001, "ETH-USDT": 0.0001, "SOL-USDT": 0.01,
+                 "XRP-USDT": 1.0, "BNB-USDT": 0.01, "AVAX-USDT": 0.01,
+                 "ADA-USDT": 1.0, "LINK-USDT": 0.01, "LTC-USDT": 0.001}
+    min_size = MIN_SIZES.get(symbol, 0.001)
+    if size < min_size:
+        return {"success": False, "msg": f"size {size} < minSize {min_size}"}
+    result = await place_spot_order(symbol, "sell", round(size, 8))
+    ok = result.get("code") == "200000"
+    if ok:
+        log_activity(f"[spot_sell] {symbol} SELL {size:.8f} OK orderId={result.get('data',{}).get('orderId','?')}")
+    else:
+        log_activity(f"[spot_sell] {symbol} SELL {size:.8f} FAILED: {result.get('msg', '?')}")
+    return {"success": ok, "result": result, "size": size}
 
 async def get_futures_balance() -> dict:
     endpoint = "/api/v1/account-overview?currency=USDT"
@@ -1692,7 +1751,7 @@ async def auto_trade_cycle():
 
     futures_candidates = []
 
-    # v8.2.0: Самообучение — динамическая коррекция Q-порога на основе статистики
+    # v8.3.0: Самообучение — динамическая коррекция Q-порога на основе статистики
     _q_adjust = 0
     if _perf_stats["total_trades"] >= 5:
         # На серии убытков (≥3) повышаем порог → более осторожная торговля
@@ -1730,7 +1789,7 @@ async def auto_trade_cycle():
             asyncio.ensure_future(db.insert_q_score(symbol, q, bd))
         # v7.1.2: per-pair Q threshold (overrides global MIN_Q_SCORE per symbol)
         _pair_min_q = PAIR_Q_THRESHOLDS.get(symbol, MIN_Q_SCORE)
-        # v8.2.0: self-learning корректировка + per-symbol статистика
+        # v8.3.0: self-learning корректировка + per-symbol статистика
         _sym_q_adj = _q_adjust
         sym_stats = _perf_stats["by_symbol"].get(symbol, {})
         if sym_stats.get("trades", 0) >= 5:
@@ -1757,7 +1816,7 @@ async def auto_trade_cycle():
         if conf < MIN_CONFIDENCE: continue
         if not AUTOPILOT: continue
 
-        # ── Спот (только BUY) ─────────────────────────────────────────────────
+        # ── Спот (BUY + SELL) v8.3 ──────────────────────────────────────────────
         if action == "BUY":
             elapsed = time.time() - last_signals.get(symbol, {}).get("ts", 0)
             eff_cd_spot = COOLDOWN // 2 if conf >= 0.80 else COOLDOWN  # v7.2.4
@@ -1769,6 +1828,36 @@ async def auto_trade_cycle():
                         "price": price, "confidence": conf, "q_score": q,
                         "pattern": vision.get("pattern","?"), "rsi": vision.get("rsi", 0),
                         "tp": round(price*(1+TP_PCT),4), "sl": round(price*(1-SL_PCT),4)})
+        elif action == "SELL":
+            # v8.3: Sell existing spot position when SELL signal fires
+            open_spot = [t for t in trade_log if t.get("status") == "open"
+                         and t.get("symbol") == symbol and t.get("account") == "spot"]
+            if open_spot:
+                elapsed = time.time() - last_signals.get(symbol, {}).get("ts", 0)
+                eff_cd_spot = COOLDOWN // 2 if conf >= 0.80 else COOLDOWN
+                if elapsed >= eff_cd_spot:
+                    t = open_spot[-1]
+                    sell_res = await sell_spot_to_usdt(symbol)
+                    if sell_res.get("success"):
+                        pnl_pct = (price - t["price"]) / t["price"] if t["side"] == "buy" else (t["price"] - price) / t["price"]
+                        pnl_usdt = round(pnl_pct * t["price"] * t["size"], 4)
+                        t["status"] = "closed"
+                        t["pnl"] = pnl_usdt
+                        t["close_price"] = price
+                        t["close_reason"] = "📉 SELL signal"
+                        _save_trades_to_disk()
+                        _update_perf_on_trade({"pnl_usdt": pnl_usdt, "strategy": "spot",
+                                               "symbol": symbol, "q_score": t.get("q_score", 0)})
+                        if db.is_ready():
+                            asyncio.ensure_future(db.close_trade(
+                                symbol=symbol, pnl_usdt=pnl_usdt, pnl_pct=round(pnl_pct, 6),
+                                close_price=price, close_reason="SELL signal", strategy="spot",
+                                duration_sec=round(time.time() - t.get("open_ts", time.time()), 1)))
+                        last_signals[symbol] = {"action": "SELL", "ts": time.time()}
+                        signals_fired.append({"account": "spot", "symbol": symbol, "action": "SELL",
+                            "price": price, "confidence": conf, "q_score": q,
+                            "pattern": vision.get("pattern","?"), "pnl": pnl_usdt})
+                        log_activity(f"[cycle] {symbol}: SELL signal → spot SOLD PnL=${pnl_usdt:+.4f}")
 
         # ── Фьючерсы: собираем кандидатов ────────────────────────────────────
         if symbol in ("BTC-USDT", "ETH-USDT", "SOL-USDT"):
@@ -1982,9 +2071,9 @@ async def _notify_arb(opp: dict):
 
 
 # ── v7.3.9: Triangular Arb EXECUTION (safe) ───────────────────────────────────
-ARB_EXEC_USDT     = float(os.getenv("ARB_EXEC_USDT", "20"))    # USDT per arb cycle
-ARB_EXEC_ENABLED  = os.getenv("ARB_EXEC_ENABLED", "false").lower() == "true"  # OFF by default
-ARB_MIN_PROFIT_PCT = 0.6   # minimum profit % to actually execute (after fees)
+ARB_EXEC_USDT     = float(os.getenv("ARB_EXEC_USDT", "5"))     # v8.3: lowered to $5 for small balance testing
+ARB_EXEC_ENABLED  = os.getenv("ARB_EXEC_ENABLED", "true").lower() == "true"  # v8.3: ON by default
+ARB_MIN_PROFIT_PCT = 0.5   # v8.3: lowered to 0.5% min profit (was 0.6%) for more opportunities
 _arb_stats: dict   = {"total": 0, "success": 0, "failed": 0, "total_pnl": 0.0}
 _arb_last_exec: dict = {}   # path_key → timestamp
 _arb_executing: bool = False  # global lock — only ONE arb at a time
@@ -2048,11 +2137,12 @@ async def execute_triangular_arb(opp: dict) -> dict:
     if profit_pct < ARB_MIN_PROFIT_PCT:
         return {"executed": False, "reason": f"profit {profit_pct:.3f}% < min {ARB_MIN_PROFIT_PCT}%"}
 
-    # Check spot USDT balance
+    # Check spot USDT balance — v8.3: dynamic sizing, min $3
     bal = await get_balance()
     spot_usdt = bal.get("total_usdt", 0)
-    if not bal.get("success") or spot_usdt < ARB_EXEC_USDT * 0.95:
-        return {"executed": False, "reason": f"low spot USDT {spot_usdt:.2f} < {ARB_EXEC_USDT*0.95:.2f}"}
+    arb_amount = min(ARB_EXEC_USDT, spot_usdt * 0.9)  # use up to 90% of available
+    if not bal.get("success") or arb_amount < 3.0:
+        return {"executed": False, "reason": f"low spot USDT {spot_usdt:.2f} (need ≥$3.33)"}
 
     _arb_executing = True
     _arb_last_exec[path_key] = now
@@ -2070,13 +2160,13 @@ async def execute_triangular_arb(opp: dict) -> dict:
     try:
         if d == 1:
             # ── Leg 1: spend USDT, get A (ETH/XRP/etc) ──────────────────
-            r1 = await _spot_buy_funds(a_sym, ARB_EXEC_USDT)
+            r1 = await _spot_buy_funds(a_sym, arb_amount)
             if not _order_ok(r1):
                 log_activity(f"[arb] leg1 FAILED {a_sym}: {r1.get('msg','?')}")
                 _arb_stats["failed"] += 1
                 return {"executed": False, "reason": f"leg1 failed: {r1.get('msg')}"}
 
-            size_a = round((ARB_EXEC_USDT / price_a) * FEE, 6)  # conservative A received
+            size_a = round((arb_amount / price_a) * FEE, 6)  # conservative A received
             await asyncio.sleep(0.5)
 
             # ── Leg 2: sell A for BTC via cross pair ──────────────────────
@@ -2101,13 +2191,13 @@ async def execute_triangular_arb(opp: dict) -> dict:
 
         else:
             # ── Leg 1: spend USDT, get BTC ───────────────────────────────
-            r1 = await _spot_buy_funds(b_sym, ARB_EXEC_USDT)
+            r1 = await _spot_buy_funds(b_sym, arb_amount)
             if not _order_ok(r1):
                 log_activity(f"[arb] leg1 FAILED {b_sym}: {r1.get('msg','?')}")
                 _arb_stats["failed"] += 1
                 return {"executed": False, "reason": f"leg1 failed: {r1.get('msg')}"}
 
-            size_b = round((ARB_EXEC_USDT / price_b) * FEE, 8)
+            size_b = round((arb_amount / price_b) * FEE, 8)
             await asyncio.sleep(0.5)
 
             # ── Leg 2: buy A with BTC via cross pair ──────────────────────
@@ -2131,7 +2221,7 @@ async def execute_triangular_arb(opp: dict) -> dict:
                 return {"executed": False, "reason": "leg3 failed"}
 
         # ── All 3 legs OK ─────────────────────────────────────────────────
-        estimated_pnl = round(ARB_EXEC_USDT * profit_pct / 100, 4)
+        estimated_pnl = round(arb_amount * profit_pct / 100, 4)
         _arb_stats["total"] += 1
         _arb_stats["success"] += 1
         _arb_stats["total_pnl"] = round(_arb_stats["total_pnl"] + estimated_pnl, 4)
@@ -2201,13 +2291,9 @@ async def position_monitor_loop():
                         except Exception as te:
                             print(f"[trail] {trade['symbol']} err: {te}", flush=True)
                     if trade["symbol"] not in open_syms:
-                        # v8.2: спот-сделки не мониторятся через фьючерсный API — пропускаем
+                        # v8.3: спот-сделки мониторятся в spot_monitor_loop — пропускаем здесь
                         if trade.get("account") == "spot" or "USDTM" not in trade["symbol"]:
-                            trade["status"] = "closed"
-                            trade["pnl"] = 0.0
-                            trade["close_reason"] = "spot_skip"
-                            _save_trades_to_disk()
-                            continue
+                            continue  # spot_monitor_loop will handle TP/SL
                         base_sym      = SYM_REV.get(trade["symbol"], trade["symbol"].replace("USDTM", "-USDT").replace("XBT", "BTC"))
                         entry         = trade["price"]
                         contract_size = CONTRACT_SIZES.get(trade["symbol"], 0.01)
@@ -2279,6 +2365,133 @@ async def position_monitor_loop():
         await asyncio.sleep(30)
 
 
+# ── v8.3: Spot Position Monitor ───────────────────────────────────────────────
+async def spot_monitor_loop():
+    """v8.3: Monitors spot trades — checks TP/SL, sells when conditions met.
+    Unlike futures, spot trades need to be actively closed by selling the coin."""
+    await asyncio.sleep(60)  # initial delay
+    while True:
+        try:
+            open_spot = [t for t in trade_log
+                         if t.get("status") == "open"
+                         and (t.get("account") == "spot" or "USDTM" not in t.get("symbol", ""))]
+            if not open_spot:
+                await asyncio.sleep(45)
+                continue
+
+            # Fetch actual spot balances to verify we still hold the coins
+            spot_bals = await get_spot_balances()
+
+            for trade in open_spot:
+                try:
+                    symbol = trade["symbol"]
+                    entry = trade["price"]
+                    side = trade.get("side", "buy")
+                    tp = trade.get("tp", entry * (1 + TP_PCT))
+                    sl = trade.get("sl", entry * (1 - SL_PCT))
+                    open_ts = trade.get("open_ts", time.time() - 400)
+
+                    # Min 3 min before checking spot trades (order fill time)
+                    if (time.time() - open_ts) < 180:
+                        continue
+
+                    # Check if we still have the coin
+                    bal_info = spot_bals.get(symbol)
+                    if not bal_info or bal_info["available"] <= 0:
+                        # Coin already sold (manually or by another process)
+                        trade["status"] = "closed"
+                        trade["pnl"] = 0.0
+                        trade["close_reason"] = "no_balance"
+                        _save_trades_to_disk()
+                        log_activity(f"[spot_mon] {symbol}: no balance found — closing as no_balance")
+                        continue
+
+                    price_now = bal_info["price"]
+                    if price_now <= 0:
+                        continue
+
+                    # Calculate PnL
+                    if side == "buy":
+                        pnl_pct = (price_now - entry) / entry
+                    else:
+                        pnl_pct = (entry - price_now) / entry
+
+                    trade_size = trade.get("size", 0)
+                    pnl_usdt = round(pnl_pct * entry * trade_size, 4)
+
+                    # Trailing stop for spot
+                    peak = trade.get("peak_pct", 0.0)
+                    if pnl_pct > peak:
+                        trade["peak_pct"] = pnl_pct
+                        peak = pnl_pct
+
+                    should_close = False
+                    reason = ""
+
+                    # TP hit
+                    if side == "buy" and price_now >= tp * 0.998:
+                        should_close = True
+                        reason = "🎯 TP"
+                    # SL hit
+                    elif side == "buy" and price_now <= sl * 1.002:
+                        should_close = True
+                        reason = "🛑 SL"
+                    # Trailing stop (if peak was high enough and pulled back)
+                    elif peak >= TRAIL_TRIGGER and (peak - pnl_pct) >= TRAIL_PCT:
+                        should_close = True
+                        reason = "📈 Trail"
+                    # Emergency: loss > 5% → force close
+                    elif pnl_pct <= -0.05:
+                        should_close = True
+                        reason = "🚨 MaxLoss"
+
+                    if should_close:
+                        # Sell the coin
+                        sell_size = min(trade_size, bal_info["available"])
+                        sell_result = await sell_spot_to_usdt(symbol, sell_size)
+                        if sell_result.get("success"):
+                            trade["status"] = "closed"
+                            trade["pnl"] = pnl_usdt
+                            trade["close_price"] = price_now
+                            trade["close_reason"] = reason
+                            _save_trades_to_disk()
+                            duration_min = round((time.time() - open_ts) / 60, 1)
+                            emoji = "✅" if pnl_usdt >= 0 else "❌"
+                            _update_perf_on_trade({
+                                "pnl_usdt": pnl_usdt, "strategy": "spot",
+                                "symbol": symbol, "q_score": trade.get("q_score", 0),
+                            })
+                            if db.is_ready():
+                                asyncio.ensure_future(db.close_trade(
+                                    symbol=symbol, pnl_usdt=pnl_usdt, pnl_pct=round(pnl_pct, 6),
+                                    close_price=price_now, close_reason=reason, strategy="spot",
+                                    duration_sec=round(time.time() - open_ts, 1)
+                                ))
+                                asyncio.ensure_future(db.save_perf_stats(_perf_stats))
+                            await notify(
+                                f"{emoji} <b>Спот закрыта — {reason}</b>\n"
+                                f"<code>{symbol}</code> {side.upper()}\n"
+                                f"Вход: <code>${entry:,.4f}</code> → Выход: <code>${price_now:,.4f}</code>\n"
+                                f"PnL: <code>${pnl_usdt:+.4f}</code> ({pnl_pct*100:+.2f}%)\n"
+                                f"Длительность: {duration_min}м"
+                            )
+                            log_activity(f"[spot_mon] {symbol} {reason} SOLD PnL=${pnl_usdt:+.4f}")
+                        else:
+                            log_activity(f"[spot_mon] {symbol} sell FAILED: {sell_result.get('msg','?')}")
+                    else:
+                        # Just log status
+                        if int(time.time()) % 300 < 50:  # every ~5 min
+                            log_activity(f"[spot_mon] {symbol} open PnL={pnl_pct*100:+.2f}% peak={peak*100:.1f}% price=${price_now:.4f}")
+
+                except Exception as te:
+                    log_activity(f"[spot_mon] {trade.get('symbol','?')} error: {te}")
+
+        except Exception as e:
+            log_activity(f"[spot_mon] loop error: {e}")
+
+        await asyncio.sleep(45)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # TELEGRAM BOT — команды, меню, настройки, статистика, airdrops
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2332,7 +2545,7 @@ async def _tg_main_menu(chat_id: int):
         [{"text": f"⚡ Арбитраж {arb}", "callback_data": "menu_arb"}],
     ]}
     await _tg_send(chat_id,
-        "⚛ <b>QuantumTrade AI v8.2.0</b>\n"
+        "⚛ <b>QuantumTrade AI v8.3.0</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "Выбери раздел:", kb)
 
@@ -2442,12 +2655,77 @@ async def _tg_arb(chat_id: int):
         f"<b>\u0410\u043a\u0442\u0438\u0432\u043d\u044b\u0435 \u0441\u0432\u044f\u0437\u043a\u0438:</b>\n{body}\n\n"
         f"\U0001f4a1 \u0410\u043b\u0435\u0440\u0442 \u043f\u0440\u0438\u0445\u043e\u0434\u0438\u0442 \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438 \u043f\u0440\u0438 \u043e\u0431\u043d\u0430\u0440\u0443\u0436\u0435\u043d\u0438\u0438 \u0432\u043e\u0437\u043c\u043e\u0436\u043d\u043e\u0441\u0442\u0438."
     )
-    arb_btn_text = "🔴 Выключить арбитраж" if ARB_EXEC_ENABLED else "🟢 Включить арбитраж"
+    exec_status = "✅ ВКЛ" if ARB_EXEC_ENABLED else "🔴 ВЫКЛ"
+    arb_btn_text = "🔴 Выключить исполнение" if ARB_EXEC_ENABLED else "🟢 Включить исполнение"
+    text += (
+        f"\n\n💎 <b>Исполнение:</b> {exec_status}\n"
+        f"💵 Размер: <code>${ARB_EXEC_USDT:.0f}</code> USDT\n"
+        f"📊 Мин. прибыль: <code>{ARB_MIN_PROFIT_PCT}%</code>\n"
+        f"📈 Статистика: {_arb_stats['success']}✅ / {_arb_stats['failed']}❌ | PnL: ${_arb_stats['total_pnl']:+.4f}"
+    )
     kb = {"inline_keyboard": [
         [{"text": arb_btn_text, "callback_data": "toggle_arb"}],
+        [{"text": "💰 Продать всё в USDT", "callback_data": "sell_all_spot"}],
         [{"text": "◀️ Меню",   "callback_data": "menu_main"}],
     ]}
     await _tg_send(chat_id, text, kb)
+
+
+async def _tg_sell_all_spot(chat_id: int):
+    """v8.3: Sell all spot coins back to USDT."""
+    balances = await get_spot_balances()
+    if not balances:
+        await _tg_send(chat_id, "💰 Нет монет на споте для продажи (только USDT).")
+        return
+    lines = ["🔄 <b>Продаю все монеты в USDT...</b>\n"]
+    total_sold = 0.0
+    for symbol, info in balances.items():
+        sell_res = await sell_spot_to_usdt(symbol, info["available"])
+        if sell_res.get("success"):
+            lines.append(f"✅ {info['currency']}: {info['available']:.6f} → ~${info['usdt_value']:.2f}")
+            total_sold += info["usdt_value"]
+            # Close all open spot trades for this symbol
+            for t in trade_log:
+                if t.get("status") == "open" and t.get("symbol") == symbol and t.get("account") == "spot":
+                    pnl_pct = (info["price"] - t["price"]) / t["price"] if t["side"] == "buy" else 0
+                    t["status"] = "closed"
+                    t["pnl"] = round(pnl_pct * t["price"] * t["size"], 4)
+                    t["close_price"] = info["price"]
+                    t["close_reason"] = "manual_sell_all"
+            _save_trades_to_disk()
+        else:
+            lines.append(f"❌ {info['currency']}: {sell_res.get('msg', 'ошибка')}")
+    lines.append(f"\n💵 Всего продано: ~${total_sold:.2f}")
+    kb = {"inline_keyboard": [[{"text": "◀️ Меню", "callback_data": "menu_main"}]]}
+    await _tg_send(chat_id, "\n".join(lines), kb)
+
+
+async def _tg_spot_status(chat_id: int):
+    """v8.3: Show current spot holdings and open spot trades."""
+    balances = await get_spot_balances()
+    bal = await get_balance()
+    usdt = bal.get("total_usdt", 0)
+    lines = ["💰 <b>Спот-портфель</b>", "━━━━━━━━━━━━━━━━━━━━━━"]
+    lines.append(f"USDT: <code>${usdt:.2f}</code>")
+    total = usdt
+    for symbol, info in sorted(balances.items()):
+        lines.append(f"{info['currency']}: <code>{info['balance']:.6f}</code> ≈ ${info['usdt_value']:.2f}")
+        total += info["usdt_value"]
+    lines.append(f"\n💎 <b>Всего: ${total:.2f}</b>")
+    # Open spot trades
+    open_spot = [t for t in trade_log if t.get("status") == "open" and t.get("account") == "spot"]
+    if open_spot:
+        lines.append(f"\n📊 <b>Открытые спот-сделки ({len(open_spot)}):</b>")
+        for t in open_spot[:5]:
+            price = balances.get(t["symbol"], {}).get("price", 0)
+            pnl_pct = ((price - t["price"]) / t["price"] * 100) if price and t["price"] else 0
+            emoji = "📈" if pnl_pct >= 0 else "📉"
+            lines.append(f"  {emoji} {t['symbol']} {t['side'].upper()} @ ${t['price']:.4f} → ${price:.4f} ({pnl_pct:+.1f}%)")
+    kb = {"inline_keyboard": [
+        [{"text": "💰 Продать всё в USDT", "callback_data": "sell_all_spot"}],
+        [{"text": "◀️ Меню", "callback_data": "menu_main"}],
+    ]}
+    await _tg_send(chat_id, "\n".join(lines), kb)
 
 
 async def _tg_balance(chat_id: int):
@@ -2587,7 +2865,7 @@ async def _tg_ai_ask(chat_id: int, question: str):
     total_pnl = sum(t.get("pnl", 0) for t in trade_log)
     chip = "Wukong_180" if _qcloud_ready else "CPU_simulator"
 
-    system = f"""Ты — AI-консультант торгового бота QuantumTrade v8.2.0.
+    system = f"""Ты — AI-консультант торгового бота QuantumTrade v8.3.0.
 Текущие показатели:
 - Всего сделок: {total}, Win Rate: {win_rate:.1f}%, PnL: ${total_pnl:.2f}
 - Q-Score последний: {last_q_score:.1f}, MIN_Q: {MIN_Q_SCORE}
@@ -2666,6 +2944,8 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/balance":             await _tg_balance(chat_id)
         elif cmd == "/positions":           await _tg_positions(chat_id)
         elif cmd == "/arb":                 await _tg_arb(chat_id)
+        elif cmd == "/sell_all":            await _tg_sell_all_spot(chat_id)
+        elif cmd == "/spot":                await _tg_spot_status(chat_id)
         # v7.2.0: AI консультант
         elif cmd.startswith("/ask"):
             question = raw[4:].strip() or raw[5:].strip()  # /ask текст или /ask@bot текст
@@ -2767,8 +3047,11 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         state = "ВКЛ 🟢" if ARB_EXEC_ENABLED else "ВЫКЛ 🔴"
         await _tg_answer(cb_id, f"Арбитраж {state}")
         log_activity(f"[settings] ARB_EXEC_ENABLED → {state} (via Telegram)")
-        # Обновляем ту панель, откуда нажали
         if chat_id: await _tg_arb(chat_id)
+
+    elif data == "sell_all_spot":
+        await _tg_answer(cb_id, "Продаю всё в USDT...")
+        if chat_id: await _tg_sell_all_spot(chat_id)
 
     # ── Настройки Min Q ────────────────────────────────────────────────────
     elif data in ("set_minq_62", "set_minq_65", "set_minq_70", "set_minq_78", "set_minq_82", "set_minq_cur"):
@@ -2850,6 +3133,7 @@ async def startup():
 
     asyncio.create_task(trading_loop())
     asyncio.create_task(position_monitor_loop())
+    asyncio.create_task(spot_monitor_loop())      # v8.3: spot position TP/SL monitor
     asyncio.create_task(airdrop_digest_loop())
     asyncio.create_task(auto_scanner_loop())  # v7.4.4: health scanner
     await get_airdrops()  # прогреваем кеш при старте
@@ -2868,7 +3152,7 @@ async def startup():
                 )
                 await s.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
-                    json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": webapp_url + "?v=820"}}},
+                    json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": webapp_url + "?v=830"}}},
                     timeout=aiohttp.ClientTimeout(total=10)
                 )
         except Exception as e:
@@ -2877,7 +3161,7 @@ async def startup():
     mode     = "TEST (риск 10%)" if TEST_MODE else "LIVE (риск 2%)"
     qc_label = "⚛️ Wukong 180 реальный чип ✅" if qc_ok else "⚛️ QAOA CPU симулятор"
     await notify(
-        f"⚛ <b>QuantumTrade v8.2.0</b>\n"
+        f"⚛ <b>QuantumTrade v8.3.0</b>\n"
         f"✅ 5 торгуемых пар: ETH·BTC·SOL·AVAX·XRP\n"
         f"✅ Telegram: /menu /stats /airdrops /settings\n"
         f"✅ Mini App: Баланс + Автопилот без API ключа\n"
@@ -3181,7 +3465,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "8.2.0",
+        "version": "8.3.0",
         "auto_trading": AUTOPILOT,
         "quantum_chip": "Wukong_180" if _qcloud_ready else "CPU_simulator",
         "timestamp": datetime.utcnow().isoformat(),
@@ -3226,7 +3510,7 @@ async def setup_webhook(request: Request):
             results["commands"] = await r2.json()
 
             # 3. v7.4.4: Кнопка меню → Railway Mini App с ?v= для сброса кеша Telegram
-            versioned_url = f"{webapp_url}?v=820"
+            versioned_url = f"{webapp_url}?v=830"
             r3 = await s.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
                 json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": versioned_url}}},
@@ -3240,9 +3524,9 @@ async def setup_webhook(request: Request):
 
 @app.get("/api/debug")
 async def api_debug(_auth=Depends(verify_api_key)):
-    """v8.2.0: Protected diagnostics — checks all systems, returns status JSON."""
+    """v8.3.0: Protected diagnostics — checks all systems, returns status JSON."""
     import time as _time
-    results = {"version": "8.2.0", "timestamp": datetime.utcnow().isoformat(), "checks": {}}
+    results = {"version": "8.3.0", "timestamp": datetime.utcnow().isoformat(), "checks": {}}
     t0 = _time.time()
 
     # 1. KuCoin REST prices
@@ -3413,7 +3697,7 @@ async def auto_scanner_loop():
                 _scanner_state["ok_streak"] = 0
                 if not _scanner_state["alert_sent"]:
                     _scanner_state["alert_sent"] = True
-                    msg = "🔍 <b>QuantumTrade AutoScanner v8.2.0</b>\n\n"
+                    msg = "🔍 <b>QuantumTrade AutoScanner v8.3.0</b>\n\n"
                     msg += "\n".join(issues)
                     if warnings: msg += "\n\n" + "\n".join(warnings[:3])
                     if recommendations: msg += "\n\n" + "\n".join(recommendations[:2])
@@ -3429,7 +3713,7 @@ async def auto_scanner_loop():
                         f"📊 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s\n"
                         f"🤖 AP: {'ВКЛ' if AUTOPILOT else 'ВЫКЛ'} · Arb: {'ВКЛ' if ARB_EXEC_ENABLED else 'ВЫКЛ'}\n"
                         f"📋 Сделок: {_perf_stats['total_trades']} · WR: {wr:.0f}% · PnL: ${_perf_stats['total_pnl']:.2f}\n"
-                        f"🔥 Streak: {_perf_stats['streak']} · Версия: 8.2.0"
+                        f"🔥 Streak: {_perf_stats['streak']} · Версия: 8.3.0"
                     )
                     if warnings: msg += "\n\n" + "\n".join(warnings[:2])
                     if recommendations: msg += "\n\n" + "\n".join(recommendations[:2])
@@ -3460,7 +3744,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "8.2.0",
+        "version": "8.3.0",
     }
 
 @app.get("/api/setup-webhook")
@@ -3629,7 +3913,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "8.2.0",
+        "version": "8.3.0",
     }
 
 @app.get("/api/dashboard")
@@ -3688,6 +3972,35 @@ async def api_analytics(x_api_key: str = Header(None)):
     analytics["perf_stats"] = _perf_stats
     analytics["db_trade_count"] = await db.get_trade_count()
     return analytics
+
+
+@app.get("/api/spot/balances")
+async def api_spot_balances(x_api_key: str = Header(None)):
+    """v8.3: Get all spot coin balances."""
+    await verify_api_key(x_api_key)
+    balances = await get_spot_balances()
+    usdt_bal = await get_balance()
+    total = usdt_bal.get("total_usdt", 0) + sum(b["usdt_value"] for b in balances.values())
+    return {"balances": balances, "usdt": usdt_bal.get("total_usdt", 0), "total_usdt": round(total, 2)}
+
+
+@app.post("/api/spot/sell_all")
+async def api_sell_all_spot(x_api_key: str = Header(None)):
+    """v8.3: Sell all spot coins back to USDT."""
+    await verify_api_key(x_api_key)
+    balances = await get_spot_balances()
+    results = []
+    for symbol, info in balances.items():
+        r = await sell_spot_to_usdt(symbol, info["available"])
+        results.append({"symbol": symbol, "size": info["available"], "usdt_value": info["usdt_value"], "success": r.get("success", False)})
+        # Close open spot trades
+        for t in trade_log:
+            if t.get("status") == "open" and t.get("symbol") == symbol and t.get("account") == "spot":
+                t["status"] = "closed"
+                t["close_reason"] = "api_sell_all"
+                t["close_price"] = info["price"]
+        _save_trades_to_disk()
+    return {"results": results, "total_sold": sum(r["usdt_value"] for r in results if r["success"])}
 
 
 @app.get("/api/polymarket")
@@ -3803,7 +4116,7 @@ async def api_debug_internal(_auth=Depends(verify_api_key)):  # v7.3.3: auth req
     }
 
 @app.post("/api/trade/manual")
-async def manual_trade(req: ManualTrade, _auth=Depends(verify_api_key)):  # v8.2.0: auth + error handling
+async def manual_trade(req: ManualTrade, _auth=Depends(verify_api_key)):  # v8.3.0: auth + error handling
     try:
         result = await place_futures_order(req.symbol, req.side, int(req.size), req.leverage) if req.is_futures else await place_spot_order(req.symbol, req.side, req.size)
         success = result.get("code") == "200000"
@@ -3816,7 +4129,7 @@ async def manual_trade(req: ManualTrade, _auth=Depends(verify_api_key)):  # v8.2
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/autopilot/{state}")
-async def toggle_autopilot(state: str, _auth=Depends(verify_api_key)):  # v8.2.0: auth required
+async def toggle_autopilot(state: str, _auth=Depends(verify_api_key)):  # v8.3.0: auth required
     global AUTOPILOT
     # Accept: "on"/"true"/1 → True; "off"/"false"/0 → False
     AUTOPILOT = state.lower() in ("on", "true", "1", "yes")
