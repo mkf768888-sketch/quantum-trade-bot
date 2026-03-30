@@ -1483,6 +1483,159 @@ async def execute_futures_trade(symbol, signal, vision, price, available_usdt):
     return True
 
 
+# ── v8.3.3: Opus Gate — AI confirmation for significant trades ─────────────────
+OPUS_GATE_MIN_USDT = float(os.getenv("OPUS_GATE_MIN_USDT", "15"))  # trades above $15 ask Opus
+_opus_gate_stats = {"asked": 0, "approved": 0, "rejected": 0}
+
+async def opus_gate_check(symbol: str, side: str, amount_usdt: float, q_score: float,
+                          fg_val: int, pattern: str, context: str = "") -> dict:
+    """v8.3.3: Ask Claude Opus whether to proceed with a trade.
+    Returns {"approved": bool, "reason": str, "model": str}
+    Only triggers for trades above OPUS_GATE_MIN_USDT.
+    Falls back to auto-approve if AI unavailable."""
+    if amount_usdt < OPUS_GATE_MIN_USDT:
+        return {"approved": True, "reason": "below gate threshold", "model": "auto"}
+    if not ANTHROPIC_API_KEY:
+        return {"approved": True, "reason": "no API key — auto-approve", "model": "auto"}
+
+    _opus_gate_stats["asked"] += 1
+    prompt = (
+        f"Trade review request:\n"
+        f"- Pair: {symbol}, Side: {side}, Amount: ${amount_usdt:.2f}\n"
+        f"- Q-Score: {q_score:.1f}, Pattern: {pattern}\n"
+        f"- Fear&Greed: {fg_val}\n"
+        f"{f'- Context: {context}' if context else ''}\n\n"
+        f"Rules: RISK_PER_TRADE max 8%, MAX_LEVERAGE 3x, MIN_Q_SCORE 77.\n"
+        f"Should this trade proceed? Answer ONLY 'APPROVE' or 'REJECT: <reason>' (1 line max)."
+    )
+    try:
+        result = await ai_dispatch("critical", [{"role": "user", "content": prompt}],
+                                   max_tokens=60, system="You are a risk manager. Be concise.")
+        text = result.get("text", "").strip()
+        model = result.get("model", "?")
+        if text.upper().startswith("APPROVE"):
+            _opus_gate_stats["approved"] += 1
+            log_activity(f"[opus_gate] {symbol} {side} ${amount_usdt:.0f} → APPROVED ({model})")
+            return {"approved": True, "reason": text, "model": model}
+        else:
+            _opus_gate_stats["rejected"] += 1
+            reason = text.replace("REJECT:", "").replace("REJECT", "").strip() or "rejected by AI"
+            log_activity(f"[opus_gate] {symbol} {side} ${amount_usdt:.0f} → REJECTED: {reason} ({model})")
+            await notify(f"🛡️ <b>Opus отклонил сделку</b>\n{symbol} {side} ${amount_usdt:.0f}\n<i>{reason}</i>")
+            return {"approved": False, "reason": reason, "model": model}
+    except Exception as e:
+        log_activity(f"[opus_gate] error: {e} — auto-approving")
+        return {"approved": True, "reason": f"AI error: {e}", "model": "fallback"}
+
+
+# ── v8.3.3: KuCoin WebSocket real-time price feed for arbitrage ────────────────
+_ws_prices: dict = {}       # symbol → {"price": float, "ts": float} — real-time
+_ws_connected: bool = False
+_ws_reconnects: int = 0
+
+async def _ws_price_feed():
+    """Connect to KuCoin WebSocket and stream real-time ticker prices.
+    Used by arb scanner for near-instant price updates instead of REST polling."""
+    global _ws_connected, _ws_reconnects
+    # Collect all symbols we need
+    symbols = set(SPOT_PAIRS)
+    for a, b, cross, _ in ARB_TRIANGLES:
+        symbols.add(a)
+        symbols.add(b)
+        if cross not in _arb_dead_pairs:
+            symbols.add(cross)
+
+    while True:
+        try:
+            # Step 1: Get WS token from KuCoin
+            async with aiohttp.ClientSession() as session:
+                r = await session.post(f"{KUCOIN_BASE_URL}/api/v1/bullet-public",
+                                       timeout=aiohttp.ClientTimeout(total=10))
+                data = await r.json()
+            if data.get("code") != "200000":
+                log_activity(f"[ws] token request failed: {data.get('msg')}")
+                await asyncio.sleep(15)
+                continue
+            token = data["data"]["token"]
+            endpoint = data["data"]["instanceServers"][0]["endpoint"]
+            ws_url = f"{endpoint}?token={token}&connectId=arb_{int(time.time())}"
+
+            # Step 2: Connect and subscribe
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(ws_url, heartbeat=20,
+                                               timeout=aiohttp.ClientTimeout(total=30)) as ws:
+                    _ws_connected = True
+                    log_activity(f"[ws] connected — subscribing to {len(symbols)} symbols")
+
+                    # Subscribe in batches of 100 (KuCoin limit)
+                    sym_list = list(symbols)
+                    for i in range(0, len(sym_list), 100):
+                        batch = ",".join(sym_list[i:i+100])
+                        await ws.send_json({
+                            "id": f"sub_{i}",
+                            "type": "subscribe",
+                            "topic": f"/market/ticker:{batch}",
+                            "privateChannel": False,
+                            "response": False
+                        })
+
+                    # Step 3: Read messages
+                    async for msg in ws:
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            d = json.loads(msg.data)
+                            if d.get("type") == "message" and d.get("topic", "").startswith("/market/ticker:"):
+                                sym = d["topic"].split(":")[-1]
+                                price = float(d["data"].get("price", 0))
+                                if price > 0:
+                                    _ws_prices[sym] = {"price": price, "ts": time.time()}
+                        elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
+                            break
+
+        except Exception as e:
+            log_activity(f"[ws] error: {e}")
+        finally:
+            _ws_connected = False
+            _ws_reconnects += 1
+            await asyncio.sleep(5)  # reconnect delay
+
+
+def _get_rt_price(symbol: str) -> float:
+    """Get real-time price from WebSocket feed, falling back to REST cache."""
+    ws_entry = _ws_prices.get(symbol)
+    if ws_entry and (time.time() - ws_entry["ts"]) < 30:
+        return ws_entry["price"]
+    # Fallback to REST cached prices
+    cached = _cache_get("all_prices", 120)
+    if cached:
+        return cached.get("prices", {}).get(symbol, {}).get("price", 0)
+    return 0
+
+
+async def _arb_fast_scanner():
+    """v8.3.3: Dedicated fast arb scanner using WebSocket prices.
+    Scans every 5 seconds instead of 60, catches fleeting opportunities."""
+    await asyncio.sleep(45)  # let WS connect first
+    while True:
+        try:
+            if not _ws_connected or len(_ws_prices) < 5:
+                await asyncio.sleep(10)
+                continue
+            # Build price snapshot from WS
+            ws_snap = {}
+            for sym, data in _ws_prices.items():
+                if time.time() - data["ts"] < 30:  # fresh prices only
+                    ws_snap[sym] = {"price": data["price"]}
+            if len(ws_snap) > 10:
+                arb_opps = await check_triangular_arb(ws_snap)
+                for opp in arb_opps:
+                    await _notify_arb(opp)
+                    if ARB_EXEC_ENABLED:
+                        await execute_triangular_arb(opp)
+        except Exception as e:
+            log_activity(f"[arb_fast] error: {e}")
+        await asyncio.sleep(5)  # scan every 5 seconds!
+
+
 # ── Кеш ────────────────────────────────────────────────────────────────────────
 _cache: dict = {}
 def _cache_get(key: str, ttl: int):
@@ -1950,6 +2103,12 @@ async def auto_trade_cycle():
             elapsed = time.time() - last_signals.get(symbol, {}).get("ts", 0)
             eff_cd_spot = COOLDOWN // 2 if conf >= 0.80 else COOLDOWN  # v7.2.4
             if elapsed >= eff_cd_spot and spot_trade_usdt >= 1.0:
+                # v8.3.3: Opus gate for significant trades
+                gate = await opus_gate_check(symbol, "BUY", spot_trade_usdt, q, fg_val,
+                                              vision.get("pattern", "?"))
+                if not gate["approved"]:
+                    log_activity(f"[cycle] {symbol}: BLOCKED by Opus — {gate['reason']}")
+                    continue
                 log_activity(f"[cycle] {symbol}: PLACING spot BUY ${spot_trade_usdt:.2f}")
                 ok = await execute_spot_trade(symbol, signal, vision, price, spot_trade_usdt)
                 if ok:
@@ -2002,12 +2161,19 @@ async def auto_trade_cycle():
             if reason:
                 log_activity(f"[cycle] {symbol}: SKIP fut — {reason}")
             else:
-                futures_candidates.append({
-                    "symbol": symbol, "signal": signal, "vision": vision,
-                    "price": price, "action": action, "conf": conf, "q": q,
-                    "fg": fg_data, "poly": poly_b, "whale": whale.get("bonus", 0),
-                    "pattern": vision.get("pattern","?")
-                })
+                # v8.3.3: Opus gate for futures
+                f_trade_usdt = max(0, fut_usdt - ARB_RESERVE_USDT) * RISK_PER_TRADE
+                gate = await opus_gate_check(symbol, action, f_trade_usdt, q, fg_val,
+                                              vision.get("pattern", "?"), context="futures")
+                if not gate["approved"]:
+                    log_activity(f"[cycle] {symbol}: FUT BLOCKED by Opus — {gate['reason']}")
+                else:
+                    futures_candidates.append({
+                        "symbol": symbol, "signal": signal, "vision": vision,
+                        "price": price, "action": action, "conf": conf, "q": q,
+                        "fg": fg_data, "poly": poly_b, "whale": whale.get("bonus", 0),
+                        "pattern": vision.get("pattern","?")
+                    })
 
     # ── Лучший кандидат → Telegram A/B/C (3 мин таймаут) ────────────────────
     if futures_candidates:
@@ -2276,13 +2442,27 @@ async def _notify_arb(opp: dict):
         f"\u23f0 <i>\u0414\u0435\u0439\u0441\u0442\u0432\u0443\u0439 \u0431\u044b\u0441\u0442\u0440\u043e \u2014 \u0430\u0440\u0431\u0438\u0442\u0440\u0430\u0436 \u0436\u0438\u0432\u0451\u0442 \u0441\u0435\u043a\u0443\u043d\u0434\u044b!</i>"
     )
     await notify(msg)
+    # v8.3.3: Track arb opportunity
+    _arb_stats["opportunities_found"] += 1
+    _arb_stats["last_opp_ts"] = time.time()
+    if abs(opp.get("spread_pct", 0)) > abs(_arb_stats["best_spread"]):
+        _arb_stats["best_spread"] = opp["spread_pct"]
+    _arb_history.append({
+        "ts": time.time(), "path": opp["path"], "spread": opp["spread_pct"],
+        "cross": opp["cross_sym"], "direction": opp["direction"],
+        "executed": False, "pnl": 0
+    })
+    if len(_arb_history) > 50:
+        _arb_history.pop(0)
 
 
 # ── v7.3.9: Triangular Arb EXECUTION (safe) ───────────────────────────────────
 ARB_EXEC_USDT     = float(os.getenv("ARB_EXEC_USDT", "5"))     # v8.3: lowered to $5 for small balance testing
 ARB_EXEC_ENABLED  = os.getenv("ARB_EXEC_ENABLED", "true").lower() == "true"  # v8.3: ON by default
 ARB_MIN_PROFIT_PCT = 0.5   # v8.3: lowered to 0.5% min profit (was 0.6%) for more opportunities
-_arb_stats: dict   = {"total": 0, "success": 0, "failed": 0, "total_pnl": 0.0}
+_arb_stats: dict   = {"total": 0, "success": 0, "failed": 0, "total_pnl": 0.0,
+                       "opportunities_found": 0, "best_spread": 0.0, "last_opp_ts": 0}
+_arb_history: list = []  # last 50 arb events [{ts, path, spread, executed, pnl}]
 _arb_last_exec: dict = {}   # path_key → timestamp
 _arb_executing: bool = False  # global lock — only ONE arb at a time
 
@@ -2869,7 +3049,9 @@ async def _tg_arb(chat_id: int):
         f"\U0001f504 \u041c\u043e\u043d\u0438\u0442\u043e\u0440\u0438\u043d\u0433: <b>{ap_status}</b>\n"
         f"\U0001f4d0 \u041c\u0438\u043d. \u0441\u043f\u0440\u0435\u0434: <code>{ARB_MIN_SPREAD*100:.1f}%</code> (\u043f\u043e\u0441\u043b\u0435 0.3% \u043a\u043e\u043c\u0438\u0441\u0441\u0438\u0439)\n"
         f"\u23f1 Cooldown: <code>{ARB_COOLDOWN_SEC}s</code>\n"
-        f"📡 Связки: <code>{active_count}</code> активных" + (f" / <code>{dead_count}</code> отключены" if dead_count else "") + f" (всего {len(ARB_TRIANGLES)})\n\n"
+        f"📡 Связки: <code>{active_count}</code> активных" + (f" / <code>{dead_count}</code> отключены" if dead_count else "") + f" (всего {len(ARB_TRIANGLES)})\n"
+        f"🔌 WebSocket: <code>{'✅ live' if _ws_connected else '❌ offline'}</code> · Цен: <code>{len(_ws_prices)}</code>\n"
+        f"🛡️ Opus Gate: <code>{_opus_gate_stats['approved']}</code>✅ / <code>{_opus_gate_stats['rejected']}</code>❌ из <code>{_opus_gate_stats['asked']}</code>\n\n"
         f"<b>\u0410\u043a\u0442\u0438\u0432\u043d\u044b\u0435 \u0441\u0432\u044f\u0437\u043a\u0438:</b>\n{body}\n\n"
         f"\U0001f4a1 \u0410\u043b\u0435\u0440\u0442 \u043f\u0440\u0438\u0445\u043e\u0434\u0438\u0442 \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438 \u043f\u0440\u0438 \u043e\u0431\u043d\u0430\u0440\u0443\u0436\u0435\u043d\u0438\u0438 \u0432\u043e\u0437\u043c\u043e\u0436\u043d\u043e\u0441\u0442\u0438."
     )
@@ -3505,6 +3687,8 @@ async def startup():
     asyncio.create_task(trading_loop())
     asyncio.create_task(position_monitor_loop())
     asyncio.create_task(spot_monitor_loop())      # v8.3: spot position TP/SL monitor
+    asyncio.create_task(_ws_price_feed())          # v8.3.3: WebSocket real-time prices
+    asyncio.create_task(_arb_fast_scanner())       # v8.3.3: fast arb scanner (every 5s)
     asyncio.create_task(airdrop_digest_loop())
     asyncio.create_task(auto_scanner_loop())  # v7.4.4: health scanner
     await get_airdrops()  # прогреваем кеш при старте
@@ -3738,6 +3922,25 @@ async def airdrop_digest_loop():
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
+
+# ── v8.3.3: Arbitrage Analytics API ────────────────────────────────────────────
+@app.get("/api/arb/stats")
+async def arb_stats_api():
+    """v8.3.3: Arb analytics for Mini App dashboard."""
+    active_count = sum(1 for _, _, c, _ in ARB_TRIANGLES if c not in _arb_dead_pairs)
+    return {
+        "stats": _arb_stats,
+        "opus_gate": _opus_gate_stats,
+        "ws": {"connected": _ws_connected, "prices_count": len(_ws_prices), "reconnects": _ws_reconnects},
+        "config": {
+            "exec_enabled": ARB_EXEC_ENABLED, "exec_usdt": ARB_EXEC_USDT,
+            "min_spread": ARB_MIN_SPREAD, "reserve_usdt": ARB_RESERVE_USDT,
+            "total_triangles": len(ARB_TRIANGLES), "active": active_count,
+            "dead": len(_arb_dead_pairs)
+        },
+        "history": _arb_history[-20:],  # last 20 events
+    }
+
 
 @app.get("/api/airdrops")
 async def airdrops_list():
