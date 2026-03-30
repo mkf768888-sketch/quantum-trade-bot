@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v8.3.0
+QuantumTrade AI - FastAPI Backend v8.3.1
 Phase1: Fear&Greed, Polymarket→Q-Score, Whale, TP/SL stop-orders, Position Monitor, Strategy A/B/C
 Phase3: Origin QC QAOA — квантовая оптимизация портфеля (CPU симулятор + Wukong 180 реальный чип)
 Phase5: Claude Vision — AI-анализ графиков
@@ -2194,6 +2194,20 @@ async def check_triangular_arb(prices: dict) -> list:
 
     return opportunities
 
+def _fmt_price(val: float) -> str:
+    """Smart price format — auto-adjust decimals for very small numbers."""
+    if val == 0:
+        return "0"
+    av = abs(val)
+    if av >= 1:
+        return f"{val:.4f}"
+    elif av >= 0.001:
+        return f"{val:.6f}"
+    elif av >= 0.0000001:
+        return f"{val:.10f}"
+    else:
+        return f"{val:.2e}"
+
 async def _notify_arb(opp: dict):
     """Telegram alert for triangular arbitrage opportunity."""
     d = opp["direction"]
@@ -2209,8 +2223,8 @@ async def _notify_arb(opp: dict):
         f"\u26a1 <b>\u0410\u0440\u0431\u0438\u0442\u0440\u0430\u0436 KuCoin!</b>\n"
         f"<code>{route}</code>\n\n"
         f"\U0001f4ca \u041a\u0440\u043e\u0441\u0441-\u043f\u0430\u0440\u0430: <code>{opp['cross_sym']}</code>\n"
-        f"\u0418\u043c\u043f\u043b\u0438\u0446\u0438\u0442\u043d\u044b\u0439:  <code>{opp['implied']:.6f}</code>\n"
-        f"\u0420\u044b\u043d\u043e\u0447\u043d\u044b\u0439:     <code>{opp['actual']:.6f}</code>\n"
+        f"\u0418\u043c\u043f\u043b\u0438\u0446\u0438\u0442\u043d\u044b\u0439:  <code>{_fmt_price(opp['implied'])}</code>\n"
+        f"\u0420\u044b\u043d\u043e\u0447\u043d\u044b\u0439:     <code>{_fmt_price(opp['actual'])}</code>\n"
         f"\u0421\u043f\u0440\u0435\u0434:        <code>{opp['spread_pct']:+.3f}%</code>\n\n"
         f"\U0001f4b0 \u041f\u0440\u0438\u0431\u044b\u043b\u044c (\u043f\u043e\u0441\u043b\u0435 \u043a\u043e\u043c\u0438\u0441\u0441\u0438\u0439 0.3%):\n"
         f"  $100  \u2192 <code>${profit_100:+.3f}</code>\n"
