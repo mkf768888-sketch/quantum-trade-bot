@@ -27,7 +27,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 import db  # v8.2: PostgreSQL persistent storage
 
-app = FastAPI(title="QuantumTrade AI", version="8.3.0")
+app = FastAPI(title="QuantumTrade AI", version="8.3.4")
 _ALLOWED_ORIGINS = ["*"]   # v7.3.9: open for Mini App (Telegram WebApp origin varies)
 app.add_middleware(
     CORSMiddleware,
@@ -106,7 +106,8 @@ PAIR_Q_THRESHOLDS: dict = {"BTC-USDT": 76, "ETH-USDT": 76, "SOL-USDT": 76,
 COOLDOWN       = int(os.getenv("COOLDOWN_STD", os.getenv("COOLDOWN", "600")))  # v8.3.2: 600s (was 450)
 MAX_LEVERAGE   = min(int(os.getenv("MAX_LEVERAGE", "3")), 5)  # v8.3.3: cap at 5x even if env says higher
 # v8.3.2: Reserve USDT for arbitrage — never enter trades if balance drops below this
-ARB_RESERVE_USDT = float(os.getenv("ARB_RESERVE_USDT", "10"))  # keep $10 minimum for arb
+ARB_RESERVE_USDT = float(os.getenv("ARB_RESERVE_USDT", "15"))  # v8.3.4: $15 minimum for arb (was $10)
+SPOT_BUY_MIN_USDT = float(os.getenv("SPOT_BUY_MIN_USDT", "20"))  # v8.3.4: don't spot-buy if USDT < $20
 # v7.2.3: TP/SL ratio улучшен до 3:1 (было 2:1) — исправляет асимметрию убытков
 TP_PCT         = 0.06   # v7.2.3: 6% (было 5%)
 SL_PCT         = 0.02   # v7.2.3: 2% (было 2.5%) → ratio 3:1 вместо 2:1
@@ -1966,9 +1967,13 @@ async def auto_trade_cycle():
 
     spot_usdt       = spot_bal.get("total_usdt", 0)
     fut_usdt        = fut_bal.get("available_balance", 0)
+    # v8.3.4: Block ALL spot buys if USDT is below safe threshold
+    spot_buy_blocked = spot_usdt < SPOT_BUY_MIN_USDT
+    if spot_buy_blocked:
+        log_activity(f"[cycle] SPOT BUY BLOCKED — ${spot_usdt:.2f} < ${SPOT_BUY_MIN_USDT:.0f} min threshold")
     # v8.3.2: subtract arb reserve before calculating trade size
     spot_tradeable  = max(0, spot_usdt - ARB_RESERVE_USDT)
-    spot_trade_usdt = spot_tradeable * RISK_PER_TRADE
+    spot_trade_usdt = spot_tradeable * RISK_PER_TRADE if not spot_buy_blocked else 0
     fg_val = fg_data.get("value", 50)
     # Cache prices for arb monitor
     _cache_set("all_prices", prices_data)
@@ -2553,12 +2558,15 @@ async def execute_triangular_arb(opp: dict) -> dict:
     if profit_pct < ARB_MIN_PROFIT_PCT:
         return {"executed": False, "reason": f"profit {profit_pct:.3f}% < min {ARB_MIN_PROFIT_PCT}%"}
 
-    # Check spot USDT balance — v8.3: dynamic sizing, min $3
+    # Check spot USDT balance — v8.3.4: reserve-aware sizing
     bal = await get_balance()
     spot_usdt = bal.get("total_usdt", 0)
-    arb_amount = min(ARB_EXEC_USDT, spot_usdt * 0.9)  # use up to 90% of available
+    # v8.3.4: never use more than (spot_usdt - ARB_RESERVE_USDT * 0.5) for arb
+    # Keep at least half the reserve after arb execution
+    usdt_for_arb = max(0, spot_usdt - ARB_RESERVE_USDT * 0.5)
+    arb_amount = min(ARB_EXEC_USDT, usdt_for_arb)
     if not bal.get("success") or arb_amount < 3.0:
-        return {"executed": False, "reason": f"low spot USDT {spot_usdt:.2f} (need ≥$3.33)"}
+        return {"executed": False, "reason": f"low spot USDT {spot_usdt:.2f} (reserve ${ARB_RESERVE_USDT:.0f}, need ≥$3)"}
 
     _arb_executing = True
     _arb_last_exec[path_key] = now
@@ -3432,7 +3440,7 @@ async def _tg_ai_ask(chat_id: int, question: str):
     total_pnl = sum(t.get("pnl", 0) for t in trade_log)
     chip = "Wukong_180" if _qcloud_ready else "CPU_simulator"
 
-    system = f"""Ты — AI-консультант торгового бота QuantumTrade v8.3.3.
+    system = f"""Ты — AI-консультант торгового бота QuantumTrade v8.3.4.
 Текущие показатели:
 - Всего сделок: {total}, Win Rate: {win_rate:.1f}%, PnL: ${total_pnl:.2f}
 - Q-Score последний: {last_q_score:.1f}, MIN_Q: {MIN_Q_SCORE}
@@ -3499,6 +3507,16 @@ async def _telegram_callback_inner(req: TelegramUpdate):
     if req.message:
         msg  = req.message
         raw  = msg.get("text", "").strip()
+        # v8.3.4: Normalize command — fix spaces after / and common typos
+        if raw.startswith("/"):
+            # Remove extra spaces after /  :  "/ ask" → "/ask", "/  menu" → "/menu"
+            import re as _re_cmd
+            raw = _re_cmd.sub(r'^/\s+', '/', raw)
+            # Fix common typos for /ask: /aks, /asl, /akk, /aask
+            raw_lower_start = raw[:5].lower()
+            if raw_lower_start.startswith("/aks") or raw_lower_start.startswith("/asl") or \
+               raw_lower_start.startswith("/akk") or raw_lower_start.startswith("/aask"):
+                raw = "/ask" + raw[raw.index(raw.split()[0]) + len(raw.split()[0]):]
         # Убираем @BotName суффикс: /menu@MyBot → /menu
         cmd  = raw.split("@")[0].lower() if raw.startswith("/") else raw
         chat_id = msg.get("chat", {}).get("id")
@@ -3754,7 +3772,7 @@ async def startup():
     ai_chat_model = AI_TIER_CHAT.upper()
     ai_crit_model = AI_TIER_CRITICAL.upper()
     await notify(
-        f"⚛ <b>QuantumTrade v8.3.3</b>\n"
+        f"⚛ <b>QuantumTrade v8.3.4</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 Режим: {mode} · Риск: {risk_pct}% · Леверидж: {MAX_LEVERAGE}x\n"
         f"🎯 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s\n"
