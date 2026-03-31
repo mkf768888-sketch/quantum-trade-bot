@@ -802,6 +802,71 @@ async def bybit_spot_prices(symbols: list) -> dict:
     return prices
 
 
+# ── v10.0: ByBit Spot Trading ────────────────────────────────────────────────
+
+async def bybit_place_spot_order(symbol: str, side: str, qty: float, order_type: str = "Market") -> dict:
+    """Place a ByBit V5 spot order. symbol='BTC-USDT', side='Buy'/'Sell', qty in base coin."""
+    if not BYBIT_ENABLED:
+        return {"success": False, "error": "ByBit not configured"}
+    bb_symbol = symbol.replace("-", "")  # BTC-USDT → BTCUSDT
+    params = {
+        "category": "spot",
+        "symbol": bb_symbol,
+        "side": side.capitalize(),  # Buy / Sell
+        "orderType": order_type,
+        "qty": str(qty),
+    }
+    # For market buy, use USDT amount via marketUnit=quoteCoin
+    if side.lower() == "buy" and order_type == "Market":
+        params["marketUnit"] = "quoteCoin"  # qty is in USDT, not base coin
+    log_activity(f"[bybit] Placing {side} {symbol} qty={qty} type={order_type}")
+    result = await bybit_request("POST", "/v5/order/create", params)
+    if result["success"]:
+        order_id = result["data"].get("orderId", "?")
+        log_activity(f"[bybit] Order OK: {order_id}")
+        return {"success": True, "orderId": order_id, "data": result["data"]}
+    else:
+        log_activity(f"[bybit] Order FAILED: {result.get('error')}")
+        return {"success": False, "error": result.get("error", "unknown")}
+
+
+async def bybit_sell_spot(symbol: str, qty: float = 0) -> dict:
+    """Sell spot coin on ByBit. If qty=0, sell all available."""
+    if not BYBIT_ENABLED:
+        return {"success": False, "error": "ByBit not configured"}
+    if qty <= 0:
+        # Get available balance of the coin
+        bal = await bybit_get_balance()
+        if not bal["success"]:
+            return {"success": False, "error": "Could not fetch ByBit balance"}
+        coin = symbol.replace("-USDT", "")
+        coin_bal = bal.get("balances", {}).get(coin, {})
+        qty = coin_bal.get("available", 0)
+        if qty <= 0:
+            return {"success": False, "error": f"No {coin} balance on ByBit"}
+    return await bybit_place_spot_order(symbol, "Sell", qty)
+
+
+async def bybit_get_spot_balances() -> dict:
+    """Get all non-zero spot balances with prices for ByBit. Similar to KuCoin get_spot_balances()."""
+    bal = await bybit_get_balance()
+    if not bal["success"]:
+        return {}
+    result = {}
+    for coin, info in bal.get("balances", {}).items():
+        if coin == "USDT" or info.get("available", 0) <= 0:
+            continue
+        symbol = f"{coin}-USDT"
+        price = await bybit_get_ticker(symbol)
+        if price > 0:
+            result[symbol] = {
+                "available": info["available"],
+                "price": price,
+                "usd_value": round(info["available"] * price, 2),
+            }
+    return result
+
+
 # ── v9.0: Cross-Exchange Arbitrage Monitor ─────────────────────────────────────
 _xarb_stats = {"checks": 0, "opportunities": 0, "executions": 0,
                "total_pnl": 0.0, "best_spread": 0.0, "last_check": 0}
@@ -2989,28 +3054,59 @@ async def auto_trade_cycle():
 
     spot_usdt       = spot_bal.get("total_usdt", 0)
     fut_usdt        = fut_bal.get("available_balance", 0)
-    # v10.0: Block ALL spot buys if USDT is below safe threshold
-    spot_buy_blocked = spot_usdt < SPOT_BUY_MIN_USDT
+
+    # ── v10.0: ByBit balance for dual-exchange trading ────────────────────────
+    bb_usdt = 0.0
+    if BYBIT_ENABLED:
+        try:
+            bb_bal = await bybit_get_balance()
+            if bb_bal["success"]:
+                bb_usdt = bb_bal.get("total_usdt", 0)
+        except Exception:
+            pass
+
+    # v10.0: Combined available capital across exchanges
+    total_usdt = spot_usdt + bb_usdt
+
+    # v10.0: Smart exchange selection — trade on whichever has more USDT
+    # _trade_exchange: "kucoin", "bybit", or "both"
+    _kc_tradeable = max(0, spot_usdt - ARB_RESERVE_USDT)
+    _bb_tradeable = max(0, bb_usdt - ARB_RESERVE_USDT)
+
+    def _calc_trade_size(available: float) -> float:
+        """Calculate trade size for small accounts."""
+        if available < SPOT_BUY_MIN_USDT:
+            return 0.0
+        risk = RISK_PER_TRADE
+        if available < 50:
+            risk = min(0.35, max(RISK_PER_TRADE, 5.0 / max(available, 1)))
+        size = round(available * risk, 2)
+        if 0 < size < 2.0:
+            size = min(2.0, available * 0.35)
+        if size > available * 0.35:
+            size = round(available * 0.35, 2)
+        return size
+
+    spot_trade_usdt = _calc_trade_size(_kc_tradeable)
+    bb_trade_usdt   = _calc_trade_size(_bb_tradeable) if BYBIT_ENABLED else 0
+
+    # Choose primary exchange for this cycle (the one with more available)
+    _primary_exchange = "kucoin"
+    _primary_trade_usdt = spot_trade_usdt
+    if bb_trade_usdt > spot_trade_usdt and BYBIT_ENABLED:
+        _primary_exchange = "bybit"
+        _primary_trade_usdt = bb_trade_usdt
+
+    spot_buy_blocked = (spot_trade_usdt <= 0 and bb_trade_usdt <= 0)
     if spot_buy_blocked:
-        log_activity(f"[cycle] SPOT BUY BLOCKED — ${spot_usdt:.2f} < ${SPOT_BUY_MIN_USDT:.0f} min threshold")
-    # v10.0: Smart trade sizing for small accounts
-    spot_tradeable  = max(0, spot_usdt - ARB_RESERVE_USDT)
-    # For small accounts (<$50): use higher % to make viable trades ($3-5 minimum)
-    _eff_risk = RISK_PER_TRADE
-    if spot_tradeable < 50:
-        _eff_risk = min(0.35, max(RISK_PER_TRADE, 5.0 / max(spot_tradeable, 1)))  # aim for $5 min trade
-    spot_trade_usdt = round(spot_tradeable * _eff_risk, 2) if not spot_buy_blocked else 0
-    # v10.0: Ensure trade is at least $2 (KuCoin min) but not more than 35% of balance
-    if 0 < spot_trade_usdt < 2.0:
-        spot_trade_usdt = min(2.0, spot_tradeable * 0.35)
-    if spot_trade_usdt > spot_tradeable * 0.35:
-        spot_trade_usdt = round(spot_tradeable * 0.35, 2)
+        log_activity(f"[cycle] ALL BUYS BLOCKED — KC=${spot_usdt:.2f} BB=${bb_usdt:.2f} (both below threshold)")
+
     fg_val = fg_data.get("value", 50)
     # Cache prices for arb monitor
     _cache_set("all_prices", prices_data)
     # Pre-initialize poly_events from cache so log line below is always safe
     poly_events = _cache_get("polymarket", 900) or []
-    log_activity(f"[cycle] F&G={fg_val}({fg_data.get('bonus',0):+d}) spot=${spot_usdt:.1f} fut=${fut_usdt:.1f} poly={len(poly_events)}mkts")
+    log_activity(f"[cycle] F&G={fg_val}({fg_data.get('bonus',0):+d}) KC=${spot_usdt:.1f} BB=${bb_usdt:.1f} primary={_primary_exchange} trade=${_primary_trade_usdt:.1f} poly={len(poly_events)}mkts")
 
     # ── Polymarket v7.0 (кеш 15 мин, multi-query) ──────────────────────────────
     poly_events = _cache_get("polymarket", 900) or []
@@ -3203,25 +3299,60 @@ async def auto_trade_cycle():
                 if not gate["approved"]:
                     log_activity(f"[cycle] {symbol}: BLOCKED by Opus — {gate['reason']}")
                     continue
-                log_activity(f"[cycle] {symbol}: PLACING spot BUY ${spot_trade_usdt:.2f}"
+                # ── v10.0: Dual-exchange — route BUY to best exchange ──
+                _buy_exchange = _primary_exchange
+                _buy_usdt = _primary_trade_usdt
+                # Fallback: if primary has no funds but secondary does
+                if _buy_usdt < 1.0:
+                    if _buy_exchange == "bybit" and spot_trade_usdt >= 1.0:
+                        _buy_exchange = "kucoin"
+                        _buy_usdt = spot_trade_usdt
+                    elif _buy_exchange == "kucoin" and bb_trade_usdt >= 1.0:
+                        _buy_exchange = "bybit"
+                        _buy_usdt = bb_trade_usdt
+
+                log_activity(f"[cycle] {symbol}: PLACING spot BUY ${_buy_usdt:.2f} on {_buy_exchange}"
                              f"{' MF=' + str(mf_result['score']) if mf_result else ''}")
-                ok = await execute_spot_trade(symbol, signal, vision, price, spot_trade_usdt)
+
+                if _buy_exchange == "bybit" and BYBIT_ENABLED:
+                    bb_res = await bybit_place_spot_order(symbol, "Buy", _buy_usdt)
+                    ok = bb_res.get("success", False)
+                    if ok:
+                        size = round(_buy_usdt / price, 6)
+                        tp = round(price * (1 + TP_PCT), 6)
+                        sl = round(price * (1 - SL_PCT), 6)
+                        log_trade(symbol, "buy", price, size, tp, sl, conf, q,
+                                  vision.get("pattern", "?"), "bybit_spot")
+                        last_signals[symbol] = {"action": "BUY", "ts": time.time()}
+                    else:
+                        log_activity(f"[cycle] {symbol}: ByBit BUY failed: {bb_res.get('error','?')}")
+                        # Fallback to KuCoin
+                        if spot_trade_usdt >= 1.0:
+                            ok = await execute_spot_trade(symbol, signal, vision, price, spot_trade_usdt)
+                else:
+                    ok = await execute_spot_trade(symbol, signal, vision, price, _buy_usdt)
+
                 if ok:
-                    signals_fired.append({"account": "spot", "symbol": symbol, "action": action,
+                    signals_fired.append({"account": _buy_exchange + "_spot", "symbol": symbol, "action": action,
                         "price": price, "confidence": conf, "q_score": q,
                         "pattern": vision.get("pattern","?"), "rsi": vision.get("rsi", 0),
                         "tp": round(price*(1+TP_PCT),4), "sl": round(price*(1-SL_PCT),4),
                         "mirofish": mf_result})
         elif action == "SELL":
-            # v8.3: Sell existing spot position when SELL signal fires
+            # v10.0: Sell existing spot position when SELL signal fires (KuCoin + ByBit)
             open_spot = [t for t in trade_log if t.get("status") == "open"
-                         and t.get("symbol") == symbol and t.get("account") == "spot"]
+                         and t.get("symbol") == symbol
+                         and t.get("account") in ("spot", "bybit_spot")]
             if open_spot:
                 elapsed = time.time() - last_signals.get(symbol, {}).get("ts", 0)
                 eff_cd_spot = COOLDOWN // 2 if conf >= 0.80 else COOLDOWN
                 if elapsed >= eff_cd_spot:
                     t = open_spot[-1]
-                    sell_res = await sell_spot_to_usdt(symbol)
+                    _sell_acct = t.get("account", "spot")
+                    if _sell_acct == "bybit_spot":
+                        sell_res = await bybit_sell_spot(symbol)
+                    else:
+                        sell_res = await sell_spot_to_usdt(symbol)
                     if sell_res.get("success"):
                         pnl_pct = (price - t["price"]) / t["price"] if t["side"] == "buy" else (t["price"] - price) / t["price"]
                         pnl_usdt = round(pnl_pct * t["price"] * t["size"], 4)
@@ -3870,13 +4001,20 @@ async def spot_monitor_loop():
         try:
             open_spot = [t for t in trade_log
                          if t.get("status") == "open"
-                         and (t.get("account") == "spot" or "USDTM" not in t.get("symbol", ""))]
+                         and t.get("account") in ("spot", "bybit_spot")]
             if not open_spot:
                 await asyncio.sleep(45)
                 continue
 
             # Fetch actual spot balances to verify we still hold the coins
             spot_bals = await get_spot_balances()
+            # v10.0: Also fetch ByBit spot balances
+            bb_spot_bals = {}
+            if BYBIT_ENABLED:
+                try:
+                    bb_spot_bals = await bybit_get_spot_balances()
+                except Exception:
+                    pass
 
             for trade in open_spot:
                 try:
@@ -3891,15 +4029,18 @@ async def spot_monitor_loop():
                     if (time.time() - open_ts) < 180:
                         continue
 
-                    # Check if we still have the coin
-                    bal_info = spot_bals.get(symbol)
+                    # v10.0: Check balance on correct exchange
+                    _trade_acct = trade.get("account", "spot")
+                    if _trade_acct == "bybit_spot":
+                        bal_info = bb_spot_bals.get(symbol)
+                    else:
+                        bal_info = spot_bals.get(symbol)
                     if not bal_info or bal_info["available"] <= 0:
-                        # Coin already sold (manually or by another process)
                         trade["status"] = "closed"
                         trade["pnl"] = 0.0
                         trade["close_reason"] = "no_balance"
                         _save_trades_to_disk()
-                        log_activity(f"[spot_mon] {symbol}: no balance found — closing as no_balance")
+                        log_activity(f"[spot_mon] {symbol} ({_trade_acct}): no balance — closing as no_balance")
                         continue
 
                     price_now = bal_info["price"]
@@ -3946,9 +4087,12 @@ async def spot_monitor_loop():
                         reason = "⏰ Stale (12h)"
 
                     if should_close:
-                        # Sell the coin
+                        # v10.0: Sell on correct exchange
                         sell_size = min(trade_size, bal_info["available"])
-                        sell_result = await sell_spot_to_usdt(symbol, sell_size)
+                        if _trade_acct == "bybit_spot":
+                            sell_result = await bybit_sell_spot(symbol, sell_size)
+                        else:
+                            sell_result = await sell_spot_to_usdt(symbol, sell_size)
                         if sell_result.get("success"):
                             trade["status"] = "closed"
                             trade["pnl"] = pnl_usdt
@@ -3968,14 +4112,15 @@ async def spot_monitor_loop():
                                     duration_sec=round(time.time() - open_ts, 1)
                                 ))
                                 asyncio.ensure_future(db.save_perf_stats(_perf_stats))
+                            _exch_label = "ByBit" if _trade_acct == "bybit_spot" else "KuCoin"
                             await notify(
                                 f"{emoji} <b>Спот закрыта — {reason}</b>\n"
-                                f"<code>{symbol}</code> {side.upper()}\n"
+                                f"<code>{symbol}</code> {side.upper()} ({_exch_label})\n"
                                 f"Вход: <code>${entry:,.4f}</code> → Выход: <code>${price_now:,.4f}</code>\n"
                                 f"PnL: <code>${pnl_usdt:+.4f}</code> ({pnl_pct*100:+.2f}%)\n"
                                 f"Длительность: {duration_min}м"
                             )
-                            log_activity(f"[spot_mon] {symbol} {reason} SOLD PnL=${pnl_usdt:+.4f}")
+                            log_activity(f"[spot_mon] {symbol} ({_exch_label}) {reason} SOLD PnL=${pnl_usdt:+.4f}")
                         else:
                             log_activity(f"[spot_mon] {symbol} sell FAILED: {sell_result.get('msg','?')}")
                     else:
