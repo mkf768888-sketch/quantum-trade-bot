@@ -71,11 +71,38 @@ Claude Vision: 35% | Индикаторы: 25% | Контекст: 20% | Whale: 
 5. Каждый коммит — атомарный, с описанием что и зачем
 6. Перед пушем: `python3 -c "import py_compile; py_compile.compile('server.py', doraise=True)"`
 
-## Субагенты
-See `.claude/agents/` for specialized agent configs:
-- `debugger.md` — поиск и исправление багов
-- `security-auditor.md` — аудит безопасности
-- `deployer.md` — деплой и верификация
-- `trade-analyst.md` — анализ торговых стратегий
+## GSD v2 Wave Architecture (v10.0.1+)
+Проект использует адаптацию GSD v2 для автономного выполнения:
+- **Wave Execution**: задачи группируются в волны, state на диске (STATE.md)
+- **Crash Recovery**: in_progress задачи в STATE.md, auto-resume
+- **Parallel Research**: агенты работают по направлениям параллельно
+- **Verification Gates**: syntax check → security scan → commit → (deploy only with user OK)
 
-See `.claude/rules/` for mandatory constraints (security.md, trading.md).
+### Команды (`.claude/commands/`)
+| Команда | Описание |
+|---------|----------|
+| `/auto` | Полный автопилот — волновое выполнение ROADMAP.md |
+| `/wave` | Пошаговый — одна задача, пауза, подтверждение |
+| `/discuss` | Обсуждение стратегии без изменения кода |
+| `/forensics` | Диагностика и crash recovery |
+
+### Агенты (`.claude/agents/`)
+| Агент | Назначение | Модель |
+|-------|-----------|--------|
+| wave-orchestrator | Координатор волн, мозг системы | Sonnet |
+| earn-strategist | Earn/Staking/Lending стратегии | Sonnet |
+| polymarket-trader | Polymarket prediction markets | Sonnet |
+| design-system | UI/UX, Cyberpunk + Glassmorphism | Sonnet |
+| trade-analyst | Анализ торговой логики | Sonnet |
+| deployer | Railway deploy pipeline | Haiku |
+| debugger | Bug fixing | Sonnet |
+| security-auditor | READ-ONLY аудит безопасности | Sonnet |
+
+### Правила (`.claude/rules/`)
+- `security.md` — абсолютные запреты, pre-deploy checklist
+- `trading.md` — параметры риска, dual-exchange, self-learning
+
+### Ключевые файлы GSD
+- `ROADMAP.md` — волновая дорожная карта с задачами
+- `STATE.md` — текущее состояние, wave status, crash recovery
+- `HOWTO.md` — руководство по автономному режиму + Safe Mode
