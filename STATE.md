@@ -4,7 +4,7 @@
 > Архитектура: GSD v2 Wave Execution
 
 ## Текущее состояние бота
-- **Версия:** 10.0.0 (deployed, dual-exchange trading live)
+- **Версия:** 10.1.0 (deployed, dual-exchange + Earn Engine live)
 - **Автопилот:** включён, Q>77 (динамический порог через self-learning)
 - **Арбитраж:** межбиржевой KuCoin↔ByBit включён, треугольный включён
 - **Портфель:** ~$45.5 (KuCoin ~$7.5 спот + ByBit ~$38 спот)
@@ -14,9 +14,9 @@
 
 ## Wave Execution Status (GSD v2)
 ```
-Current Wave: 1 (Earn Engine — v10.1)
-Wave Phase: PLANNING → ready to execute
-In Progress: none
+Current Wave: 1 (Earn Engine — v10.1) ✅ Phase A DEPLOYED
+Wave Phase: EXECUTION → Phase A live, Phase B pending
+In Progress: earn_monitor_loop running on Railway
 Blocked: none
 Next Wave: 2 (Multi-Exchange CCXT)
 Last Wave Completed: 0 (Foundation v10.0)
@@ -59,6 +59,7 @@ Last Wave Completed: 0 (Foundation v10.0)
 | Версия | Дата | Ключевые изменения |
 |--------|------|---------------------|
 | 10.0.0 | 31.03 | ByBit spot orders, dual-exchange routing, small-account algo |
+| 10.1.0 | 01.04 | Earn Engine: KuCoin+ByBit Flexible Savings, Auto-Earn/Redeem |
 | 10.0.1 | 01.04 | GSD v2 architecture, 8 agents, 4 commands, ROADMAP.md, HOWTO.md |
 | 9.2.0 | 30.03 | MiroFish v3, cross-exchange arb, copy-trading, self-learning v2 |
 | 9.0.0 | 30.03 | 15 MiroFish agents, sentiment pipeline, macro dashboard |

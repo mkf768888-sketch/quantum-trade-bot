@@ -19,15 +19,15 @@
 ## 🌊 Wave 1 — v10.1: Earn Engine (Пассивный доход)
 > Приоритет: ВЫСОКИЙ · Сложность: M · Агент: earn-strategist
 
-### Phase A: KuCoin + ByBit Earn (текущие API ключи)
-- [ ] `earn_get_products(exchange)` — получить список Flexible products
-- [ ] `earn_get_best_rate(asset)` — сравнить APR KuCoin vs ByBit
-- [ ] `earn_subscribe_flexible(exchange, asset, amount)` — подписка
-- [ ] `earn_redeem(exchange, asset, amount)` — погашение
-- [ ] Auto-Earn: после SELL → свободные USDT → Flexible Savings
-- [ ] Auto-Redeem: перед BUY → redeem из Savings
-- [ ] Telegram: /earn — статус, APR, total earned
-- [ ] API endpoint: /api/earn/status
+### Phase A: KuCoin + ByBit Earn (текущие API ключи) ✅ DEPLOYED
+- [x] `earn_get_products(exchange)` — получить список Flexible products
+- [x] `earn_get_best_rate(asset)` — сравнить APR KuCoin vs ByBit
+- [x] `earn_subscribe_flexible(exchange, asset, amount)` — подписка
+- [x] `earn_redeem(exchange, asset, amount)` — погашение
+- [x] Auto-Earn: после SELL → свободные USDT → Flexible Savings
+- [x] Auto-Redeem: перед BUY → redeem из Savings
+- [x] Telegram: /earn — статус, APR, total earned
+- [x] API endpoint: /api/earn/status
 
 ### Phase B: Lending + Advanced
 - [ ] KuCoin Lending Pro: автоматическое размещение при rate > 10% APR
@@ -138,7 +138,8 @@
 
 ## 🔄 Wave Status
 ```
-Current Wave: 1 (Earn Engine)
+Current Wave: 1 Phase B (Earn Advanced — Lending, Staking Combo)
+Completed: Wave 1 Phase A (Earn Engine deployed v10.1.0)
 Next Wave: 2 (Multi-Exchange)
 Blocked: Binance/OKX API keys needed
 Last Updated: 2026-04-01
