@@ -5289,7 +5289,7 @@ async def _tg_ai_ask(chat_id: int, question: str):
             by_sym_str += f"\n  {sym}: {sdata['trades']} сделок, WR {swr}%, PnL ${sdata['pnl']:.2f}"
     arb_info = f"Арбитраж: {_arb_stats.get('total', 0)} попыток, {_arb_stats.get('success', 0)} успешных, PnL ${_arb_stats.get('total_pnl', 0):.4f}"
 
-    system = f"""Ты — AI-консультант торгового бота QuantumTrade v8.3.4.
+    system = f"""Ты — AI-консультант торгового бота QuantumTrade v10.0.
 Текущие показатели:
 - Всего сделок: {total}, Win Rate: {win_rate:.1f}%, PnL: ${total_pnl:.2f}
 - Streak (серия): {streak} ({'побед' if streak > 0 else 'поражений' if streak < 0 else 'нейтральная'})
@@ -5643,17 +5643,18 @@ async def startup():
     ai_chat_model = AI_TIER_CHAT.upper()
     ai_crit_model = AI_TIER_CRITICAL.upper()
     await notify(
-        f"⚛ <b>QuantumTrade v8.3.4</b>\n"
+        f"⚛ <b>QuantumTrade v10.0</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 Режим: {mode} · Риск: {risk_pct}% · Леверидж: {MAX_LEVERAGE}x\n"
         f"🎯 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s\n"
         f"✅ Спот: {len(SPOT_PAIRS)} пар · Фьючерсы: {len(FUT_PAIRS)} пар\n"
-        f"⚡ Арбитраж: {arb_active}/{len(ARB_TRIANGLES)} связок · WebSocket live\n"
+        f"🔀 Биржи: KuCoin + ByBit (dual-exchange)\n"
+        f"⚡ Арбитраж: {arb_active}/{len(ARB_TRIANGLES)} связок · X-Arb KuCoin↔ByBit\n"
         f"🛡️ Opus Gate: сделки >${OPUS_GATE_MIN_USDT:.0f} → подтверждение AI\n"
         f"🤖 AI: {ai_chat_model} (чат) · {ai_crit_model} (критич.)\n"
         f"{qc_label}\n"
-        f"🪂 Airdrop Tracker активен\n"
-        f"💰 Резерв арбитража: ${ARB_RESERVE_USDT:.0f} · История: {len(trade_log)} сделок"
+        f"📦 Max позиций: {MAX_OPEN_POSITIONS} · Stale auto-sell: 12h\n"
+        f"💰 Резерв: ${ARB_RESERVE_USDT:.0f} · Min сделка: ${SPOT_BUY_MIN_USDT:.0f} · История: {len(trade_log)}"
     )
 
 async def trading_loop():
