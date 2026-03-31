@@ -22,13 +22,15 @@
 | Advanced TA | MACD, BB, Stoch, ADX, OBV (pandas-ta) | `calc_advanced_ta()` |
 
 ## AI Tiers
-- **DeepSeek V3** — text/strategy (free tier, primary)
-- **Claude Haiku** — vision analysis, fallback chat
-- **Claude Opus** — critical decisions
+- **DeepSeek V3** — text/strategy (free tier exhausted, fallback)
+- **Claude Haiku** — vision analysis, primary fallback (628+ calls)
+- **Claude Opus** — Opus Gate critical trade confirmation
 
-## Биржи
-- **KuCoin**: Spot + Futures (HMAC-SHA256)
-- **ByBit**: Spot (HMAC-SHA256, другая подпись)
+## Биржи (v10.0 Dual-Exchange)
+- **KuCoin**: Spot + Futures (HMAC-SHA256) — `execute_spot_trade()`, `place_futures_order()`
+- **ByBit**: Spot (HMAC-SHA256) — `bybit_place_spot_order()`, `bybit_sell_spot()`
+- **Routing**: BUY → биржа с большим USDT, auto-fallback на вторую
+- **Monitor**: `spot_monitor_loop()` проверяет обе биржи (account: spot / bybit_spot)
 
 ## Railway Variables
 ```
@@ -36,7 +38,8 @@ KUCOIN_API_KEY / KUCOIN_SECRET / KUCOIN_PASSPHRASE
 BYBIT_API_KEY / BYBIT_API_SECRET
 BOT_TOKEN / API_SECRET / ANTHROPIC_API_KEY / DEEPSEEK_API_KEY
 RAILWAY_PUBLIC_DOMAIN / TG_WEBHOOK_SECRET
-RISK_PER_TRADE=0.08 / MIN_Q_SCORE=77
+RISK_PER_TRADE=0.08 / MIN_Q_SCORE=77 / MAX_OPEN_POSITIONS=2
+ARB_RESERVE_USDT=3 / SPOT_BUY_MIN_USDT=5
 ```
 
 ## Telegram Commands
@@ -51,13 +54,14 @@ Claude Vision: 35% | Индикаторы: 25% | Контекст: 20% | Whale: 
 
 ## Security (v10.0)
 - [x] Все приватные эндпоинты под verify_api_key
-- [x] CORS → restricted origins (Telegram + Railway domain)
-- [x] Security headers middleware (X-Content-Type-Options, X-Frame-Options, etc.)
-- [x] Rate limiting middleware (60 req/min per IP)
-- [x] Telegram webhook secret_token verification
+- [x] CORS: allow_origins=["*"] (упрощено — middleware вызывал проблемы)
 - [x] Input validation on /api/settings and /api/trade/manual
 - [x] HTML escaping on /ask user input
 - [x] XSS protection в AI chat
+- [x] Секреты только через os.getenv(), никогда в коде
+- [ ] ~~Security headers middleware~~ — удалён (ломал запуск)
+- [ ] ~~Rate limiting middleware~~ — удалён (ломал запуск)
+- [ ] ~~TG_WEBHOOK_SECRET~~ — удалён (блокировал ВСЕ сообщения)
 
 ## Правила изменений
 1. Изменил эндпоинт → обнови index.html (контракт!)
