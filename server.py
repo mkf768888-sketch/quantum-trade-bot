@@ -129,14 +129,16 @@ PAIR_Q_THRESHOLDS: dict = {"BTC-USDT": 76, "ETH-USDT": 76, "SOL-USDT": 76,
                             "BNB-USDT": 76, "XRP-USDT": 76, "AVAX-USDT": 76}
 COOLDOWN       = int(os.getenv("COOLDOWN_STD", os.getenv("COOLDOWN", "600")))  # v8.3.2: 600s (was 450)
 MAX_LEVERAGE   = min(int(os.getenv("MAX_LEVERAGE", "3")), 5)  # v8.3.3: cap at 5x even if env says higher
-# v8.3.2: Reserve USDT for arbitrage — never enter trades if balance drops below this
-ARB_RESERVE_USDT = float(os.getenv("ARB_RESERVE_USDT", "15"))  # v8.3.4: $15 minimum for arb (was $10)
-SPOT_BUY_MIN_USDT = float(os.getenv("SPOT_BUY_MIN_USDT", "20"))  # v8.3.4: don't spot-buy if USDT < $20
+# v10.0: Lowered thresholds for small accounts ($30-50 range)
+ARB_RESERVE_USDT = float(os.getenv("ARB_RESERVE_USDT", "3"))     # v10.0: $3 (was $15) — small account mode
+SPOT_BUY_MIN_USDT = float(os.getenv("SPOT_BUY_MIN_USDT", "5"))   # v10.0: $5 (was $20) — allow small trades
+# v10.0: Max simultaneous open positions — prevents draining all USDT in 1 cycle
+MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "2"))     # v10.0: max 2 at a time (was unlimited)
 # v7.2.3: TP/SL ratio улучшен до 3:1 (было 2:1) — исправляет асимметрию убытков
-TP_PCT         = 0.06   # v7.2.3: 6% (было 5%)
-SL_PCT         = 0.02   # v7.2.3: 2% (было 2.5%) → ratio 3:1 вместо 2:1
-TRAIL_TRIGGER  = 0.025  # v7.2.4: trailing stop при +2.5% прибыли
-TRAIL_PCT      = 0.015  # v7.2.4: закрывать при откате 1.5% от пика
+TP_PCT         = 0.04   # v10.0: 4% (was 6%) — faster profit taking for small account
+SL_PCT         = 0.02   # v7.2.3: 2% (было 2.5%) → ratio 2:1
+TRAIL_TRIGGER  = 0.02   # v10.0: trailing stop при +2% прибыли (was 2.5%)
+TRAIL_PCT      = 0.01   # v10.0: закрывать при откате 1% от пика (was 1.5%)
 TEST_MODE      = os.getenv("TEST_MODE", "false").lower() == "true"  # v6.7: default LIVE mode
 if TEST_MODE:
     RISK_PER_TRADE = min(RISK_PER_TRADE, 0.05)  # v8.3.2: test mode even more conservative
@@ -2987,13 +2989,22 @@ async def auto_trade_cycle():
 
     spot_usdt       = spot_bal.get("total_usdt", 0)
     fut_usdt        = fut_bal.get("available_balance", 0)
-    # v8.3.4: Block ALL spot buys if USDT is below safe threshold
+    # v10.0: Block ALL spot buys if USDT is below safe threshold
     spot_buy_blocked = spot_usdt < SPOT_BUY_MIN_USDT
     if spot_buy_blocked:
         log_activity(f"[cycle] SPOT BUY BLOCKED — ${spot_usdt:.2f} < ${SPOT_BUY_MIN_USDT:.0f} min threshold")
-    # v8.3.2: subtract arb reserve before calculating trade size
+    # v10.0: Smart trade sizing for small accounts
     spot_tradeable  = max(0, spot_usdt - ARB_RESERVE_USDT)
-    spot_trade_usdt = spot_tradeable * RISK_PER_TRADE if not spot_buy_blocked else 0
+    # For small accounts (<$50): use higher % to make viable trades ($3-5 minimum)
+    _eff_risk = RISK_PER_TRADE
+    if spot_tradeable < 50:
+        _eff_risk = min(0.35, max(RISK_PER_TRADE, 5.0 / max(spot_tradeable, 1)))  # aim for $5 min trade
+    spot_trade_usdt = round(spot_tradeable * _eff_risk, 2) if not spot_buy_blocked else 0
+    # v10.0: Ensure trade is at least $2 (KuCoin min) but not more than 35% of balance
+    if 0 < spot_trade_usdt < 2.0:
+        spot_trade_usdt = min(2.0, spot_tradeable * 0.35)
+    if spot_trade_usdt > spot_tradeable * 0.35:
+        spot_trade_usdt = round(spot_tradeable * 0.35, 2)
     fg_val = fg_data.get("value", 50)
     # Cache prices for arb monitor
     _cache_set("all_prices", prices_data)
@@ -3150,6 +3161,12 @@ async def auto_trade_cycle():
         if action == "HOLD": continue
         if conf < MIN_CONFIDENCE: continue
         if not AUTOPILOT: continue
+
+        # ── v10.0: Position limit — don't drain all USDT ──────────────────────
+        open_count = sum(1 for t in trade_log if t.get("status") == "open")
+        if action == "BUY" and open_count >= MAX_OPEN_POSITIONS:
+            log_activity(f"[cycle] {symbol}: SKIP BUY — {open_count} open positions (max {MAX_OPEN_POSITIONS})")
+            continue
 
         # ── v10.0: Self-learning filter — skip symbols with terrible winrate ──
         if symbol in _learning_insights.get("avoid_symbols", []):
@@ -3923,6 +3940,10 @@ async def spot_monitor_loop():
                     elif pnl_pct <= -0.05:
                         should_close = True
                         reason = "🚨 MaxLoss"
+                    # v10.0: Stale position — open > 12h with no significant move → free up capital
+                    elif (time.time() - open_ts) > 43200 and abs(pnl_pct) < 0.015:
+                        should_close = True
+                        reason = "⏰ Stale (12h)"
 
                     if should_close:
                         # Sell the coin
