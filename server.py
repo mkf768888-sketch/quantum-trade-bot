@@ -5431,6 +5431,13 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd.startswith("/sentiment"):  await _tg_sentiment(chat_id, raw)
         elif cmd == "/bybit":               await _tg_bybit(chat_id)
         elif cmd == "/xarb":                await _tg_xarb(chat_id)
+        elif cmd == "/autopilot":
+            AUTOPILOT = not AUTOPILOT
+            state_emoji = "✅ ВКЛ" if AUTOPILOT else "❌ ВЫКЛ"
+            await _tg_send(chat_id,
+                f"🤖 <b>Автопилот: {state_emoji}</b>\n"
+                f"{'Бот торгует автоматически. Ultra-Sniper режим активен.' if AUTOPILOT else 'Торговля приостановлена.'}")
+            log_activity(f"[autopilot] toggled to {'ON' if AUTOPILOT else 'OFF'} by /autopilot command")
         elif cmd.startswith("/sell"):       await _tg_universal_sell(chat_id, raw)
         elif cmd.startswith("/buy"):
             if not cmd.startswith("/buy ") and cmd == "/buy":
@@ -6036,7 +6043,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "8.3.0",
+        "version": "10.0.0",
         "auto_trading": AUTOPILOT,
         "quantum_chip": "Wukong_180" if _qcloud_ready else "CPU_simulator",
         "timestamp": datetime.utcnow().isoformat(),
@@ -6291,7 +6298,7 @@ async def auto_scanner_loop():
                         f"📊 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s\n"
                         f"🤖 AP: {'ВКЛ' if AUTOPILOT else 'ВЫКЛ'} · Arb: {'ВКЛ' if ARB_EXEC_ENABLED else 'ВЫКЛ'}\n"
                         f"📋 Сделок: {_perf_stats['total_trades']} · WR: {wr:.0f}% · PnL: ${_perf_stats['total_pnl']:.2f}\n"
-                        f"🔥 Streak: {_perf_stats['streak']} · Версия: 8.3.4"
+                        f"🔥 Streak: {_perf_stats['streak']} · Версия: 10.0.0"
                     )
                     if warnings: msg += "\n\n" + "\n".join(warnings[:2])
                     if recommendations: msg += "\n\n" + "\n".join(recommendations[:2])
@@ -6322,7 +6329,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "8.3.0",
+        "version": "10.0.0",
     }
 
 @app.get("/api/setup-webhook")
@@ -6491,7 +6498,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "8.3.0",
+        "version": "10.0.0",
     }
 
 @app.get("/api/dashboard")
