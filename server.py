@@ -1507,17 +1507,31 @@ async def analyze_chart_with_vision(symbol: str, candles: list) -> dict:
             confidence_boost = min(confirmations * 0.02, 0.10)
             result["confidence"] = round(min(result["confidence"] + confidence_boost, 0.95), 2)
 
-        # ── Phase 5: Claude Vision (нативный AI-анализ графика) ─────────────────
-        if ANTHROPIC_API_KEY:
+        # ── Phase 5: Claude Vision — ULTRA-SNIPER pre-filter (v10.0) ─────────
+        # Only call Vision API if free indicators show strong signal:
+        # - Signal is BUY or SELL (not HOLD)
+        # - Confidence >= 0.65 from free indicators alone
+        # - At least 2 TA confirmations (MACD, BB, Stoch, ADX, OBV)
+        # This reduces Vision calls by ~80-90%, saving API costs.
+        _ta_confs = result.get("ta_confirmations", 0)
+        _pre_filter_pass = (
+            signal in ("BUY", "SELL")
+            and result["confidence"] >= 0.65
+            and _ta_confs >= 2
+        )
+        if ANTHROPIC_API_KEY and _pre_filter_pass:
             img_b64 = _render_candles_png_b64(candles)
             if img_b64:
-                cv = _cache_get(f"claude_vision_{symbol}", 600)  # v7.3.2: 180→600s экономия API
+                cv = _cache_get(f"claude_vision_{symbol}", 900)  # v10.0: 600→900s (15 min cache)
                 if not cv:
                     cv = await _analyze_chart_claude_vision(img_b64, symbol, result)
                     _cache_set(f"claude_vision_{symbol}", cv)
                 if cv and cv.get("success"):
                     result["vision_bonus"] = cv.get("bonus", 0.0)
                     result["vision_ocr"]   = cv.get("summary", "")
+        elif ANTHROPIC_API_KEY and not _pre_filter_pass:
+            result["vision_bonus"] = 0.0
+            result["vision_ocr"] = "skipped:pre-filter"
         return result
     except Exception as e:
         return {"pattern": "error", "signal": "HOLD", "confidence": 0.5,
@@ -4232,6 +4246,31 @@ async def _tg_stats(chat_id: int):
         f"Квантовый чип: {chip}"
         f"{mf_txt}{bb_txt}", kb)
 
+async def _tg_reset_stats(chat_id: int):
+    """v10.0: Reset all trade stats and trade_log. Starts fresh."""
+    global trade_log, _perf_stats
+    old_total = _perf_stats.get("total_trades", 0)
+    old_pnl = _perf_stats.get("total_pnl", 0.0)
+    trade_log.clear()
+    _perf_stats.update({
+        "total_trades": 0, "wins": 0, "losses": 0, "total_pnl": 0.0,
+        "by_strategy": {"B": {"trades": 0, "wins": 0, "pnl": 0.0}, "C": {"trades": 0, "wins": 0, "pnl": 0.0}, "DUAL": {"trades": 0, "wins": 0, "pnl": 0.0}},
+        "by_symbol": {},
+        "avg_q_score_win": 0.0, "avg_q_score_loss": 0.0,
+        "best_hour_utc": None, "worst_hour_utc": None,
+        "streak": 0, "max_streak": 0, "max_drawdown": 0.0,
+        "updated": datetime.utcnow().isoformat(),
+    })
+    _save_trades_to_disk()
+    _save_perf_stats()
+    await _tg_send(chat_id,
+        f"🗑 <b>Статистика сброшена</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Удалено: <code>{old_total}</code> сделок (PnL: <code>${old_pnl:+.2f}</code>)\n"
+        f"Теперь: 0 сделок, $0.00 PnL\n\n"
+        f"✅ Все новые сделки будут считаться с нуля.")
+    log_activity(f"[reset] Stats reset by user: was {old_total} trades, ${old_pnl:+.2f}")
+
 def _html_esc(s: str) -> str:
     """Экранирует спецсимволы HTML для Telegram (& < >)."""
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -5378,6 +5417,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         if not chat_id: return {"ok": True}
         if cmd in ["/start", "/menu"]:     await _tg_main_menu(chat_id)
         elif cmd == "/stats":               await _tg_stats(chat_id)
+        elif cmd == "/reset_stats":         await _tg_reset_stats(chat_id)
         elif cmd in ["/airdrops", "/air"]: await _tg_airdrops(chat_id)
         elif cmd == "/settings":            await _tg_settings(chat_id)
         elif cmd == "/diag":                await _tg_diag(chat_id)
