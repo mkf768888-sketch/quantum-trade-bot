@@ -3369,10 +3369,11 @@ async def auto_trade_cycle():
                                 close_price=price, close_reason="SELL signal", strategy="spot",
                                 duration_sec=round(time.time() - t.get("open_ts", time.time()), 1)))
                         last_signals[symbol] = {"action": "SELL", "ts": time.time()}
-                        signals_fired.append({"account": "spot", "symbol": symbol, "action": "SELL",
+                        signals_fired.append({"account": _sell_acct, "symbol": symbol, "action": "SELL",
                             "price": price, "confidence": conf, "q_score": q,
                             "pattern": vision.get("pattern","?"), "pnl": pnl_usdt})
-                        log_activity(f"[cycle] {symbol}: SELL signal → spot SOLD PnL=${pnl_usdt:+.4f}")
+                        _sell_label = "ByBit" if _sell_acct == "bybit_spot" else "KuCoin"
+                        log_activity(f"[cycle] {symbol}: SELL signal → {_sell_label} SOLD PnL=${pnl_usdt:+.4f}")
 
         # ── Фьючерсы: собираем кандидатов ────────────────────────────────────
         if symbol in ("BTC-USDT", "ETH-USDT", "SOL-USDT"):
@@ -4122,7 +4123,7 @@ async def spot_monitor_loop():
                             )
                             log_activity(f"[spot_mon] {symbol} ({_exch_label}) {reason} SOLD PnL=${pnl_usdt:+.4f}")
                         else:
-                            log_activity(f"[spot_mon] {symbol} sell FAILED: {sell_result.get('msg','?')}")
+                            log_activity(f"[spot_mon] {symbol} ({_exch_label}) sell FAILED: {sell_result.get('error', sell_result.get('msg','?'))}")
                     else:
                         # Just log status
                         if int(time.time()) % 300 < 50:  # every ~5 min
