@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v10.0.0
+QuantumTrade AI - FastAPI Backend v10.1.0
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
@@ -865,6 +865,379 @@ async def bybit_get_spot_balances() -> dict:
                 "usd_value": round(info["available"] * price, 2),
             }
     return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v10.1: EARN ENGINE — Passive Income via Flexible Savings
+# KuCoin Earn API + ByBit Earn API (Flexible Savings only — instant redeem)
+# ══════════════════════════════════════════════════════════════════════════════
+
+EARN_ENABLED = os.getenv("EARN_ENABLED", "true").lower() == "true"
+EARN_MIN_IDLE_USDT = float(os.getenv("EARN_MIN_IDLE_USDT", "5.0"))   # don't earn below $5
+EARN_RESERVE_USDT = float(os.getenv("EARN_RESERVE_USDT", "3.0"))     # always keep $3 liquid
+_earn_stats = {
+    "total_subscribed": 0.0, "total_redeemed": 0.0,
+    "total_earned_interest": 0.0, "subscriptions": 0, "redemptions": 0,
+    "last_action": 0, "errors": 0,
+    "kucoin_subscribed": 0.0, "bybit_subscribed": 0.0,
+    "best_apr": 0.0, "best_apr_exchange": "",
+}
+_earn_positions: list = []   # [{exchange, product_id, coin, amount, apr, subscribed_at}]
+_earn_rates_cache = {"ts": 0, "data": {}}  # cache APR data for 10 min
+
+
+async def kucoin_earn_get_savings_products(coin: str = "USDT") -> list:
+    """KuCoin: GET /api/v1/earn/saving/products — Flexible Savings products."""
+    endpoint = f"/api/v1/earn/saving/products?currency={coin}"
+    try:
+        headers = kucoin_headers("GET", endpoint)
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(f"https://api.kucoin.com{endpoint}",
+                            headers=headers,
+                            timeout=aiohttp.ClientTimeout(total=10))
+            data = await r.json()
+            if data.get("code") == "200000":
+                items = data.get("data", {}).get("items", data.get("data", []))
+                if isinstance(items, dict):
+                    items = [items]
+                return items if isinstance(items, list) else []
+            else:
+                log_activity(f"[earn/kc] get products error: {data.get('msg', data.get('code','?'))}")
+                return []
+    except Exception as e:
+        log_activity(f"[earn/kc] get products exception: {e}")
+        return []
+
+
+async def kucoin_earn_subscribe(product_id: str, amount: float) -> dict:
+    """KuCoin: POST /api/v1/earn/orders — Subscribe to Flexible Savings."""
+    endpoint = "/api/v1/earn/orders"
+    body = json.dumps({"productId": product_id, "amount": str(amount), "accountType": "MAIN"})
+    try:
+        headers = kucoin_headers("POST", endpoint, body)
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(f"https://api.kucoin.com{endpoint}",
+                             headers=headers, data=body,
+                             timeout=aiohttp.ClientTimeout(total=10))
+            data = await r.json()
+            if data.get("code") == "200000":
+                log_activity(f"[earn/kc] subscribed ${amount:.2f} USDT to product {product_id}")
+                return {"success": True, "order_id": data.get("data", {}).get("orderId", ""),
+                        "exchange": "kucoin"}
+            else:
+                log_activity(f"[earn/kc] subscribe error: {data.get('msg', '?')}")
+                return {"success": False, "error": data.get("msg", "unknown")}
+    except Exception as e:
+        log_activity(f"[earn/kc] subscribe exception: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def kucoin_earn_redeem(order_id: str, amount: float) -> dict:
+    """KuCoin: DELETE /api/v1/earn/orders — Redeem from Flexible Savings."""
+    endpoint = "/api/v1/earn/orders"
+    body = json.dumps({"orderId": order_id, "amount": str(amount)})
+    try:
+        headers = kucoin_headers("DELETE", endpoint, body)
+        async with aiohttp.ClientSession() as s:
+            r = await s.delete(f"https://api.kucoin.com{endpoint}",
+                               headers=headers, data=body,
+                               timeout=aiohttp.ClientTimeout(total=10))
+            data = await r.json()
+            if data.get("code") == "200000":
+                log_activity(f"[earn/kc] redeemed ${amount:.2f} from order {order_id}")
+                return {"success": True, "exchange": "kucoin"}
+            else:
+                log_activity(f"[earn/kc] redeem error: {data.get('msg', '?')}")
+                return {"success": False, "error": data.get("msg", "unknown")}
+    except Exception as e:
+        log_activity(f"[earn/kc] redeem exception: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def kucoin_earn_get_hold_assets(coin: str = "USDT") -> list:
+    """KuCoin: GET /api/v1/earn/hold-assets — Current Earn positions."""
+    endpoint = f"/api/v1/earn/hold-assets?currency={coin}&productCategory=SAVING"
+    try:
+        headers = kucoin_headers("GET", endpoint)
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(f"https://api.kucoin.com{endpoint}",
+                            headers=headers,
+                            timeout=aiohttp.ClientTimeout(total=10))
+            data = await r.json()
+            if data.get("code") == "200000":
+                return data.get("data", {}).get("items", [])
+            return []
+    except Exception as e:
+        log_activity(f"[earn/kc] hold assets error: {e}")
+        return []
+
+
+async def bybit_earn_get_products(coin: str = "USDT") -> list:
+    """ByBit: GET /v5/earn/product — Flexible Savings products."""
+    res = await bybit_request("GET", "/v5/earn/product", {
+        "category": "FlexibleSaving", "coin": coin
+    })
+    if res["success"]:
+        return res["data"].get("list", [])
+    else:
+        log_activity(f"[earn/bb] get products error: {res.get('error','?')}")
+        return []
+
+
+async def bybit_earn_subscribe(product_id: str, amount: float, coin: str = "USDT") -> dict:
+    """ByBit: POST /v5/earn/place-order — Subscribe to Flexible Savings."""
+    res = await bybit_request("POST", "/v5/earn/place-order", {
+        "category": "FlexibleSaving",
+        "productId": product_id,
+        "coin": coin,
+        "amount": str(amount),
+        "orderType": "Stake",
+        "accountType": "FUND",
+    })
+    if res["success"]:
+        order_id = res["data"].get("orderId", "")
+        log_activity(f"[earn/bb] subscribed ${amount:.2f} {coin} to product {product_id}")
+        return {"success": True, "order_id": order_id, "exchange": "bybit"}
+    else:
+        log_activity(f"[earn/bb] subscribe error: {res.get('error','?')}")
+        return {"success": False, "error": res.get("error", "unknown")}
+
+
+async def bybit_earn_redeem(product_id: str, amount: float, coin: str = "USDT") -> dict:
+    """ByBit: POST /v5/earn/place-order — Redeem from Flexible Savings."""
+    res = await bybit_request("POST", "/v5/earn/place-order", {
+        "category": "FlexibleSaving",
+        "productId": product_id,
+        "coin": coin,
+        "amount": str(amount),
+        "orderType": "Redeem",
+        "accountType": "FUND",
+    })
+    if res["success"]:
+        log_activity(f"[earn/bb] redeemed ${amount:.2f} {coin} from product {product_id}")
+        return {"success": True, "exchange": "bybit"}
+    else:
+        log_activity(f"[earn/bb] redeem error: {res.get('error','?')}")
+        return {"success": False, "error": res.get("error", "unknown")}
+
+
+async def bybit_earn_get_positions(coin: str = "USDT") -> list:
+    """ByBit: GET /v5/earn/position — Current Earn positions."""
+    res = await bybit_request("GET", "/v5/earn/position", {
+        "category": "FlexibleSaving", "coin": coin
+    })
+    if res["success"]:
+        return res["data"].get("list", [])
+    return []
+
+
+async def earn_get_best_rate(coin: str = "USDT") -> dict:
+    """Compare APR across all exchanges, return the best option.
+    Returns: {exchange, product_id, apr, min_amount, product_name}"""
+    now = time.time()
+    # Cache for 10 minutes
+    if now - _earn_rates_cache["ts"] < 600 and coin in _earn_rates_cache["data"]:
+        return _earn_rates_cache["data"][coin]
+
+    best = {"exchange": "none", "product_id": "", "apr": 0.0, "min_amount": 0.0, "product_name": ""}
+
+    # KuCoin rates
+    try:
+        kc_products = await kucoin_earn_get_savings_products(coin)
+        for p in kc_products:
+            apr = float(p.get("recentAnnualInterestRate", p.get("annualInterestRate", 0)))
+            if apr > best["apr"]:
+                best = {
+                    "exchange": "kucoin",
+                    "product_id": p.get("id", p.get("productId", "")),
+                    "apr": round(apr * 100, 2) if apr < 1 else round(apr, 2),  # normalize to %
+                    "min_amount": float(p.get("minInvestAmount", p.get("minPurchaseAmount", 0))),
+                    "product_name": p.get("productName", f"KuCoin {coin} Flex"),
+                }
+    except Exception as e:
+        log_activity(f"[earn] kucoin rate check error: {e}")
+
+    # ByBit rates
+    try:
+        bb_products = await bybit_earn_get_products(coin)
+        for p in bb_products:
+            apr_str = p.get("estimateAnnualYield", p.get("annualYield", "0"))
+            apr = float(apr_str) if apr_str else 0.0
+            apr_pct = round(apr * 100, 2) if apr < 1 else round(apr, 2)
+            if apr_pct > best["apr"]:
+                best = {
+                    "exchange": "bybit",
+                    "product_id": p.get("productId", ""),
+                    "apr": apr_pct,
+                    "min_amount": float(p.get("minStakeAmount", p.get("minPurchaseAmount", 0))),
+                    "product_name": p.get("productName", f"ByBit {coin} Flex"),
+                }
+    except Exception as e:
+        log_activity(f"[earn] bybit rate check error: {e}")
+
+    if best["apr"] > _earn_stats["best_apr"]:
+        _earn_stats["best_apr"] = best["apr"]
+        _earn_stats["best_apr_exchange"] = best["exchange"]
+
+    _earn_rates_cache["ts"] = now
+    _earn_rates_cache["data"][coin] = best
+    return best
+
+
+async def earn_auto_place_idle(exchange: str = "auto") -> dict:
+    """Auto-place idle USDT into the best Flexible Savings product.
+    Called after SELL or periodically. Respects EARN_RESERVE_USDT."""
+    if not EARN_ENABLED:
+        return {"success": False, "reason": "earn disabled"}
+
+    result = {"placed": [], "errors": []}
+
+    # Get available USDT on each exchange
+    idle = {}
+    try:
+        if exchange in ("auto", "kucoin"):
+            kc_bal = await get_balance()
+            kc_usdt = kc_bal.get("available_usdt", 0) if isinstance(kc_bal, dict) else 0
+            idle["kucoin"] = max(0, kc_usdt - EARN_RESERVE_USDT)
+        if exchange in ("auto", "bybit") and BYBIT_ENABLED:
+            bb_bal = await bybit_get_balance()
+            bb_usdt = bb_bal.get("usdt", 0) if bb_bal.get("success") else 0
+            idle["bybit"] = max(0, bb_usdt - EARN_RESERVE_USDT)
+    except Exception as e:
+        log_activity(f"[earn] balance check error: {e}")
+        return {"success": False, "reason": str(e)}
+
+    # Place idle USDT into best product per exchange
+    for exch, amount in idle.items():
+        if amount < EARN_MIN_IDLE_USDT:
+            continue  # not enough to earn
+
+        best = await earn_get_best_rate("USDT")
+
+        # Prefer the exchange where the money already sits (avoid transfer fees)
+        if exch == "kucoin":
+            kc_products = await kucoin_earn_get_savings_products("USDT")
+            if kc_products:
+                p = kc_products[0]
+                pid = p.get("id", p.get("productId", ""))
+                min_amt = float(p.get("minInvestAmount", p.get("minPurchaseAmount", 1)))
+                if amount >= min_amt and pid:
+                    sub = await kucoin_earn_subscribe(pid, round(amount, 2))
+                    if sub["success"]:
+                        _earn_stats["subscriptions"] += 1
+                        _earn_stats["total_subscribed"] += amount
+                        _earn_stats["kucoin_subscribed"] += amount
+                        _earn_stats["last_action"] = time.time()
+                        _earn_positions.append({
+                            "exchange": "kucoin", "product_id": pid,
+                            "coin": "USDT", "amount": round(amount, 2),
+                            "apr": best["apr"] if best["exchange"] == "kucoin" else 0,
+                            "subscribed_at": time.time(),
+                            "order_id": sub.get("order_id", ""),
+                        })
+                        result["placed"].append({"exchange": "kucoin", "amount": round(amount, 2)})
+                        continue
+                    else:
+                        result["errors"].append(f"kucoin: {sub.get('error','?')}")
+                        _earn_stats["errors"] += 1
+
+        elif exch == "bybit":
+            bb_products = await bybit_earn_get_products("USDT")
+            if bb_products:
+                p = bb_products[0]
+                pid = p.get("productId", "")
+                min_amt = float(p.get("minStakeAmount", p.get("minPurchaseAmount", 1)))
+                if amount >= min_amt and pid:
+                    sub = await bybit_earn_subscribe(pid, round(amount, 2))
+                    if sub["success"]:
+                        _earn_stats["subscriptions"] += 1
+                        _earn_stats["total_subscribed"] += amount
+                        _earn_stats["bybit_subscribed"] += amount
+                        _earn_stats["last_action"] = time.time()
+                        _earn_positions.append({
+                            "exchange": "bybit", "product_id": pid,
+                            "coin": "USDT", "amount": round(amount, 2),
+                            "apr": best["apr"] if best["exchange"] == "bybit" else 0,
+                            "subscribed_at": time.time(),
+                            "order_id": sub.get("order_id", ""),
+                        })
+                        result["placed"].append({"exchange": "bybit", "amount": round(amount, 2)})
+                        continue
+                    else:
+                        result["errors"].append(f"bybit: {sub.get('error','?')}")
+                        _earn_stats["errors"] += 1
+
+    result["success"] = len(result["placed"]) > 0
+    return result
+
+
+async def earn_redeem_for_trading(exchange: str, amount: float) -> dict:
+    """Redeem USDT from Earn before a BUY trade. Returns dict with success status."""
+    if not EARN_ENABLED or not _earn_positions:
+        return {"success": True, "redeemed": 0, "reason": "no earn positions"}
+
+    redeemed_total = 0.0
+    for pos in list(_earn_positions):
+        if pos["exchange"] != exchange or pos["coin"] != "USDT":
+            continue
+        if redeemed_total >= amount:
+            break
+        redeem_amount = min(pos["amount"], amount - redeemed_total)
+
+        if exchange == "kucoin":
+            res = await kucoin_earn_redeem(pos.get("order_id", ""), redeem_amount)
+        elif exchange == "bybit":
+            res = await bybit_earn_redeem(pos["product_id"], redeem_amount)
+        else:
+            continue
+
+        if res.get("success"):
+            redeemed_total += redeem_amount
+            pos["amount"] -= redeem_amount
+            _earn_stats["redemptions"] += 1
+            _earn_stats["total_redeemed"] += redeem_amount
+            _earn_stats["last_action"] = time.time()
+            if pos["amount"] <= 0.01:
+                _earn_positions.remove(pos)
+        else:
+            log_activity(f"[earn] redeem failed on {exchange}: {res.get('error','?')}")
+
+    return {"success": True, "redeemed": round(redeemed_total, 2)}
+
+
+async def earn_monitor_loop():
+    """Background loop: periodically check idle USDT and place into Earn.
+    Runs every 15 minutes. Also syncs positions with exchange data."""
+    await asyncio.sleep(120)  # wait 2 min after startup
+    while True:
+        try:
+            if EARN_ENABLED:
+                # Auto-place idle USDT
+                result = await earn_auto_place_idle("auto")
+                if result.get("placed"):
+                    placed_str = ", ".join(f"{p['exchange']}=${p['amount']:.2f}" for p in result["placed"])
+                    log_activity(f"[earn_mon] auto-placed: {placed_str}")
+
+                # Sync positions with actual exchange data
+                try:
+                    kc_holds = await kucoin_earn_get_hold_assets("USDT")
+                    bb_holds = await bybit_earn_get_positions("USDT")
+                    total_kc = sum(float(h.get("holdAmount", h.get("amount", 0))) for h in kc_holds)
+                    total_bb = sum(float(h.get("amount", h.get("holdAmount", 0))) for h in bb_holds)
+                    _earn_stats["kucoin_subscribed"] = round(total_kc, 2)
+                    _earn_stats["bybit_subscribed"] = round(total_bb, 2)
+                except Exception:
+                    pass
+
+                # Check best rates (refresh cache)
+                best = await earn_get_best_rate("USDT")
+                if best["apr"] > 0:
+                    log_activity(f"[earn_mon] best rate: {best['exchange']} {best['apr']}% APR")
+
+        except Exception as e:
+            log_activity(f"[earn_mon] error: {e}")
+
+        await asyncio.sleep(900)  # every 15 min
 
 
 # ── v9.0: Cross-Exchange Arbitrage Monitor ─────────────────────────────────────
@@ -3328,6 +3701,16 @@ async def auto_trade_cycle():
                 log_activity(f"[cycle] {symbol}: PLACING spot BUY ${_buy_usdt:.2f} on {_buy_exchange}"
                              f"{' MF=' + str(mf_result['score']) if mf_result else ''}")
 
+                # v10.1: Auto-Earn — redeem USDT from Savings before BUY if needed
+                if EARN_ENABLED and _earn_positions:
+                    try:
+                        _redeem = await earn_redeem_for_trading(_buy_exchange, _buy_usdt)
+                        if _redeem.get("redeemed", 0) > 0:
+                            log_activity(f"[earn] redeemed ${_redeem['redeemed']:.2f} from {_buy_exchange} Earn for BUY")
+                            await asyncio.sleep(1)  # brief wait for funds to settle
+                    except Exception as _e:
+                        log_activity(f"[earn] pre-BUY redeem error: {_e}")
+
                 if _buy_exchange == "bybit" and BYBIT_ENABLED:
                     bb_res = await bybit_place_spot_order(symbol, "Buy", _buy_usdt)
                     ok = bb_res.get("success", False)
@@ -4136,6 +4519,10 @@ async def spot_monitor_loop():
                                 f"Длительность: {duration_min}м"
                             )
                             log_activity(f"[spot_mon] {symbol} ({_exch_label}) {reason} SOLD PnL=${pnl_usdt:+.4f}")
+                            # v10.1: Auto-Earn — place freed USDT into Flexible Savings
+                            if EARN_ENABLED:
+                                _earn_exch = "bybit" if _trade_acct == "bybit_spot" else "kucoin"
+                                asyncio.ensure_future(earn_auto_place_idle(_earn_exch))
                         else:
                             log_activity(f"[spot_mon] {symbol} ({_exch_label}) sell FAILED: {sell_result.get('error', sell_result.get('msg','?'))}")
                     else:
@@ -4205,7 +4592,7 @@ async def _tg_main_menu(chat_id: int):
         [{"text": f"⚡ Арбитраж {arb}", "callback_data": "menu_arb"}],
     ]}
     await _tg_send(chat_id,
-        "⚛ <b>QuantumTrade AI v10.0.0</b>\n"
+        "⚛ <b>QuantumTrade AI v10.1.0</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "Выбери раздел:", kb)
 
@@ -4859,6 +5246,76 @@ async def _tg_bybit(chat_id: int):
     await _tg_send(chat_id, text)
 
 
+async def _tg_earn(chat_id: int):
+    """v10.1: Earn Engine — show status, APR, positions."""
+    if not EARN_ENABLED:
+        await _tg_send(chat_id, "❌ <b>Earn Engine выключен</b>\nВключи через Railway: EARN_ENABLED=true")
+        return
+
+    await _tg_send(chat_id, "🏦 <i>Проверяю Earn позиции...</i>")
+
+    # Get best rate
+    best = await earn_get_best_rate("USDT")
+
+    # Get current positions from exchanges
+    kc_holds = []
+    bb_holds = []
+    try:
+        kc_holds = await kucoin_earn_get_hold_assets("USDT")
+    except Exception:
+        pass
+    try:
+        bb_holds = await bybit_earn_get_positions("USDT")
+    except Exception:
+        pass
+
+    total_kc = sum(float(h.get("holdAmount", h.get("amount", 0))) for h in kc_holds)
+    total_bb = sum(float(h.get("amount", h.get("holdAmount", 0))) for h in bb_holds)
+    total_earn = total_kc + total_bb
+
+    # Calculate daily/monthly estimated earnings
+    apr = best["apr"] if best["apr"] > 0 else 3.0  # default 3% if unknown
+    daily_est = round(total_earn * (apr / 100) / 365, 4)
+    monthly_est = round(daily_est * 30, 4)
+
+    pos_lines = []
+    for h in kc_holds:
+        amt = float(h.get("holdAmount", h.get("amount", 0)))
+        if amt > 0:
+            pos_lines.append(f"  🟢 KuCoin: <code>${amt:.2f}</code> USDT")
+    for h in bb_holds:
+        amt = float(h.get("amount", h.get("holdAmount", 0)))
+        if amt > 0:
+            pos_lines.append(f"  🟣 ByBit: <code>${amt:.2f}</code> USDT")
+
+    text = (
+        f"🏦 <b>Earn Engine v10.1</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<b>Лучшая ставка:</b> {best['exchange']} — <code>{best['apr']}%</code> APR\n"
+        f"<b>Продукт:</b> {best.get('product_name', '?')}\n\n"
+        f"<b>Текущие позиции:</b>\n"
+    )
+    if pos_lines:
+        text += "\n".join(pos_lines)
+    else:
+        text += "  <i>Нет активных Earn позиций</i>"
+
+    text += (
+        f"\n\n<b>Всего в Earn:</b> <code>${total_earn:.2f}</code>\n"
+        f"<b>Доход/день:</b> ~<code>${daily_est:.4f}</code>\n"
+        f"<b>Доход/месяц:</b> ~<code>${monthly_est:.4f}</code>\n\n"
+        f"<b>Статистика:</b>\n"
+        f"  Подписок: <code>{_earn_stats['subscriptions']}</code> | "
+        f"Погашений: <code>{_earn_stats['redemptions']}</code>\n"
+        f"  Всего размещено: <code>${_earn_stats['total_subscribed']:.2f}</code>\n"
+        f"  Всего погашено: <code>${_earn_stats['total_redeemed']:.2f}</code>\n"
+        f"  Ошибок: <code>{_earn_stats['errors']}</code>\n\n"
+        f"💡 <i>Auto-Earn: USDT после продажи → Flexible Savings\n"
+        f"Auto-Redeem: перед покупкой → погашение из Savings</i>"
+    )
+    await _tg_send(chat_id, text)
+
+
 async def _tg_xarb(chat_id: int):
     """v9.0: Cross-exchange arbitrage status."""
     if not BYBIT_ENABLED:
@@ -5431,6 +5888,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd.startswith("/sentiment"):  await _tg_sentiment(chat_id, raw)
         elif cmd == "/bybit":               await _tg_bybit(chat_id)
         elif cmd == "/xarb":                await _tg_xarb(chat_id)
+        elif cmd == "/earn":                await _tg_earn(chat_id)
         elif cmd == "/autopilot":
             AUTOPILOT = not AUTOPILOT
             state_emoji = "✅ ВКЛ" if AUTOPILOT else "❌ ВЫКЛ"
@@ -5657,6 +6115,7 @@ async def startup():
     asyncio.create_task(trading_loop())
     asyncio.create_task(position_monitor_loop())
     asyncio.create_task(spot_monitor_loop())      # v8.3: spot position TP/SL monitor
+    asyncio.create_task(earn_monitor_loop())      # v10.1: Earn Engine — auto-place idle USDT
     asyncio.create_task(_ws_price_feed())          # v8.3.3: WebSocket real-time prices
     asyncio.create_task(_arb_fast_scanner())       # v8.3.3: fast arb scanner (every 5s)
     asyncio.create_task(airdrop_digest_loop())
@@ -5936,6 +6395,26 @@ async def arb_stats_api():
     }
 
 
+@app.get("/api/earn/status")
+async def earn_status_api():
+    """v10.1: Earn Engine status — positions, APR, stats."""
+    best = {"exchange": "unknown", "apr": 0}
+    try:
+        best = await earn_get_best_rate("USDT")
+    except Exception:
+        pass
+    return {
+        "enabled": EARN_ENABLED,
+        "stats": _earn_stats,
+        "positions": _earn_positions,
+        "best_rate": best,
+        "config": {
+            "min_idle_usdt": EARN_MIN_IDLE_USDT,
+            "reserve_usdt": EARN_RESERVE_USDT,
+        },
+    }
+
+
 @app.get("/api/airdrops")
 async def airdrops_list():
     """Phase 4: список активных airdrop возможностей."""
@@ -6043,8 +6522,10 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.0.0",
+        "version": "10.1.0",
         "auto_trading": AUTOPILOT,
+        "earn_engine": EARN_ENABLED,
+        "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
         "quantum_chip": "Wukong_180" if _qcloud_ready else "CPU_simulator",
         "timestamp": datetime.utcnow().isoformat(),
     }
