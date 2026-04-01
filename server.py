@@ -887,26 +887,39 @@ _earn_rates_cache = {"ts": 0, "data": {}}  # cache APR data for 10 min
 
 
 async def kucoin_earn_get_savings_products(coin: str = "USDT") -> list:
-    """KuCoin: GET /api/v1/earn/saving/products — Flexible Savings products."""
-    endpoint = f"/api/v1/earn/saving/products?currency={coin}"
-    try:
-        headers = kucoin_headers("GET", endpoint)
-        async with aiohttp.ClientSession() as s:
-            r = await s.get(f"https://api.kucoin.com{endpoint}",
-                            headers=headers,
-                            timeout=aiohttp.ClientTimeout(total=10))
-            data = await r.json()
-            if data.get("code") == "200000":
-                items = data.get("data", {}).get("items", data.get("data", []))
-                if isinstance(items, dict):
-                    items = [items]
-                return items if isinstance(items, list) else []
-            else:
-                log_activity(f"[earn/kc] get products error: {data.get('msg', data.get('code','?'))}")
-                return []
-    except Exception as e:
-        log_activity(f"[earn/kc] get products exception: {e}")
-        return []
+    """KuCoin: GET /api/v1/earn/saving/products — Flexible Savings products.
+    Tries multiple endpoint variants (KuCoin has changed paths between API versions)."""
+    # KuCoin API has multiple possible paths for earn products
+    _endpoints = [
+        f"/api/v1/earn/saving/products?currency={coin}",
+        f"/api/v1/earn/savings/products?currency={coin}",
+        f"/api/v3/earn/saving/products?currency={coin}",
+    ]
+    for endpoint in _endpoints:
+        try:
+            headers = kucoin_headers("GET", endpoint)
+            async with aiohttp.ClientSession() as s:
+                r = await s.get(f"https://api.kucoin.com{endpoint}",
+                                headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=10))
+                data = await r.json()
+                if data.get("code") == "200000":
+                    raw = data.get("data", {})
+                    if isinstance(raw, list):
+                        items = raw
+                    elif isinstance(raw, dict):
+                        items = raw.get("items", raw.get("rows", [raw] if raw.get("id") or raw.get("productId") else []))
+                    else:
+                        items = []
+                    if items:
+                        log_activity(f"[earn/kc] found {len(items)} products via {endpoint.split('?')[0]}")
+                        return items
+                else:
+                    log_activity(f"[earn/kc] {endpoint.split('?')[0]}: {data.get('code','?')} {data.get('msg', '?')}")
+        except Exception as e:
+            log_activity(f"[earn/kc] {endpoint.split('?')[0]} exception: {e}")
+    log_activity(f"[earn/kc] all earn product endpoints failed for {coin}")
+    return []
 
 
 async def kucoin_earn_subscribe(product_id: str, amount: float) -> dict:
@@ -973,15 +986,22 @@ async def kucoin_earn_get_hold_assets(coin: str = "USDT") -> list:
 
 
 async def bybit_earn_get_products(coin: str = "USDT") -> list:
-    """ByBit: GET /v5/earn/product — Flexible Savings products."""
-    res = await bybit_request("GET", "/v5/earn/product", {
-        "category": "FlexibleSaving", "coin": coin
-    })
-    if res["success"]:
-        return res["data"].get("list", [])
-    else:
-        log_activity(f"[earn/bb] get products error: {res.get('error','?')}")
-        return []
+    """ByBit: GET /v5/earn/product — Flexible Savings products.
+    Tries multiple category names (ByBit API has variants)."""
+    _categories = ["FlexibleSaving", "Flexible", "flexibleSaving"]
+    for cat in _categories:
+        res = await bybit_request("GET", "/v5/earn/product", {
+            "category": cat, "coin": coin
+        })
+        if res["success"]:
+            items = res["data"].get("list", [])
+            if items:
+                log_activity(f"[earn/bb] found {len(items)} products (category={cat})")
+                return items
+        else:
+            log_activity(f"[earn/bb] category={cat}: {res.get('error','?')}")
+    log_activity(f"[earn/bb] all earn product categories failed for {coin}")
+    return []
 
 
 async def bybit_earn_subscribe(product_id: str, amount: float, coin: str = "USDT") -> dict:
@@ -1023,11 +1043,14 @@ async def bybit_earn_redeem(product_id: str, amount: float, coin: str = "USDT") 
 
 async def bybit_earn_get_positions(coin: str = "USDT") -> list:
     """ByBit: GET /v5/earn/position — Current Earn positions."""
-    res = await bybit_request("GET", "/v5/earn/position", {
-        "category": "FlexibleSaving", "coin": coin
-    })
-    if res["success"]:
-        return res["data"].get("list", [])
+    for cat in ["FlexibleSaving", "Flexible", "flexibleSaving"]:
+        res = await bybit_request("GET", "/v5/earn/position", {
+            "category": cat, "coin": coin
+        })
+        if res["success"]:
+            items = res["data"].get("list", [])
+            if items:
+                return items
     return []
 
 
