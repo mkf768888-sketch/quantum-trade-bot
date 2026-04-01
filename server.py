@@ -1915,19 +1915,24 @@ async def analyze_chart_with_vision(symbol: str, candles: list) -> dict:
             and result["confidence"] >= 0.65
             and _ta_confs >= 2
         )
-        if ANTHROPIC_API_KEY and _pre_filter_pass:
+        # v10.1: COST PROTECTION — Claude Vision DISABLED for small accounts
+        # Vision API costs ~$0.003-0.01 per call, hundreds of calls per day = $5-20/day
+        # TA indicators alone provide sufficient signal quality for small portfolios
+        # Re-enable when portfolio > $200 or DeepSeek billing works
+        _vision_enabled = os.getenv("VISION_ENABLED", "false").lower() == "true"
+        if _vision_enabled and ANTHROPIC_API_KEY and _pre_filter_pass:
             img_b64 = _render_candles_png_b64(candles)
             if img_b64:
-                cv = _cache_get(f"claude_vision_{symbol}", 900)  # v10.0: 600→900s (15 min cache)
+                cv = _cache_get(f"claude_vision_{symbol}", 900)
                 if not cv:
                     cv = await _analyze_chart_claude_vision(img_b64, symbol, result)
                     _cache_set(f"claude_vision_{symbol}", cv)
                 if cv and cv.get("success"):
                     result["vision_bonus"] = cv.get("bonus", 0.0)
                     result["vision_ocr"]   = cv.get("summary", "")
-        elif ANTHROPIC_API_KEY and not _pre_filter_pass:
+        else:
             result["vision_bonus"] = 0.0
-            result["vision_ocr"] = "skipped:pre-filter"
+            result["vision_ocr"] = "disabled:cost-protection"
         return result
     except Exception as e:
         return {"pattern": "error", "signal": "HOLD", "confidence": 0.5,
@@ -2043,13 +2048,16 @@ _ai_call_stats: dict = {"deepseek": 0, "haiku": 0, "sonnet": 0, "opus": 0, "erro
 _deepseek_disabled_until: float = 0.0  # v8.3.5: skip DeepSeek for 1h after 402/401
 
 async def ai_call_deepseek(messages: list, max_tokens: int = 500, system: str = "") -> dict:
-    """Call DeepSeek V3 API (OpenAI-compatible). Falls back to Claude Haiku if no key or billing issue."""
+    """Call DeepSeek V3 API (OpenAI-compatible).
+    v10.1: NO FALLBACK to Claude — if DeepSeek fails, return empty result.
+    This prevents $20/day Claude charges when DeepSeek has billing issues."""
     global _deepseek_disabled_until
+    _no_ai = {"success": False, "text": "", "model": "none", "error": "no AI available (cost protection)"}
     if not DEEPSEEK_API_KEY:
-        return await ai_call_claude(messages, max_tokens, system, model="haiku")
-    # v8.3.5: Skip DeepSeek if recently got 402 (no balance) — don't waste time on dead API
+        return _no_ai
+    # v8.3.5: Skip DeepSeek if recently got 402 (no balance)
     if time.time() < _deepseek_disabled_until:
-        return await ai_call_claude(messages, max_tokens, system, model="haiku")
+        return _no_ai
     try:
         payload = {
             "model": "deepseek-chat",
@@ -2071,8 +2079,8 @@ async def ai_call_deepseek(messages: list, max_tokens: int = 500, system: str = 
             # v8.3.5: If billing error (402/401), disable DeepSeek for 1 hour to save latency
             if r.status in (401, 402, 429):
                 _deepseek_disabled_until = time.time() + 3600
-                log_activity(f"[deepseek] disabled for 1h (HTTP {r.status}), using Haiku")
-            return await ai_call_claude(messages, max_tokens, system, model="haiku")
+                log_activity(f"[deepseek] disabled for 1h (HTTP {r.status}), NO fallback (cost protection)")
+            return _no_ai
         text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         _ai_call_stats["deepseek"] += 1
         # v8.3.5: DeepSeek worked! Reset disable timer
@@ -2081,7 +2089,7 @@ async def ai_call_deepseek(messages: list, max_tokens: int = 500, system: str = 
     except Exception as e:
         log_activity(f"[deepseek] error: {e}")
         _ai_call_stats["errors"] += 1
-        return await ai_call_claude(messages, max_tokens, system, model="haiku")
+        return _no_ai
 
 
 async def ai_call_claude(messages: list, max_tokens: int = 500, system: str = "", model: str = "haiku") -> dict:
@@ -2268,18 +2276,48 @@ async def mirofish_simulate(symbol: str, price: float, q_score: float,
 
     user_msg = f"Рыночные данные:\n{market_ctx}\n\nКаждая персона голосует BUY/SELL/HOLD с кратким обоснованием (1 предложение). Только JSON массив, ничего больше."
 
+    # v10.1: Cost protection — MiroFish uses DeepSeek only, NO Claude fallback
+    # If DeepSeek unavailable, use rule-based voting (zero API cost)
     try:
-        result = await ai_call_claude(
-            [{"role": "user", "content": user_msg}],
-            max_tokens=600, system=system, model="haiku"
-        )
-        raw = result.get("text", "").strip()
+        if not DEEPSEEK_API_KEY or time.time() < _deepseek_disabled_until:
+            # Rule-based fallback: vote based on TA indicators only
+            _fb_votes = []
+            _rsi = rsi or 50
+            for p in MIROFISH_PERSONAS[:8]:
+                if _rsi < 30:
+                    _v = "BUY"
+                elif _rsi > 70:
+                    _v = "SELL"
+                else:
+                    _v = "HOLD"
+                _fb_votes.append({"id": p["id"], "vote": _v, "reason": f"RSI={_rsi:.0f} rule-based"})
+            agents = _fb_votes
+            raw = json.dumps(agents)
+            result = {"success": True, "text": raw, "model": "rule-based"}
+        else:
+            result = await ai_call_deepseek(
+                [{"role": "user", "content": user_msg}],
+                max_tokens=600, system=system
+            )
+            if not result.get("success") or not result.get("text", "").strip():
+                # DeepSeek failed — use rule-based
+                _fb_votes = []
+                _rsi = rsi or 50
+                for p in MIROFISH_PERSONAS[:8]:
+                    _v = "BUY" if _rsi < 30 else ("SELL" if _rsi > 70 else "HOLD")
+                    _fb_votes.append({"id": p["id"], "vote": _v, "reason": f"RSI={_rsi:.0f} rule-based"})
+                agents = _fb_votes
+                raw = json.dumps(agents)
+                result = {"success": True, "text": raw, "model": "rule-based"}
+            else:
+                raw = result.get("text", "").strip()
 
         # Parse JSON response
         # Clean potential markdown wrapping
         if raw.startswith("```"): raw = raw.split("```")[1].strip()
         if raw.startswith("json"): raw = raw[4:].strip()
-        agents = json.loads(raw)
+        if isinstance(raw, str):
+            agents = json.loads(raw)
 
         # Calculate collective score
         buy_count = sum(1 for a in agents if a.get("vote", "").upper() == "BUY")
@@ -2522,6 +2560,10 @@ async def opus_gate_check(symbol: str, side: str, amount_usdt: float, q_score: f
     Returns {"approved": bool, "reason": str, "model": str}
     Only triggers for trades above OPUS_GATE_MIN_USDT.
     Falls back to auto-approve if AI unavailable."""
+    # v10.1: Cost protection — auto-approve ALL trades under $50 (small account mode)
+    # Opus costs ~$0.015/call — too expensive for $45 portfolio
+    if amount_usdt < 50:
+        return {"approved": True, "reason": "auto-approve (small account cost protection)", "model": "auto"}
     if amount_usdt < OPUS_GATE_MIN_USDT:
         return {"approved": True, "reason": "below gate threshold", "model": "auto"}
     if not ANTHROPIC_API_KEY:
