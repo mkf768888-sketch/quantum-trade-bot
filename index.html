@@ -903,7 +903,7 @@ async function sendChat(){
   addMsg(txt,'user');inp.value='';
   const tid='think'+Date.now();addMsg('⚛ Анализирую...','ai',tid);
   try{let resp;
-    if(BASE_URL){const d=await apiPost('/api/ai/chat',{message:txt});resp=d.reply||d.response||d.message||(d.error?'⚠️ '+d.error:'Нет ответа');if(d.model){const b=document.getElementById('aiModelBadge');if(b)b.textContent=d.model;}}
+    if(BASE_URL){const d=await apiPost('/api/ai/chat',{messages:[{role:'user',content:txt}]});resp=d.reply||d.response||(d.error?'⚠️ '+d.error:'Нет ответа');if(d.model){const b=document.getElementById('aiModelBadge');if(b)b.textContent=d.model;}}
     else{resp='Подключи бот в Настройках';}
     document.getElementById(tid)?.remove();addMsg(resp,'ai');
   }catch(e){document.getElementById(tid)?.remove();addMsg('⚠️ Ошибка AI: '+(e.message||'Проверь подключение'),'ai');}

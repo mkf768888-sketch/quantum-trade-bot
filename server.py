@@ -7201,8 +7201,9 @@ async def api_polymarket():
 
 # ── AI Chat Proxy ──────────────────────────────────────────────────────────────
 class ChatRequest(BaseModel):
-    messages: list
-    context:  str = ""
+    messages: list = []    # v10.2: default empty, fallback from 'message' field
+    message:  str  = ""    # v10.2: compat with old frontend sending {message: "text"}
+    context:  str  = ""
 
 @app.post("/api/ai/chat")
 async def api_ai_chat(req: ChatRequest, request: Request):
@@ -7230,9 +7231,13 @@ async def api_ai_chat(req: ChatRequest, request: Request):
         system_lines.append("")
         system_lines.append(req.context)
     system_prompt = "\n".join(system_lines)
+    # v10.2: compat — if frontend sent {message: "text"} instead of {messages: [...]}
+    msgs = req.messages if req.messages else ([{"role": "user", "content": req.message}] if req.message else [])
+    if not msgs:
+        return {"error": "No message provided", "success": False}
     try:
         # v8.3: route through 3-tier AI dispatcher
-        ai_result = await ai_dispatch("chat", req.messages[-10:], max_tokens=1000, system=system_prompt)
+        ai_result = await ai_dispatch("chat", msgs[-10:], max_tokens=1000, system=system_prompt)
         if ai_result.get("success"):
             return {"reply": ai_result["text"], "success": True, "model": ai_result.get("model", "?")}
         return {"error": ai_result.get("error", "AI call failed"), "success": False}
