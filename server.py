@@ -40,6 +40,7 @@ try:
         import pandas_ta_classic as ta  # v10.2.1: pandas-ta-classic (Python 3.11+ compatible)
     except ImportError:
         import pandas_ta as ta  # fallback to original pandas-ta if installed
+    ta.VERBOSE = False  # v10.2.1: suppress "[X] Series has N rows..." spam in logs
     _TA_AVAILABLE = True
     print("[ta] pandas-ta loaded ✅")
 except ImportError:
@@ -1561,7 +1562,7 @@ async def get_ticker(symbol: str) -> float:
 
 async def get_kucoin_chart(symbol: str, interval: str = "1hour") -> list:
     try:
-        end = int(time.time()); start = end - 86400
+        end = int(time.time()); start = end - 86400 * 3  # v10.2.1: 72h (was 24h) — need >=26 candles for MACD
         async with aiohttp.ClientSession() as s:
             r = await s.get(f"{KUCOIN_BASE_URL}/api/v1/market/candles?type={interval}&symbol={symbol}&startAt={start}&endAt={end}", timeout=aiohttp.ClientTimeout(total=10))
             data = await r.json()
@@ -1794,7 +1795,7 @@ def calc_advanced_ta(candles: list) -> dict:
     result = {"macd_signal": "neutral", "bb_position": "mid", "stoch_signal": "neutral",
               "adx_strength": 0, "adx_trend": "none", "obv_trend": "neutral",
               "macd_hist": 0, "bb_pct": 0.5, "stoch_k": 50, "stoch_d": 50, "available": False}
-    if not _TA_AVAILABLE or not candles or len(candles) < 20:
+    if not _TA_AVAILABLE or not candles or len(candles) < 26:  # v10.2.1: need >=26 for MACD(26)
         return result
     try:
         chron = list(reversed(candles))
