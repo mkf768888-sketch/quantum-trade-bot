@@ -36,7 +36,10 @@ import db  # v8.2: PostgreSQL persistent storage
 # v10.0: Advanced TA — pandas-ta for MACD, Bollinger, Stochastic, ADX, etc.
 try:
     import pandas as pd
-    import pandas_ta as ta
+    try:
+        import pandas_ta_classic as ta  # v10.2.1: pandas-ta-classic (Python 3.11+ compatible)
+    except ImportError:
+        import pandas_ta as ta  # fallback to original pandas-ta if installed
     _TA_AVAILABLE = True
     print("[ta] pandas-ta loaded ✅")
 except ImportError:

@@ -6,4 +6,4 @@ pydantic
 Pillow
 asyncpg
 pandas
-pandas-ta
+pandas-ta-classic
