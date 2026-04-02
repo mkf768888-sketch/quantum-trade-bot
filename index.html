@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-<title>QuantumTrade AI v8.3.3</title>
+<title>QuantumTrade AI v10.2</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -324,6 +324,18 @@
         <div class="card">
           <div class="card-header"><div class="card-title">📈 Фьючерс позиции</div><div class="badge" id="balPosBadge" style="background:rgba(52,211,153,0.12);color:var(--accent2)">0</div></div>
           <div id="balPosList"><div class="empty-state">Нет открытых позиций</div></div>
+        </div>
+        <div class="card" style="background:linear-gradient(135deg,rgba(139,92,246,0.08),rgba(52,211,153,0.04));border-color:rgba(139,92,246,0.2)">
+          <div class="card-header"><div class="card-title">💰 Earn (Пассивный доход)</div><div class="badge" id="earnBadge" style="background:rgba(139,92,246,0.12);color:var(--purple)">—</div></div>
+          <div class="mg mg-2">
+            <div class="m"><div class="m-label">В Earn</div><div class="m-val vg" id="earnTotal">$0.00</div></div>
+            <div class="m"><div class="m-label">APR</div><div class="m-val" id="earnAPR">—</div></div>
+          </div>
+          <div class="mg mg-2" style="margin-top:8px">
+            <div class="m"><div class="m-label">Доход/день</div><div class="m-val vg" id="earnDaily">—</div></div>
+            <div class="m"><div class="m-label">Доход/мес</div><div class="m-val vg" id="earnMonthly">—</div></div>
+          </div>
+          <div id="earnPositions" style="margin-top:8px;font-size:11px;color:var(--text3)"></div>
         </div>
       </div>
 
@@ -677,6 +689,30 @@ async function apiPost(path,body={}){
 function escHtml(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
 
 // ── Load Data ──
+async function loadEarnData(){
+  if(!BASE_URL)return;
+  try{
+    const d=await fetch(BASE_URL+'/api/earn/status',{signal:AbortSignal.timeout(8000)}).then(r=>r.ok?r.json():null);
+    if(!d)return;
+    const s=d.stats||{};const kc=s.kucoin_subscribed||0;const bb=s.bybit_subscribed||0;const total=kc+bb;
+    const el=id=>document.getElementById(id);
+    const badge=el('earnBadge');if(badge)badge.textContent=d.enabled?'ВКЛ':'ВЫКЛ';
+    const et=el('earnTotal');if(et)et.textContent='$'+total.toFixed(2);
+    const apr=d.best_rate?.apr||0;
+    const ea=el('earnAPR');if(ea)ea.textContent=apr>0?apr.toFixed(1)+'%':'—';
+    const daily=total*(apr/100)/365;const monthly=daily*30;
+    const ed=el('earnDaily');if(ed)ed.textContent='$'+daily.toFixed(4);
+    const em=el('earnMonthly');if(em)em.textContent='$'+monthly.toFixed(4);
+    const posEl=el('earnPositions');
+    if(posEl){
+      let html='';
+      if(kc>0)html+='<div>🟢 KuCoin: $'+kc.toFixed(2)+'</div>';
+      if(bb>0)html+='<div>🟣 ByBit: $'+bb.toFixed(2)+'</div>';
+      if(!html)html='<div style="color:var(--text3)">Нет активных Earn позиций</div>';
+      posEl.innerHTML=html;
+    }
+  }catch(e){console.log('[earn] load error:',e.message);}
+}
 async function loadData(){
   if(!BASE_URL){document.getElementById('setupScreen').style.display='flex';return;}
   try{
@@ -696,6 +732,8 @@ async function loadData(){
     const sp=document.getElementById('dashBalSpot');if(sp)sp.textContent=fmt(b.spot_usdt);
     const fu=document.getElementById('dashBalFut');if(fu)fu.textContent=fmt(b.futures_equity);
     const to=document.getElementById('dashBalTotal');if(to)to.textContent=fmt(b.total_usdt);
+    // v10.2: Load Earn data
+    loadEarnData().catch(()=>{});
   }catch(e){
     console.error('[QT] loadData error:',e.message||e);
     setStatus('offline');

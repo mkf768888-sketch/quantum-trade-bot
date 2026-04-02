@@ -88,6 +88,7 @@ AI_TIER_VISION    = os.getenv("AI_TIER_VISION", "haiku")     # haiku (default) |
 AI_TIER_CHAT      = os.getenv("AI_TIER_CHAT", "deepseek")    # deepseek (default) | haiku | sonnet
 AI_TIER_CRITICAL  = os.getenv("AI_TIER_CRITICAL", "opus")    # opus (default) | sonnet
 ORIGIN_QC_TOKEN   = os.getenv("ORIGIN_QC_TOKEN", "")     # Phase 6: Origin QC Wukong 180
+LUNARCRUSH_API_KEY = os.getenv("LUNARCRUSH_API_KEY", "") # v10.2: LunarCrush v4 Bearer token
 AWS_ACCESS_KEY_ID  = os.getenv("AWS_ACCESS_KEY_ID",  "")   # v7.3.1: Amazon Braket
 AWS_SECRET_KEY     = os.getenv("AWS_SECRET_ACCESS_KEY", "") # v7.3.1: Amazon Braket
 AWS_REGION         = os.getenv("AWS_REGION", "us-east-1")  # v7.3.1: Braket region
@@ -180,6 +181,20 @@ def _load_trades_from_disk():
             with open(_TRADES_STATS_FILE, "r") as f:
                 loaded = json.load(f)
                 _perf_stats.update(loaded)
+            # v10.2: PnL sanity check — recalculate from trade_log if stats seem corrupted
+            closed = [t for t in trade_log if t.get("status") == "closed" and t.get("pnl") is not None]
+            if closed:
+                recalc_pnl = round(sum(t.get("pnl", 0) for t in closed), 4)
+                recalc_wins = sum(1 for t in closed if (t.get("pnl") or 0) > 0)
+                stats_pnl = _perf_stats.get("total_pnl", 0)
+                # If stored PnL diverges >50% from recalculated, fix it
+                if abs(stats_pnl) > 0 and abs(stats_pnl - recalc_pnl) / max(abs(stats_pnl), 1) > 0.5:
+                    print(f"[perf] ⚠️ PnL MISMATCH: stored=${stats_pnl:.2f} vs recalc=${recalc_pnl:.2f} — correcting", flush=True)
+                    _perf_stats["total_pnl"] = recalc_pnl
+                    _perf_stats["wins"] = recalc_wins
+                    _perf_stats["losses"] = len(closed) - recalc_wins
+                    _perf_stats["total_trades"] = len(closed)
+                    _save_perf_stats()
             print(f"[perf] статистика загружена: {_perf_stats['total_trades']} сделок, PnL: {_perf_stats['total_pnl']}")
     except Exception as e:
         print(f"[trades] ошибка загрузки: {e}")
@@ -3039,41 +3054,88 @@ _lunarcrush_cache: dict = {}
 _lunarcrush_ts: float = 0.0
 
 async def fetch_lunarcrush_sentiment(symbols: list = None) -> dict:
-    """Fetch Galaxy Score + AltRank for top coins from LunarCrush public API."""
+    """v10.2: Fetch Galaxy Score + AltRank from LunarCrush v4 API.
+    Requires LUNARCRUSH_API_KEY (Bearer token). Falls back to coins/list endpoint."""
     global _lunarcrush_cache, _lunarcrush_ts
     if time.time() - _lunarcrush_ts < 600 and _lunarcrush_cache:  # 10 min cache
         return _lunarcrush_cache
     if symbols is None:
         symbols = ["BTC", "ETH", "SOL", "XRP", "AVAX", "BNB", "MATIC", "DOT"]
+
+    if not LUNARCRUSH_API_KEY:
+        log_activity("[lunarcrush] LUNARCRUSH_API_KEY not set — skipping (v4 requires auth)")
+        return {"coins": {}, "success": False, "error": "no_api_key"}
+
     try:
         result = {"coins": {}, "success": False}
+        headers = {
+            "Authorization": f"Bearer {LUNARCRUSH_API_KEY}",
+            "User-Agent": f"QuantumTradeBot/{app.version}",
+        }
         async with aiohttp.ClientSession() as s:
-            # LunarCrush v3 public endpoint (no key needed for basic data)
-            for sym in symbols[:8]:
+            # v10.2: Try bulk coins/list endpoint first (fewer requests)
+            try:
                 r = await s.get(
-                    f"https://lunarcrush.com/api4/public/coins/{sym.lower()}/v1",
-                    timeout=aiohttp.ClientTimeout(total=5),
-                    headers={"User-Agent": "QuantumTradeBot/10.0"}
+                    "https://lunarcrush.com/api4/public/coins/list/v2",
+                    timeout=aiohttp.ClientTimeout(total=10),
+                    headers=headers,
                 )
                 if r.status == 200:
                     data = await r.json()
-                    d = data.get("data", {})
-                    result["coins"][sym] = {
-                        "galaxy_score": d.get("galaxy_score", 0),
-                        "alt_rank": d.get("alt_rank", 0),
-                        "sentiment": d.get("sentiment", 0),
-                        "social_volume": d.get("social_volume", 0),
-                        "social_score": d.get("social_score", 0),
-                        "price": d.get("price", 0),
-                        "percent_change_24h": d.get("percent_change_24h", 0),
-                    }
-                await asyncio.sleep(0.3)  # respect rate limits
+                    coins_list = data.get("data", []) if isinstance(data.get("data"), list) else []
+                    sym_set = {sym.upper() for sym in symbols}
+                    for coin in coins_list:
+                        sym = (coin.get("symbol") or coin.get("s") or "").upper()
+                        if sym in sym_set:
+                            result["coins"][sym] = {
+                                "galaxy_score": coin.get("galaxy_score", coin.get("gs", 0)),
+                                "alt_rank": coin.get("alt_rank", coin.get("acr", 0)),
+                                "sentiment": coin.get("sentiment", 0),
+                                "social_volume": coin.get("social_volume", coin.get("sv", 0)),
+                                "social_score": coin.get("social_score", coin.get("ss", 0)),
+                                "price": coin.get("price", coin.get("p", 0)),
+                                "percent_change_24h": coin.get("percent_change_24h", coin.get("pch", 0)),
+                            }
+                    if result["coins"]:
+                        result["success"] = True
+                        _lunarcrush_cache = result
+                        _lunarcrush_ts = time.time()
+                        log_activity(f"[lunarcrush] v4 loaded {len(result['coins'])} coins via bulk list")
+                        return result
+                else:
+                    log_activity(f"[lunarcrush] v4 bulk list: HTTP {r.status}")
+            except Exception as e:
+                log_activity(f"[lunarcrush] v4 bulk list error: {e}")
+
+            # Fallback: per-coin endpoint
+            for sym in symbols[:8]:
+                try:
+                    r = await s.get(
+                        f"https://lunarcrush.com/api4/public/coins/{sym.lower()}/v1",
+                        timeout=aiohttp.ClientTimeout(total=5),
+                        headers=headers,
+                    )
+                    if r.status == 200:
+                        data = await r.json()
+                        d = data.get("data", {})
+                        result["coins"][sym] = {
+                            "galaxy_score": d.get("galaxy_score", 0),
+                            "alt_rank": d.get("alt_rank", 0),
+                            "sentiment": d.get("sentiment", 0),
+                            "social_volume": d.get("social_volume", 0),
+                            "social_score": d.get("social_score", 0),
+                            "price": d.get("price", 0),
+                            "percent_change_24h": d.get("percent_change_24h", 0),
+                        }
+                except Exception:
+                    pass
+                await asyncio.sleep(0.3)
 
         if result["coins"]:
             result["success"] = True
             _lunarcrush_cache = result
             _lunarcrush_ts = time.time()
-            log_activity(f"[lunarcrush] loaded {len(result['coins'])} coins")
+            log_activity(f"[lunarcrush] loaded {len(result['coins'])} coins (per-coin fallback)")
         return result
     except Exception as e:
         log_activity(f"[lunarcrush] error: {e}")
@@ -3100,7 +3162,7 @@ async def fetch_reddit_sentiment() -> dict:
                 r = await s.get(
                     f"https://www.reddit.com/r/{sub}/hot.json?limit=25",
                     timeout=aiohttp.ClientTimeout(total=8),
-                    headers={"User-Agent": "QuantumTradeBot/10.0 (research)"}
+                    headers={"User-Agent": f"QuantumTradeBot/{app.version} (research)"}
                 )
                 if r.status == 200:
                     data = await r.json()
@@ -4921,6 +4983,24 @@ async def _tg_diag(chat_id: int):
     # 17. v10.0: Security
     results.append(f"<b>🔒 Security:</b> Auth=✅ InputValidation=✅ RateLimit=func")
 
+    # 18. v10.2: Earn Engine
+    earn_en = "✅ Enabled" if EARN_ENABLED else "❌ Disabled"
+    earn_kc = _earn_stats.get("kucoin_subscribed", 0)
+    earn_bb = _earn_stats.get("bybit_subscribed", 0)
+    earn_total = round(earn_kc + earn_bb, 2)
+    earn_subs = _earn_stats.get("subscriptions", 0)
+    earn_errs = _earn_stats.get("errors", 0)
+    earn_apr = _earn_stats.get("best_apr", 0)
+    earn_last = ""
+    if _earn_stats.get("last_action", 0) > 0:
+        earn_ago = int(time.time() - _earn_stats["last_action"])
+        earn_last = f" last={earn_ago}s ago"
+    results.append(f"<b>💰 Earn Engine:</b> {earn_en} | subscribed=${earn_total} (KC=${earn_kc} BB=${earn_bb}) subs={earn_subs} errs={earn_errs} APR={earn_apr}%{earn_last}")
+
+    # 19. v10.2: LunarCrush API Key
+    lc_key = "✅ Set" if LUNARCRUSH_API_KEY else "❌ Not set (LUNARCRUSH_API_KEY)"
+    results.append(f"<b>🔑 LC Key:</b> {lc_key}")
+
     text = f"🔬 <b>QuantumTrade Diagnostics v{app.version}</b>\n" + "━" * 30 + "\n\n" + "\n\n".join(results)
     await _tg_send(chat_id, text)
 
@@ -5375,7 +5455,7 @@ async def _tg_earn(chat_id: int):
             pos_lines.append(f"  🟣 ByBit: <code>${amt:.2f}</code> USDT")
 
     text = (
-        f"🏦 <b>Earn Engine v10.1</b>\n"
+        f"🏦 <b>Earn Engine v{app.version}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"<b>Лучшая ставка:</b> {best['exchange']} — <code>{best['apr']}%</code> APR\n"
         f"<b>Продукт:</b> {best.get('product_name', '?')}\n\n"
@@ -5396,10 +5476,58 @@ async def _tg_earn(chat_id: int):
         f"  Всего размещено: <code>${_earn_stats['total_subscribed']:.2f}</code>\n"
         f"  Всего погашено: <code>${_earn_stats['total_redeemed']:.2f}</code>\n"
         f"  Ошибок: <code>{_earn_stats['errors']}</code>\n\n"
+    )
+
+    # v10.2: Diagnostic — if no positions, explain why
+    if total_earn < 0.01:
+        diag_parts = []
+        # Check balances
+        try:
+            kc_bal = await get_balance()
+            kc_usdt = kc_bal.get("available_usdt", 0) if isinstance(kc_bal, dict) else 0
+            diag_parts.append(f"  KuCoin USDT: <code>${kc_usdt:.2f}</code> (idle: <code>${max(0, kc_usdt - EARN_RESERVE_USDT):.2f}</code>)")
+        except Exception:
+            diag_parts.append("  KuCoin: ❌ balance error")
+        if BYBIT_ENABLED:
+            try:
+                bb_bal = await bybit_get_balance()
+                bb_usdt = bb_bal.get("usdt", 0) if bb_bal.get("success") else 0
+                diag_parts.append(f"  ByBit USDT: <code>${bb_usdt:.2f}</code> (idle: <code>${max(0, bb_usdt - EARN_RESERVE_USDT):.2f}</code>)")
+            except Exception:
+                diag_parts.append("  ByBit: ❌ balance error")
+        diag_parts.append(f"  Min idle: <code>${EARN_MIN_IDLE_USDT}</code> | Reserve: <code>${EARN_RESERVE_USDT}</code>")
+        if best["apr"] > 0:
+            diag_parts.append(f"  Продукты найдены: ✅ ({best['exchange']} {best['apr']}%)")
+        else:
+            diag_parts.append("  Продукты: ❌ (API не вернул Earn продуктов)")
+        text += "<b>🔍 Диагностика:</b>\n" + "\n".join(diag_parts) + "\n\n"
+
+    text += (
         f"💡 <i>Auto-Earn: USDT после продажи → Flexible Savings\n"
-        f"Auto-Redeem: перед покупкой → погашение из Savings</i>"
+        f"Auto-Redeem: перед покупкой → погашение из Savings</i>\n\n"
+        f"📌 /earnplace — принудительно разместить idle USDT"
     )
     await _tg_send(chat_id, text)
+
+
+async def _tg_earn_place(chat_id: int):
+    """v10.2: Force-place idle USDT into Earn."""
+    if not EARN_ENABLED:
+        await _tg_send(chat_id, "❌ Earn Engine выключен")
+        return
+    await _tg_send(chat_id, "💰 <i>Размещаю idle USDT в Earn...</i>")
+    result = await earn_auto_place_idle("auto")
+    if result.get("placed"):
+        lines = [f"  ✅ {p['exchange']}: <code>${p['amount']:.2f}</code>" for p in result["placed"]]
+        await _tg_send(chat_id, f"🏦 <b>Размещено в Earn:</b>\n" + "\n".join(lines))
+    elif result.get("errors"):
+        err_lines = [f"  ❌ {e}" for e in result["errors"]]
+        await _tg_send(chat_id, f"⚠️ <b>Ошибки при размещении:</b>\n" + "\n".join(err_lines))
+    else:
+        await _tg_send(chat_id,
+            f"ℹ️ <b>Нечего размещать</b>\n"
+            f"Свободный USDT ниже порога <code>${EARN_MIN_IDLE_USDT}</code>\n"
+            f"(резерв: <code>${EARN_RESERVE_USDT}</code>)")
 
 
 async def _tg_xarb(chat_id: int):
@@ -5975,6 +6103,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/bybit":               await _tg_bybit(chat_id)
         elif cmd == "/xarb":                await _tg_xarb(chat_id)
         elif cmd == "/earn":                await _tg_earn(chat_id)
+        elif cmd == "/earnplace":           await _tg_earn_place(chat_id)
         elif cmd == "/autopilot":
             AUTOPILOT = not AUTOPILOT
             state_emoji = "✅ ВКЛ" if AUTOPILOT else "❌ ВЫКЛ"
@@ -6483,22 +6612,73 @@ async def arb_stats_api():
 
 @app.get("/api/earn/status")
 async def earn_status_api():
-    """v10.1: Earn Engine status — positions, APR, stats."""
+    """v10.2: Earn Engine status — positions, APR, stats, exchange diagnostics."""
     best = {"exchange": "unknown", "apr": 0}
+    diagnostics = {"kucoin_products": 0, "bybit_products": 0, "errors": []}
     try:
         best = await earn_get_best_rate("USDT")
-    except Exception:
-        pass
+    except Exception as e:
+        diagnostics["errors"].append(f"best_rate: {e}")
+
+    # v10.2: Fetch actual exchange Earn positions for accurate reporting
+    try:
+        kc_holds = await kucoin_earn_get_hold_assets("USDT")
+        diagnostics["kucoin_products"] = len(kc_holds)
+        diagnostics["kucoin_hold_total"] = round(sum(float(h.get("holdAmount", 0)) for h in kc_holds), 2)
+    except Exception as e:
+        diagnostics["errors"].append(f"kucoin_holds: {e}")
+    try:
+        bb_holds = await bybit_earn_get_positions("USDT")
+        diagnostics["bybit_products"] = len(bb_holds)
+        diagnostics["bybit_hold_total"] = round(sum(float(h.get("amount", 0)) for h in bb_holds), 2)
+    except Exception as e:
+        diagnostics["errors"].append(f"bybit_holds: {e}")
+
     return {
         "enabled": EARN_ENABLED,
         "stats": _earn_stats,
         "positions": _earn_positions,
         "best_rate": best,
+        "diagnostics": diagnostics,
         "config": {
             "min_idle_usdt": EARN_MIN_IDLE_USDT,
             "reserve_usdt": EARN_RESERVE_USDT,
         },
     }
+
+
+@app.post("/api/earn/place")
+async def earn_place_api(_auth=Depends(verify_api_key)):
+    """v10.2: Manually trigger Earn placement of idle USDT."""
+    if not EARN_ENABLED:
+        return {"success": False, "error": "Earn engine disabled (EARN_ENABLED=false)"}
+    result = await earn_auto_place_idle("auto")
+    return result
+
+
+@app.post("/api/earn/redeem-all")
+async def earn_redeem_all_api(_auth=Depends(verify_api_key)):
+    """v10.2: Redeem ALL Earn positions back to spot wallets."""
+    if not EARN_ENABLED:
+        return {"success": False, "error": "Earn engine disabled"}
+    results = {"redeemed": [], "errors": []}
+    for pos in list(_earn_positions):
+        try:
+            if pos["exchange"] == "kucoin":
+                res = await kucoin_earn_redeem(pos.get("order_id", ""), pos["amount"])
+            elif pos["exchange"] == "bybit":
+                res = await bybit_earn_redeem(pos["product_id"], pos["amount"])
+            else:
+                continue
+            if res.get("success"):
+                results["redeemed"].append({"exchange": pos["exchange"], "amount": pos["amount"]})
+                _earn_positions.remove(pos)
+            else:
+                results["errors"].append(f"{pos['exchange']}: {res.get('error', '?')}")
+        except Exception as e:
+            results["errors"].append(f"{pos['exchange']}: {e}")
+    results["success"] = len(results["redeemed"]) > 0 or not _earn_positions
+    return results
 
 
 @app.get("/api/airdrops")
