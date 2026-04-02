@@ -1089,16 +1089,20 @@ async def bybit_earn_get_products(coin: str = "USDT") -> list:
 
 async def bybit_earn_subscribe(product_id: str, amount: float, coin: str = "USDT") -> dict:
     """ByBit: POST /v5/earn/place-order — Subscribe to Flexible Savings.
-    v10.2.1: Try UNIFIED first (where funds actually sit), fallback to FUND."""
+    v10.2.3: Added orderLinkId (required by ByBit). Try UNIFIED first, fallback to FUND."""
+    import uuid
     for account_type in ["UNIFIED", "FUND"]:
+        order_link_id = f"qt_{uuid.uuid4().hex[:16]}"  # v10.2.3: required unique ID
         res = await bybit_request("POST", "/v5/earn/place-order", {
             "category": "FlexibleSaving",
-            "productId": product_id,
+            "productId": str(product_id),
             "coin": coin,
-            "amount": str(amount),
+            "amount": str(round(amount, 2)),
             "orderType": "Stake",
             "accountType": account_type,
+            "orderLinkId": order_link_id,  # v10.2.3: fix "Empty order link ID"
         })
+        print(f"[earn/bb] subscribe attempt: product={product_id}, amount={amount}, account={account_type}, linkId={order_link_id}, success={res['success']}, error={res.get('error','')}", flush=True)
         if res["success"]:
             order_id = res["data"].get("orderId", "")
             log_activity(f"[earn/bb] subscribed ${amount:.2f} {coin} to {product_id} (account={account_type})")
@@ -1113,14 +1117,17 @@ async def bybit_earn_subscribe(product_id: str, amount: float, coin: str = "USDT
 
 
 async def bybit_earn_redeem(product_id: str, amount: float, coin: str = "USDT") -> dict:
-    """ByBit: POST /v5/earn/place-order — Redeem from Flexible Savings."""
+    """ByBit: POST /v5/earn/place-order — Redeem from Flexible Savings.
+    v10.2.3: Added orderLinkId."""
+    import uuid
     res = await bybit_request("POST", "/v5/earn/place-order", {
         "category": "FlexibleSaving",
-        "productId": product_id,
+        "productId": str(product_id),
         "coin": coin,
         "amount": str(amount),
         "orderType": "Redeem",
         "accountType": "FUND",
+        "orderLinkId": f"qt_{uuid.uuid4().hex[:16]}",  # v10.2.3
     })
     if res["success"]:
         log_activity(f"[earn/bb] redeemed ${amount:.2f} {coin} from product {product_id}")
