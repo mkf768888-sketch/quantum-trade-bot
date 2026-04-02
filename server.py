@@ -47,7 +47,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.2.0")
+app = FastAPI(title="QuantumTrade AI", version="10.2.2")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -918,40 +918,63 @@ _earn_rates_cache = {"ts": 0, "data": {}}  # cache APR data for 10 min
 
 async def kucoin_earn_get_savings_products(coin: str = "USDT") -> list:
     """KuCoin: GET /api/v1/earn/saving/products — Flexible Savings products.
-    Tries multiple endpoint variants (KuCoin has changed paths between API versions)."""
+    v10.2.2: Enhanced with broader search — tries with and without coin filter,
+    multiple endpoint variants, and item-level debug logging."""
     # KuCoin API has multiple possible paths for earn products
-    _endpoints = [
-        f"/api/v1/earn/saving/products?currency={coin}",
-        f"/api/v1/earn/savings/products?currency={coin}",
-        f"/api/v3/earn/saving/products?currency={coin}",
+    _base_endpoints = [
+        "/api/v1/earn/saving/products",
+        "/api/v1/earn/savings/products",
+        "/api/v3/earn/saving/products",
     ]
-    for endpoint in _endpoints:
-        try:
-            headers = kucoin_headers("GET", endpoint)
-            async with aiohttp.ClientSession() as s:
-                r = await s.get(f"https://api.kucoin.com{endpoint}",
-                                headers=headers,
-                                timeout=aiohttp.ClientTimeout(total=10))
-                data = await r.json()
-                # v10.2: detailed debug logging for Earn API troubleshooting
-                print(f"[earn/kc] {endpoint.split('?')[0]} → HTTP {r.status}, code={data.get('code','?')}, keys={list(data.get('data', {}).keys()) if isinstance(data.get('data'), dict) else type(data.get('data')).__name__}", flush=True)
-                if data.get("code") == "200000":
-                    raw = data.get("data", {})
-                    if isinstance(raw, list):
-                        items = raw
-                    elif isinstance(raw, dict):
-                        items = raw.get("items", raw.get("rows", [raw] if raw.get("id") or raw.get("productId") else []))
+    for base_ep in _base_endpoints:
+        # v10.2.2: Try with coin filter first, then without (to see ALL available products)
+        for coin_filter in [coin, ""]:
+            endpoint = f"{base_ep}?currency={coin_filter}" if coin_filter else base_ep
+            try:
+                headers = kucoin_headers("GET", endpoint)
+                async with aiohttp.ClientSession() as s:
+                    r = await s.get(f"https://api.kucoin.com{endpoint}",
+                                    headers=headers,
+                                    timeout=aiohttp.ClientTimeout(total=10))
+                    data = await r.json()
+                    filter_label = f"coin={coin_filter}" if coin_filter else "no_filter"
+                    print(f"[earn/kc] {base_ep} ({filter_label}) → HTTP {r.status}, code={data.get('code','?')}, data_type={type(data.get('data')).__name__}", flush=True)
+                    if data.get("code") == "200000":
+                        raw = data.get("data", {})
+                        if isinstance(raw, list):
+                            items = raw
+                        elif isinstance(raw, dict):
+                            items = raw.get("items", raw.get("rows", raw.get("data", [])))
+                            if not items and (raw.get("id") or raw.get("productId")):
+                                items = [raw]  # single product returned as dict
+                            # v10.2.2: Log all dict keys for debugging
+                            print(f"[earn/kc] raw dict keys: {list(raw.keys())}, items count: {len(items) if isinstance(items, list) else 'N/A'}", flush=True)
+                        else:
+                            items = []
+                        if items:
+                            first = items[0] if items else {}
+                            print(f"[earn/kc] found {len(items)} products! First item keys: {list(first.keys())[:15]}", flush=True)
+                            print(f"[earn/kc] first: id={first.get('id','?')}, productId={first.get('productId','?')}, currency={first.get('currency','?')}, recentAnnualInterestRate={first.get('recentAnnualInterestRate','?')}, annualInterestRate={first.get('annualInterestRate','?')}", flush=True)
+                            # v10.2.2: If no coin filter, filter results to our coin
+                            if not coin_filter and coin:
+                                items = [p for p in items if (p.get("currency", "") or "").upper() == coin.upper()]
+                                print(f"[earn/kc] after filtering for {coin}: {len(items)} products", flush=True)
+                            if items:
+                                log_activity(f"[earn/kc] found {len(items)} products via {base_ep} ({filter_label})")
+                                return items
+                        else:
+                            if isinstance(raw, dict):
+                                print(f"[earn/kc] {base_ep} ({filter_label}): 0 items. raw_keys={list(raw.keys())}, raw_preview={str(raw)[:200]}", flush=True)
+                            elif isinstance(raw, list):
+                                print(f"[earn/kc] {base_ep} ({filter_label}): empty list returned", flush=True)
+                    elif str(data.get("code")) == "400100":
+                        # v10.2.2: Earn not available for this account / region
+                        log_activity(f"[earn/kc] {base_ep}: {data.get('msg','?')} (may be region/account restriction)")
+                        break  # no point trying without filter
                     else:
-                        items = []
-                    if items:
-                        log_activity(f"[earn/kc] found {len(items)} products via {endpoint.split('?')[0]}")
-                        return items
-                    else:
-                        print(f"[earn/kc] {endpoint.split('?')[0]}: code=200000 but 0 items. raw_type={type(raw).__name__}, raw_keys={list(raw.keys()) if isinstance(raw, dict) else 'N/A'}", flush=True)
-                else:
-                    log_activity(f"[earn/kc] {endpoint.split('?')[0]}: {data.get('code','?')} {data.get('msg', '?')}")
-        except Exception as e:
-            log_activity(f"[earn/kc] {endpoint.split('?')[0]} exception: {e}")
+                        log_activity(f"[earn/kc] {base_ep} ({filter_label}): {data.get('code','?')} {data.get('msg', '?')}")
+            except Exception as e:
+                log_activity(f"[earn/kc] {base_ep} exception: {e}")
     log_activity(f"[earn/kc] all earn product endpoints failed for {coin}")
     return []
 
@@ -1021,23 +1044,45 @@ async def kucoin_earn_get_hold_assets(coin: str = "USDT") -> list:
 
 async def bybit_earn_get_products(coin: str = "USDT") -> list:
     """ByBit: GET /v5/earn/product — Flexible Savings products.
-    Tries multiple category names (ByBit API has variants)."""
+    v10.2.2: Enhanced with broader search — tries with and without coin filter,
+    multiple category names, and detailed item-level debug logging."""
     _categories = ["FlexibleSaving", "Flexible", "flexibleSaving", "flexible_saving"]
     for cat in _categories:
-        res = await bybit_request("GET", "/v5/earn/product", {
-            "category": cat, "coin": coin
-        })
-        # v10.2: detailed debug logging
-        print(f"[earn/bb] category={cat}: success={res['success']}, data_keys={list(res.get('data', {}).keys()) if isinstance(res.get('data'), dict) else 'N/A'}", flush=True)
-        if res["success"]:
-            items = res["data"].get("list", [])
-            if items:
-                log_activity(f"[earn/bb] found {len(items)} products (category={cat})")
-                return items
+        # v10.2.2: Try with coin filter first, then without
+        for coin_filter in [coin, ""]:
+            params = {"category": cat}
+            if coin_filter:
+                params["coin"] = coin_filter
+            res = await bybit_request("GET", "/v5/earn/product", params)
+            filter_label = f"coin={coin_filter}" if coin_filter else "no_coin_filter"
+            print(f"[earn/bb] cat={cat}, {filter_label}: success={res['success']}, data_keys={list(res.get('data', {}).keys()) if isinstance(res.get('data'), dict) else 'N/A'}", flush=True)
+            if res["success"]:
+                raw_data = res.get("data", {})
+                items = raw_data.get("list", [])
+                # v10.2.2: Also check if data itself is a list
+                if not items and isinstance(raw_data, list):
+                    items = raw_data
+                if items:
+                    # v10.2.2: Log first item fields for APR debugging
+                    first = items[0]
+                    print(f"[earn/bb] found {len(items)} products! First item keys: {list(first.keys())[:15]}", flush=True)
+                    print(f"[earn/bb] first item: productId={first.get('productId','?')}, coin={first.get('coin','?')}, estimateAnnualYield={first.get('estimateAnnualYield','?')}, annualYield={first.get('annualYield','?')}, minStakeAmount={first.get('minStakeAmount','?')}", flush=True)
+                    # v10.2.2: If searching without coin filter, filter results to our coin
+                    if not coin_filter and coin:
+                        items = [p for p in items if (p.get("coin", "") or "").upper() == coin.upper()]
+                        print(f"[earn/bb] after filtering for {coin}: {len(items)} products", flush=True)
+                    if items:
+                        log_activity(f"[earn/bb] found {len(items)} products (cat={cat}, {filter_label})")
+                        return items
+                else:
+                    print(f"[earn/bb] cat={cat}, {filter_label}: success but 0 items. raw type={type(raw_data).__name__}", flush=True)
             else:
-                print(f"[earn/bb] category={cat}: success but 0 items in list", flush=True)
-        else:
-            log_activity(f"[earn/bb] category={cat}: {res.get('error','?')}")
+                err = res.get("error", "?")
+                # v10.2.2: Don't spam all categories if first one gives auth error
+                if "auth" in str(err).lower() or "sign" in str(err).lower():
+                    log_activity(f"[earn/bb] auth error: {err} — stopping category scan")
+                    return []
+                log_activity(f"[earn/bb] cat={cat}, {filter_label}: {err}")
     log_activity(f"[earn/bb] all earn product categories failed for {coin}")
     return []
 
@@ -3064,13 +3109,25 @@ async def fetch_top_traders_positions() -> dict:
 # ── v10.0: LunarCrush Galaxy Score (Free API) ─────────────────────────────────
 _lunarcrush_cache: dict = {}
 _lunarcrush_ts: float = 0.0
+_lunarcrush_fail_ts: float = 0.0  # v10.2.2: fail cache to prevent 429 death spiral
+_lunarcrush_backoff: int = 1800   # v10.2.2: backoff seconds after failure (30 min)
 
 async def fetch_lunarcrush_sentiment(symbols: list = None) -> dict:
-    """v10.2: Fetch Galaxy Score + AltRank from LunarCrush v4 API.
-    Requires LUNARCRUSH_API_KEY (Bearer token). Falls back to coins/list endpoint."""
-    global _lunarcrush_cache, _lunarcrush_ts
-    if time.time() - _lunarcrush_ts < 600 and _lunarcrush_cache:  # 10 min cache
+    """v10.2.2: Fetch Galaxy Score + AltRank from LunarCrush v4 API.
+    Requires LUNARCRUSH_API_KEY (Bearer token). Falls back to coins/list endpoint.
+    Fix: fail cache prevents 429 death spiral — on failure, won't retry for 30 min."""
+    global _lunarcrush_cache, _lunarcrush_ts, _lunarcrush_fail_ts, _lunarcrush_backoff
+    now = time.time()
+
+    # v10.2.2: Return cached success data if still fresh (10 min)
+    if now - _lunarcrush_ts < 600 and _lunarcrush_cache:
         return _lunarcrush_cache
+
+    # v10.2.2: FAIL CACHE — if last attempt failed, don't retry for backoff period
+    if now - _lunarcrush_fail_ts < _lunarcrush_backoff and _lunarcrush_fail_ts > 0:
+        remaining = int(_lunarcrush_backoff - (now - _lunarcrush_fail_ts))
+        return {"coins": {}, "success": False, "error": f"rate_limited_backoff_{remaining}s"}
+
     if symbols is None:
         symbols = ["BTC", "ETH", "SOL", "XRP", "AVAX", "BNB", "MATIC", "DOT"]
 
@@ -3084,6 +3141,7 @@ async def fetch_lunarcrush_sentiment(symbols: list = None) -> dict:
             "Authorization": f"Bearer {LUNARCRUSH_API_KEY}",
             "User-Agent": f"QuantumTradeBot/{app.version}",
         }
+        got_429 = False
         async with aiohttp.ClientSession() as s:
             # v10.2: Try bulk coins/list endpoint first (fewer requests)
             try:
@@ -3095,14 +3153,13 @@ async def fetch_lunarcrush_sentiment(symbols: list = None) -> dict:
                 print(f"[lunarcrush] bulk list HTTP {r.status}", flush=True)
                 if r.status == 200:
                     data = await r.json()
-                    # v10.2.1: debug — log response structure
                     top_keys = list(data.keys())[:5] if isinstance(data, dict) else type(data).__name__
                     data_type = type(data.get("data")).__name__ if isinstance(data, dict) else "?"
                     data_len = len(data.get("data", [])) if isinstance(data.get("data"), list) else "N/A"
                     print(f"[lunarcrush] response keys={top_keys}, data type={data_type}, len={data_len}", flush=True)
                     coins_list = data.get("data", []) if isinstance(data.get("data"), list) else []
                     if not coins_list and isinstance(data, list):
-                        coins_list = data  # v10.2.1: some endpoints return list directly
+                        coins_list = data
                     sym_set = {sym.upper() for sym in symbols}
                     for coin in coins_list:
                         sym = (coin.get("symbol") or coin.get("s") or "").upper()
@@ -3119,16 +3176,28 @@ async def fetch_lunarcrush_sentiment(symbols: list = None) -> dict:
                     if result["coins"]:
                         result["success"] = True
                         _lunarcrush_cache = result
-                        _lunarcrush_ts = time.time()
+                        _lunarcrush_ts = now
+                        _lunarcrush_fail_ts = 0  # reset fail cache on success
+                        _lunarcrush_backoff = 1800  # reset backoff
                         log_activity(f"[lunarcrush] v4 loaded {len(result['coins'])} coins via bulk list")
                         return result
+                elif r.status == 429:
+                    got_429 = True
+                    log_activity(f"[lunarcrush] v4 bulk list: HTTP 429 (rate limited)")
                 else:
                     log_activity(f"[lunarcrush] v4 bulk list: HTTP {r.status}")
             except Exception as e:
                 log_activity(f"[lunarcrush] v4 bulk list error: {e}")
 
-            # Fallback: per-coin endpoint
-            for sym in symbols[:3]:  # v10.2.1: only first 3 for debug, expand later
+            # v10.2.2: If bulk got 429, skip per-coin (will also 429) — go straight to backoff
+            if got_429:
+                _lunarcrush_fail_ts = now
+                _lunarcrush_backoff = min(_lunarcrush_backoff * 2, 7200)  # exp backoff, max 2h
+                log_activity(f"[lunarcrush] 429 rate limited — backing off {_lunarcrush_backoff}s (next retry in {_lunarcrush_backoff//60}min)")
+                return {"coins": {}, "success": False, "error": "rate_limited_429"}
+
+            # Fallback: per-coin endpoint (only if bulk didn't 429)
+            for sym in symbols[:3]:
                 try:
                     r = await s.get(
                         f"https://lunarcrush.com/api4/public/coins/{sym.lower()}/v1",
@@ -3148,18 +3217,33 @@ async def fetch_lunarcrush_sentiment(symbols: list = None) -> dict:
                             "price": d.get("price", 0),
                             "percent_change_24h": d.get("percent_change_24h", 0),
                         }
+                    elif r.status == 429:
+                        got_429 = True
+                        break  # stop hammering
                 except Exception:
                     pass
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.5)  # v10.2.2: increased from 0.3 to 0.5s
 
         if result["coins"]:
             result["success"] = True
             _lunarcrush_cache = result
-            _lunarcrush_ts = time.time()
+            _lunarcrush_ts = now
+            _lunarcrush_fail_ts = 0
+            _lunarcrush_backoff = 1800
             log_activity(f"[lunarcrush] loaded {len(result['coins'])} coins (per-coin fallback)")
+        elif got_429:
+            # v10.2.2: per-coin also got 429 — set fail cache
+            _lunarcrush_fail_ts = now
+            _lunarcrush_backoff = min(_lunarcrush_backoff * 2, 7200)
+            log_activity(f"[lunarcrush] per-coin 429 — backing off {_lunarcrush_backoff}s")
+        else:
+            # API returned 200 but no matching coins — cache failure briefly (5 min)
+            _lunarcrush_fail_ts = now
+            _lunarcrush_backoff = 300
         return result
     except Exception as e:
         log_activity(f"[lunarcrush] error: {e}")
+        _lunarcrush_fail_ts = time.time()
         return {"coins": {}, "success": False, "error": str(e)}
 
 
