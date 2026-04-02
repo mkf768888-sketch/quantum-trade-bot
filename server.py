@@ -1043,22 +1043,28 @@ async def bybit_earn_get_products(coin: str = "USDT") -> list:
 
 
 async def bybit_earn_subscribe(product_id: str, amount: float, coin: str = "USDT") -> dict:
-    """ByBit: POST /v5/earn/place-order — Subscribe to Flexible Savings."""
-    res = await bybit_request("POST", "/v5/earn/place-order", {
-        "category": "FlexibleSaving",
-        "productId": product_id,
-        "coin": coin,
-        "amount": str(amount),
-        "orderType": "Stake",
-        "accountType": "FUND",
-    })
-    if res["success"]:
-        order_id = res["data"].get("orderId", "")
-        log_activity(f"[earn/bb] subscribed ${amount:.2f} {coin} to product {product_id}")
-        return {"success": True, "order_id": order_id, "exchange": "bybit"}
-    else:
-        log_activity(f"[earn/bb] subscribe error: {res.get('error','?')}")
-        return {"success": False, "error": res.get("error", "unknown")}
+    """ByBit: POST /v5/earn/place-order — Subscribe to Flexible Savings.
+    v10.2.1: Try UNIFIED first (where funds actually sit), fallback to FUND."""
+    for account_type in ["UNIFIED", "FUND"]:
+        res = await bybit_request("POST", "/v5/earn/place-order", {
+            "category": "FlexibleSaving",
+            "productId": product_id,
+            "coin": coin,
+            "amount": str(amount),
+            "orderType": "Stake",
+            "accountType": account_type,
+        })
+        if res["success"]:
+            order_id = res["data"].get("orderId", "")
+            log_activity(f"[earn/bb] subscribed ${amount:.2f} {coin} to {product_id} (account={account_type})")
+            return {"success": True, "order_id": order_id, "exchange": "bybit"}
+        else:
+            err = res.get("error", "?")
+            log_activity(f"[earn/bb] subscribe {account_type}: {err}")
+            if "insufficient" not in str(err).lower() and "balance" not in str(err).lower():
+                continue  # try next account type only if not a balance issue
+            break  # balance issue — no point trying another account type
+    return {"success": False, "error": res.get("error", "unknown")}
 
 
 async def bybit_earn_redeem(product_id: str, amount: float, coin: str = "USDT") -> dict:
@@ -1158,12 +1164,14 @@ async def earn_auto_place_idle(exchange: str = "auto") -> dict:
     try:
         if exchange in ("auto", "kucoin"):
             kc_bal = await get_balance()
-            kc_usdt = kc_bal.get("available_usdt", 0) if isinstance(kc_bal, dict) else 0
+            kc_usdt = kc_bal.get("available_usdt", kc_bal.get("total_usdt", 0)) if isinstance(kc_bal, dict) else 0
             idle["kucoin"] = max(0, kc_usdt - EARN_RESERVE_USDT)
+            print(f"[earn] KC balance: ${kc_usdt:.2f}, idle after reserve: ${idle['kucoin']:.2f}", flush=True)
         if exchange in ("auto", "bybit") and BYBIT_ENABLED:
             bb_bal = await bybit_get_balance()
-            bb_usdt = bb_bal.get("usdt", 0) if bb_bal.get("success") else 0
+            bb_usdt = bb_bal.get("total_usdt", 0) if bb_bal.get("success") else 0  # v10.2.1: was "usdt" → "total_usdt"
             idle["bybit"] = max(0, bb_usdt - EARN_RESERVE_USDT)
+            print(f"[earn] BB balance: ${bb_usdt:.2f}, idle after reserve: ${idle['bybit']:.2f}", flush=True)
     except Exception as e:
         log_activity(f"[earn] balance check error: {e}")
         return {"success": False, "reason": str(e)}
@@ -3084,9 +3092,17 @@ async def fetch_lunarcrush_sentiment(symbols: list = None) -> dict:
                     timeout=aiohttp.ClientTimeout(total=10),
                     headers=headers,
                 )
+                print(f"[lunarcrush] bulk list HTTP {r.status}", flush=True)
                 if r.status == 200:
                     data = await r.json()
+                    # v10.2.1: debug — log response structure
+                    top_keys = list(data.keys())[:5] if isinstance(data, dict) else type(data).__name__
+                    data_type = type(data.get("data")).__name__ if isinstance(data, dict) else "?"
+                    data_len = len(data.get("data", [])) if isinstance(data.get("data"), list) else "N/A"
+                    print(f"[lunarcrush] response keys={top_keys}, data type={data_type}, len={data_len}", flush=True)
                     coins_list = data.get("data", []) if isinstance(data.get("data"), list) else []
+                    if not coins_list and isinstance(data, list):
+                        coins_list = data  # v10.2.1: some endpoints return list directly
                     sym_set = {sym.upper() for sym in symbols}
                     for coin in coins_list:
                         sym = (coin.get("symbol") or coin.get("s") or "").upper()
@@ -3112,13 +3128,14 @@ async def fetch_lunarcrush_sentiment(symbols: list = None) -> dict:
                 log_activity(f"[lunarcrush] v4 bulk list error: {e}")
 
             # Fallback: per-coin endpoint
-            for sym in symbols[:8]:
+            for sym in symbols[:3]:  # v10.2.1: only first 3 for debug, expand later
                 try:
                     r = await s.get(
                         f"https://lunarcrush.com/api4/public/coins/{sym.lower()}/v1",
                         timeout=aiohttp.ClientTimeout(total=5),
                         headers=headers,
                     )
+                    print(f"[lunarcrush] per-coin {sym}: HTTP {r.status}", flush=True)
                     if r.status == 200:
                         data = await r.json()
                         d = data.get("data", {})
@@ -5495,7 +5512,7 @@ async def _tg_earn(chat_id: int):
         if BYBIT_ENABLED:
             try:
                 bb_bal = await bybit_get_balance()
-                bb_usdt = bb_bal.get("usdt", 0) if bb_bal.get("success") else 0
+                bb_usdt = bb_bal.get("total_usdt", 0) if bb_bal.get("success") else 0  # v10.2.1: fix key name
                 diag_parts.append(f"  ByBit USDT: <code>${bb_usdt:.2f}</code> (idle: <code>${max(0, bb_usdt - EARN_RESERVE_USDT):.2f}</code>)")
             except Exception:
                 diag_parts.append("  ByBit: ❌ balance error")
