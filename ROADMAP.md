@@ -118,8 +118,34 @@
 > Приоритет: СРЕДНИЙ · Сложность: L · Агент: design-system + wave-orchestrator
 > Инструменты: wilwaldon/Frontend-Design-Toolkit, anthropics/design plugin, OhMySkills
 
-### Phase A: Design System Overhaul (с Design Toolkit)
-- [ ] Установить Frontend Design Toolkit (70+ tools, 240+ styles)
+### Phase 0: Настройка Claude Code Супер-Дизайнер (MacBook)
+> Подготовка инфраструктуры — установка всех инструментов на MacBook
+> 📄 Полный чеклист: QuantumTrade_SuperDesigner_Checklist.docx
+
+#### Шаг 0.1: Установка Claude Code CLI
+- [ ] Установить Node.js v18+ (brew install node)
+- [ ] Установить Claude Code CLI (npm install -g @anthropic-ai/claude-code)
+- [ ] Авторизация (claude auth)
+- [ ] Проверить: claude --version
+
+#### Шаг 0.2: Дизайн-плагины и скиллы
+- [ ] Frontend Design Skill от Anthropic (claude plugin add anthropic/frontend-design)
+- [ ] Claude-Code-Frontend-Design-Toolkit (github.com/wilwaldon) — клонировать → .claude/skills/
+- [ ] OhMySkills/design-style (github.com/NakanoSanku) — 30+ стилей → .claude/skills/design-style/
+- [ ] Design Tokens Skill (OKLCH математика) — уже в design-system.md агенте ✅
+- [ ] UI/UX Pro Max — 240+ стилей, 127 шрифтовых пар
+
+#### Шаг 0.3: MCP-серверы
+- [ ] Playwright MCP (claude mcp add playwright npx @anthropic-ai/mcp-playwright)
+- [ ] GitHub MCP (claude mcp add github npx @anthropic-ai/mcp-github)
+
+#### Шаг 0.4: Telegram-управление Claude Code (выбрать один)
+- [ ] Вариант A: Claude Channels (простой) — claude plugin install telegram@claude-plugins-official
+- [ ] Вариант B: @gonzih/cc-tg (продвинутый) — голос, файлы, cron
+- [ ] Вариант C: instar (максимум) — память, планировщик, кросс-сессии
+- [ ] Проверить: отправить тестовую команду из Telegram → Claude Code
+
+### Phase A: Design System Overhaul (применение к проекту)
 - [ ] CSS Design Tokens (OKLCH color system, анимации) в index.html
 - [ ] Glassmorphism + Cyberpunk стиль карточек (из OhMySkills/design-style)
 - [ ] Микро-анимации: hover, press, update pulse
@@ -188,19 +214,19 @@
 
 ### 📋 Рекомендуемый порядок:
 ```
-Сейчас:  Wave 3A (instar) → Wave 1B (Earn) → Earn API fix
-Скоро:   DeepSeek PayPal → Wave 2A (CCXT) → Wave 3B (remote control)
-Потом:   Wave 4 (Polymarket) → Wave 5 (Design) → Wave 6 (DeFi)
+Сейчас:  Earn $35 → ночной доход ✅ → Wave 5-Phase0 (Claude Code CLI на MacBook)
+Скоро:   Wave 3A (instar/TG) → Wave 1B (Lending Spike) → DeepSeek PayPal
+Потом:   Wave 5A (Design) → Wave 2A (CCXT) → Wave 4 (Poly) → Wave 6 (DeFi)
 ```
 
 ---
 
 ## 🔄 Wave Status
 ```
-Current Wave: 1B + 3A (Earn Advanced + Telegram→CC setup, parallel)
-Completed: Wave 0 (Foundation v10.0), Wave 1A (Earn Engine v10.1.0)
-Next Wave: 2 (Multi-Exchange CCXT)
+Current Wave: 1A fix (Earn APR v10.2.3) + 5-Phase0 (Супер-Дизайнер чеклист готов)
+Completed: Wave 0 (v10.0), Wave 1A (Earn Engine — APR fix v10.2.3)
+Next Wave: 1B (Earn Advanced) + 3A (Telegram→CC)
 Blocked: Binance/OKX API keys (Wave 2), DeepSeek PayPal (AI quality)
-New: Telegram→Claude Code autonomy (Wave 3), Design plugins (Wave 5)
-Last Updated: 2026-04-02
+Ready: Wave 5 Phase 0 (чеклист создан, ожидает установки Claude Code CLI на MacBook)
+Last Updated: 2026-04-03
 ```
