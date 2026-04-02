@@ -379,7 +379,7 @@
       <!-- AI CHAT -->
       <div class="subpage" id="sub-ai">
         <div class="card">
-          <div class="card-header"><div class="card-title">Quantum AI Советник</div><div class="badge badge-p">GPT-4o</div></div>
+          <div class="card-header"><div class="card-title">Quantum AI Советник</div><div class="badge badge-p" id="aiModelBadge">DeepSeek V3</div></div>
           <div class="chat-wrap" id="chatMessages">
             <div class="msg ai"><div class="msg-bubble">👋 Привет! Я QuantumTrade AI. Задай вопрос о рынке или стратегии.</div><div class="msg-time">сейчас</div></div>
           </div>
@@ -903,10 +903,10 @@ async function sendChat(){
   addMsg(txt,'user');inp.value='';
   const tid='think'+Date.now();addMsg('⚛ Анализирую...','ai',tid);
   try{let resp;
-    if(BASE_URL&&API_KEY){const d=await apiPost('/api/ai/chat',{message:txt});resp=d.reply||d.response||d.message||'Нет ответа';}
+    if(BASE_URL){const d=await apiPost('/api/ai/chat',{message:txt});resp=d.reply||d.response||d.message||(d.error?'⚠️ '+d.error:'Нет ответа');if(d.model){const b=document.getElementById('aiModelBadge');if(b)b.textContent=d.model;}}
     else{resp='Подключи бот в Настройках';}
     document.getElementById(tid)?.remove();addMsg(resp,'ai');
-  }catch(e){document.getElementById(tid)?.remove();addMsg('Ошибка AI. Проверь подключение.','ai');}
+  }catch(e){document.getElementById(tid)?.remove();addMsg('⚠️ Ошибка AI: '+(e.message||'Проверь подключение'),'ai');}
 }
 function quickChat(t){document.getElementById('chatInput').value=t;sendChat();}
 function addMsg(text,type,id){

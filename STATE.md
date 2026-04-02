@@ -1,6 +1,6 @@
 # STATE.md — Память между сессиями
 > Обновлять после каждой значимой сессии. AI-агент читает это первым.
-> Последнее обновление: 2026-04-01
+> Последнее обновление: 2026-04-02
 > Архитектура: GSD v2 Wave Execution
 
 ## Текущее состояние бота
@@ -14,12 +14,13 @@
 
 ## Wave Execution Status (GSD v2)
 ```
-Current Wave: 1 (Earn Engine — v10.1) ✅ Phase A DEPLOYED
-Wave Phase: EXECUTION → Phase A live, Phase B pending
+Current Wave: 1B + 3A (parallel: Earn Advanced + Telegram→CC)
+Wave Phase: PLANNING → обновлён ROADMAP с новыми направлениями
 In Progress: earn_monitor_loop running on Railway
-Blocked: none
+New Waves: 3 (Telegram→Claude Code), 5 (Design plugins)
+Blocked: DeepSeek PayPal, Binance/OKX keys (Wave 2)
 Next Wave: 2 (Multi-Exchange CCXT)
-Last Wave Completed: 0 (Foundation v10.0)
+Last Wave Completed: 1A (Earn Engine v10.1.0)
 ```
 
 ## Dual-Exchange Trading (v10.0)
@@ -40,11 +41,21 @@ Last Wave Completed: 0 (Foundation v10.0)
 ## Активные направления (v10.1+)
 | Направление | Статус | Агент | Волна |
 |------------|--------|-------|-------|
-| Earn Engine | Планирование | earn-strategist | Wave 1 |
+| Earn Engine | Phase A deployed, B pending | earn-strategist | Wave 1 |
 | Multi-Exchange | Ожидание API ключей | wave-orchestrator | Wave 2 |
-| Polymarket | Исследование | polymarket-trader | Wave 3 |
-| Design System | Готов к внедрению | design-system | Wave 4 |
-| AI/ML | Будущее | wave-orchestrator | Wave 4-5 |
+| Telegram→Claude Code | 🆕 Готов к запуску (бесплатно) | wave-orchestrator | Wave 3 |
+| Polymarket | Исследование | polymarket-trader | Wave 4 |
+| Design System | 🆕 + Design Toolkit plugins | design-system | Wave 5 |
+| AI/ML | Будущее (DeepSeek PayPal) | wave-orchestrator | Wave 5 |
+| Financial Ecosystem | Далёкое будущее | — | Wave 6 |
+
+## Новые инструменты (обнаружены 2026-04-02)
+| Инструмент | Что делает | Использование |
+|-----------|-----------|---------------|
+| instar (JKHeadley) | Persistent Claude Code + Telegram + scheduling | Wave 3: автономное управление ботом |
+| Frontend Design Toolkit (wilwaldon) | 70+ tools, 240+ styles for Claude Code | Wave 5: Cyberpunk UI |
+| OhMySkills/design-style | Glassmorphism, Design Tokens (OKLCH) | Wave 5: стиль карточек |
+| anthropics/frontend-design | Официальный Anthropic design plugin | Wave 5: альтернатива/дополнение |
 
 ## Ключевые решения (не менять без обсуждения)
 1. **Один файл server.py** — сознательное решение, не дробить на модули

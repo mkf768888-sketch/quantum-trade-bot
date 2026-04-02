@@ -1,6 +1,6 @@
 # QuantumTrade AI — CLAUDE.md
 > Главный конфиг для AI-агентов. Читать при каждом запуске.
-> v10.0.0 · 2026-03-31 · github.com/mkf768888-sketch/quantum-trade-bot
+> v10.1.0 · 2026-04-02 · github.com/mkf768888-sketch/quantum-trade-bot
 
 ## Архитектура
 - **Бэкенд:** Python 3.11, FastAPI → `server.py` (~6500 строк), Railway Cloud
@@ -21,10 +21,11 @@
 | Copy-Trading | ByBit leaderboard | `fetch_copytrade_intelligence()` |
 | Advanced TA | MACD, BB, Stoch, ADX, OBV (pandas-ta) | `calc_advanced_ta()` |
 
-## AI Tiers
-- **DeepSeek V3** — text/strategy (free tier exhausted, fallback)
-- **Claude Haiku** — vision analysis, primary fallback (628+ calls)
-- **Claude Opus** — Opus Gate critical trade confirmation
+## AI Tiers (v10.1 — cost protection)
+- **DeepSeek V3** — единственный AI в торговом цикле. NO Claude fallback!
+- **Rule-based RSI** — fallback когда нет DeepSeek (RSI<30=BUY, RSI>70=SELL)
+- **Claude** — НЕ используется в торговле. $0/день API cost.
+- **Vision** — отключено (VISION_ENABLED=false)
 
 ## Биржи (v10.0 Dual-Exchange)
 - **KuCoin**: Spot + Futures (HMAC-SHA256) — `execute_spot_trade()`, `place_futures_order()`
@@ -106,3 +107,23 @@ Claude Vision: 35% | Индикаторы: 25% | Контекст: 20% | Whale: 
 - `ROADMAP.md` — волновая дорожная карта с задачами
 - `STATE.md` — текущее состояние, wave status, crash recovery
 - `HOWTO.md` — руководство по автономному режиму + Safe Mode
+
+## Obsidian Knowledge Vault
+Хранилище знаний: `vault/`
+
+### При старте сессии
+Прочитай `vault/00-home/index.md` и `vault/00-home/текущие приоритеты.md`.
+Если задача касается конкретного модуля — прочитай заметку из `vault/knowledge/`.
+
+### При завершении (пользователь: "сохрани сессию")
+1. Создай заметку в `vault/sessions/` с датой
+2. Обнови `vault/00-home/текущие приоритеты.md`
+3. Если принято решение — создай заметку в `vault/knowledge/decisions/`
+4. Если найден баг — создай заметку в `vault/knowledge/debugging/`
+5. Обнови `vault/00-home/index.md` если новые заметки
+
+### Правила vault
+- Названия файлов = утверждения, не категории
+- Wiki-ссылки `[[имя заметки]]` между связанными
+- Frontmatter с tags и date
+- Язык: русский

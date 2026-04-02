@@ -1,6 +1,7 @@
 # QuantumTrade AI — ROADMAP
-> Волновая дорожная карта · GSD v2 Architecture · Обновлено: 2026-04-01
+> Волновая дорожная карта · GSD v2 Architecture · Обновлено: 2026-04-02
 > Философия: Персональная финансовая экосистема с бешеной маржинальностью
+> Новое: Telegram→Claude Code автономия + Design System plugins
 
 ## 🏁 v10.0 — Dual-Exchange Foundation ✅ COMPLETE
 - [x] ByBit Spot интеграция (BUY/SELL/Monitor)
@@ -61,8 +62,36 @@
 
 ---
 
-## 🌊 Wave 3 — v11.1: Polymarket Integration
+## 🌊 Wave 3 — v11.1: Telegram→Claude Code Autonomy
+> Приоритет: ВЫСОКИЙ · Сложность: M · Агент: wave-orchestrator
+> Зависимости: нет (можно начинать сейчас, бесплатно)
+
+### Phase A: Instar Setup + Knowledge Vault
+- [x] Obsidian Knowledge Vault — 17 заметок, wiki-ссылки, CLAUDE.md обновлён
+- [ ] `npx instar` — установка и настройка
+- [ ] Подключение Telegram бота к Claude Code через instar
+- [ ] Persistent memory: контекст сохраняется между сессиями (vault + instar memory)
+- [ ] Job scheduling: автозапуск задач по расписанию
+- [ ] Telegram команды: /status, /deploy, /fix, /logs → Claude Code
+
+### Phase B: Remote Control & Monitoring
+- [ ] Telegram→Claude Code: отправка произвольных задач
+- [ ] Auto-diagnostics: scheduled job каждые 6ч → отчёт в Telegram
+- [ ] Crash recovery: автоматическое обнаружение и fix через Telegram
+- [ ] Deploy pipeline: Telegram → Claude Code → git push → Railway auto-deploy
+- [ ] Context survival: memory.md + STATE.md синхронизация
+
+### Phase C: Full Autonomy Loop
+- [ ] Self-improvement: Claude Code анализирует trade results → предлагает улучшения
+- [ ] Auto-update: scheduled weekly code review + optimization
+- [ ] Alert escalation: critical issues → Telegram notification → auto-fix attempt
+- [ ] Multi-session: параллельные задачи (trading + research + monitoring)
+
+---
+
+## 🌊 Wave 4 — v11.2: Polymarket Integration
 > Приоритет: СРЕДНИЙ · Сложность: M · Агент: polymarket-trader
+> Зависимости: Polygon wallet
 
 ### Phase A: Data Layer
 - [ ] Polymarket API клиент (REST + WebSocket)
@@ -85,18 +114,21 @@
 
 ---
 
-## 🌊 Wave 4 — v12.0: AI & Design Evolution
+## 🌊 Wave 5 — v12.0: AI & Design Evolution
 > Приоритет: СРЕДНИЙ · Сложность: L · Агент: design-system + wave-orchestrator
+> Инструменты: wilwaldon/Frontend-Design-Toolkit, anthropics/design plugin, OhMySkills
 
-### Phase A: Design System Overhaul
-- [ ] CSS Design Tokens (OKLCH, анимации) в index.html
-- [ ] Glassmorphism + Cyberpunk стиль карточек
+### Phase A: Design System Overhaul (с Design Toolkit)
+- [ ] Установить Frontend Design Toolkit (70+ tools, 240+ styles)
+- [ ] CSS Design Tokens (OKLCH color system, анимации) в index.html
+- [ ] Glassmorphism + Cyberpunk стиль карточек (из OhMySkills/design-style)
 - [ ] Микро-анимации: hover, press, update pulse
 - [ ] Skeleton loading states
 - [ ] Tab slide transitions
-- [ ] Number animations (PnL, баланс)
+- [ ] Number animations (PnL, баланс, sparklines)
 - [ ] Новый таб: Earn Dashboard
 - [ ] Новый таб: Polymarket Monitor
+- [ ] Mobile-first responsive (Telegram Mini App viewport)
 
 ### Phase B: AI Upgrades
 - [ ] DeepSeek V3.2 reasoning integration (когда оплата пройдёт)
@@ -112,7 +144,7 @@
 
 ---
 
-## 🌊 Wave 5 — v13.0: Financial Ecosystem
+## 🌊 Wave 6 — v13.0: Financial Ecosystem
 > Приоритет: НА БУДУЩЕЕ · Сложность: XL
 
 - [ ] DeFi integration (Uniswap, AAVE) через Web3
@@ -129,18 +161,46 @@
 |---------|---------|-----------|-----------|
 | Биржи | 2 | 4-5 | 5+ DeFi |
 | Пассивный доход | 0% | 3-8% APR | 10-15% APR |
-| API cost/day | $0.50-1.50 | $0.50-1.50 | $1-2 (с ML) |
+| API cost/day | $0/day | $0.10-0.50 | $1-2 (с ML) |
 | Портфель | ~$45 | $200+ | $1000+ |
 | Направления | Spot + Arb | +Earn +Poly | +DeFi +NFT |
 | Win rate | TBD | 55%+ | 65%+ |
+| Автономия | Manual | Telegram→CC | Full Auto |
+| UI качество | Basic | Cyberpunk v1 | Glassmorphism |
+
+---
+
+## 🎯 Приоритизированный план (что делать и за что платить)
+
+### 🟢 БЕСПЛАТНО — можно делать прямо сейчас:
+1. **Wave 1B: Earn Advanced** — Lending, Staking Combo (код, нет оплаты)
+2. **Wave 3: Telegram→Claude Code** — instar setup (бесплатный, npx instar)
+3. **Wave 5A: Design System** — Frontend Design Toolkit (бесплатный)
+4. **Earn API fix** — проверить permissions на биржах для Earn endpoints
+
+### 💰 ТРЕБУЕТ ВЛОЖЕНИЙ:
+| Что | Стоимость | ROI | Приоритет |
+|-----|-----------|-----|-----------|
+| DeepSeek V3.2 API | ~$5-10/мес | Качество AI торговли x3-5 | ВЫСОКИЙ |
+| Binance API ключ | $0 (регистрация) | Доступ к крупнейшей бирже | ВЫСОКИЙ |
+| OKX API ключ | $0 (регистрация) | Ещё больше ликвидности | СРЕДНИЙ |
+| Polygon wallet | $5-10 MATIC | Polymarket trading | НИЗКИЙ |
+
+### 📋 Рекомендуемый порядок:
+```
+Сейчас:  Wave 3A (instar) → Wave 1B (Earn) → Earn API fix
+Скоро:   DeepSeek PayPal → Wave 2A (CCXT) → Wave 3B (remote control)
+Потом:   Wave 4 (Polymarket) → Wave 5 (Design) → Wave 6 (DeFi)
+```
 
 ---
 
 ## 🔄 Wave Status
 ```
-Current Wave: 1 Phase B (Earn Advanced — Lending, Staking Combo)
-Completed: Wave 1 Phase A (Earn Engine deployed v10.1.0)
-Next Wave: 2 (Multi-Exchange)
-Blocked: Binance/OKX API keys needed
-Last Updated: 2026-04-01
+Current Wave: 1B + 3A (Earn Advanced + Telegram→CC setup, parallel)
+Completed: Wave 0 (Foundation v10.0), Wave 1A (Earn Engine v10.1.0)
+Next Wave: 2 (Multi-Exchange CCXT)
+Blocked: Binance/OKX API keys (Wave 2), DeepSeek PayPal (AI quality)
+New: Telegram→Claude Code autonomy (Wave 3), Design plugins (Wave 5)
+Last Updated: 2026-04-02
 ```

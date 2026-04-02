@@ -43,7 +43,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.0.0")
+app = FastAPI(title="QuantumTrade AI", version="10.2.0")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -184,11 +184,17 @@ def _load_trades_from_disk():
     except Exception as e:
         print(f"[trades] ошибка загрузки: {e}")
 
+def _json_serial(obj):
+    """v10.2: JSON serializer for objects not serializable by default json code."""
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    raise TypeError(f"Type {type(obj)} not serializable")
+
 def _save_trades_to_disk():
     """Сохраняем trade_log на диск после каждой новой сделки. v7.5.0: 2000 записей."""
     try:
         with open(_TRADES_FILE, "w") as f:
-            json.dump(trade_log[-2000:], f)  # v7.5.0: 500→2000
+            json.dump(trade_log[-2000:], f, default=_json_serial)  # v10.2: datetime-safe
     except Exception as e:
         print(f"[trades] ошибка записи: {e}")
 
@@ -645,6 +651,11 @@ async def _braket_qaoa_run(changes_list: list, live_corr: list) -> list:
 
 
 def log_trade(symbol, side, price, size, tp, sl, confidence, q_score, pattern, account="spot", strategy="B"):
+    # v10.2: guard against logging trades with invalid price
+    if not price or price <= 0:
+        print(f"[WARN] log_trade({symbol}): price={price} invalid, skipping trade log", flush=True)
+        log_activity(f"[trade] BLOCKED {symbol} {side}: price={price} invalid — not logged")
+        return
     # v9.2: capture F&G and macro context at trade time for correlation analysis
     fg_now = _cache_get("fear_greed", 7200)  # use cached F&G if available
     fg_val = fg_now.get("value", 0) if fg_now else 0
@@ -903,6 +914,8 @@ async def kucoin_earn_get_savings_products(coin: str = "USDT") -> list:
                                 headers=headers,
                                 timeout=aiohttp.ClientTimeout(total=10))
                 data = await r.json()
+                # v10.2: detailed debug logging for Earn API troubleshooting
+                print(f"[earn/kc] {endpoint.split('?')[0]} → HTTP {r.status}, code={data.get('code','?')}, keys={list(data.get('data', {}).keys()) if isinstance(data.get('data'), dict) else type(data.get('data')).__name__}", flush=True)
                 if data.get("code") == "200000":
                     raw = data.get("data", {})
                     if isinstance(raw, list):
@@ -914,6 +927,8 @@ async def kucoin_earn_get_savings_products(coin: str = "USDT") -> list:
                     if items:
                         log_activity(f"[earn/kc] found {len(items)} products via {endpoint.split('?')[0]}")
                         return items
+                    else:
+                        print(f"[earn/kc] {endpoint.split('?')[0]}: code=200000 but 0 items. raw_type={type(raw).__name__}, raw_keys={list(raw.keys()) if isinstance(raw, dict) else 'N/A'}", flush=True)
                 else:
                     log_activity(f"[earn/kc] {endpoint.split('?')[0]}: {data.get('code','?')} {data.get('msg', '?')}")
         except Exception as e:
@@ -988,16 +1003,20 @@ async def kucoin_earn_get_hold_assets(coin: str = "USDT") -> list:
 async def bybit_earn_get_products(coin: str = "USDT") -> list:
     """ByBit: GET /v5/earn/product — Flexible Savings products.
     Tries multiple category names (ByBit API has variants)."""
-    _categories = ["FlexibleSaving", "Flexible", "flexibleSaving"]
+    _categories = ["FlexibleSaving", "Flexible", "flexibleSaving", "flexible_saving"]
     for cat in _categories:
         res = await bybit_request("GET", "/v5/earn/product", {
             "category": cat, "coin": coin
         })
+        # v10.2: detailed debug logging
+        print(f"[earn/bb] category={cat}: success={res['success']}, data_keys={list(res.get('data', {}).keys()) if isinstance(res.get('data'), dict) else 'N/A'}", flush=True)
         if res["success"]:
             items = res["data"].get("list", [])
             if items:
                 log_activity(f"[earn/bb] found {len(items)} products (category={cat})")
                 return items
+            else:
+                print(f"[earn/bb] category={cat}: success but 0 items in list", flush=True)
         else:
             log_activity(f"[earn/bb] category={cat}: {res.get('error','?')}")
     log_activity(f"[earn/bb] all earn product categories failed for {coin}")
@@ -2726,8 +2745,8 @@ async def _arb_fast_scanner():
             if len(ws_snap) > 10:
                 arb_opps = await check_triangular_arb(ws_snap)
                 for opp in arb_opps:
-                    await _notify_arb(opp)
                     if ARB_EXEC_ENABLED:
+                        await _notify_arb(opp)  # v10.2: only notify if arb enabled
                         await execute_triangular_arb(opp)
         except Exception as e:
             log_activity(f"[arb_fast] error: {e}")
@@ -4446,9 +4465,11 @@ async def position_monitor_loop():
                 if prices_snap:
                     arb_opps = await check_triangular_arb(prices_snap.get("prices", {}))
                     for opp in arb_opps:
-                        await _notify_arb(opp)
                         if ARB_EXEC_ENABLED:
+                            await _notify_arb(opp)  # v10.2: only notify if arb enabled
                             await execute_triangular_arb(opp)
+                        else:
+                            log_activity(f"[arb] opportunity found {opp.get('path','')} but ARB disabled — no notification")
         except Exception as e:
             log_activity(f"[arb] monitor error: {e}")
 
@@ -6582,12 +6603,13 @@ async def update_settings(body: dict, _auth=Depends(verify_api_key)):  # v7.3.3:
                         "autopilot": AUTOPILOT, "test_mode": TEST_MODE,
                         "risk_per_trade": RISK_PER_TRADE, "max_leverage": MAX_LEVERAGE}}
 
+@app.head("/health")  # v10.2: Railway sends HEAD for health checks
 @app.get("/health")
 async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.1.0",
+        "version": "10.2.0",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -6875,7 +6897,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.0.0",
+        "version": "10.2.0",
     }
 
 @app.get("/api/setup-webhook")
@@ -6992,9 +7014,12 @@ async def api_public_stats():
     # Polymarket (cached — non-blocking)
     poly_cached = _cache_get("polymarket", 900) or []
 
-    trades_total = len(trade_log)
-    trades_wins  = sum(1 for t in trade_log if (t.get("pnl") or 0) > 0)
-    total_pnl    = round(sum(t.get("pnl") or 0 for t in trade_log), 4)
+    # v10.2: Use _perf_stats for accurate PnL (same source as /stats command)
+    # Only count CLOSED trades with real PnL, not open trades with pnl=None
+    closed_trades = [t for t in trade_log if t.get("status") == "closed" and t.get("pnl") is not None]
+    trades_total = _perf_stats.get("total_trades", len(closed_trades))
+    trades_wins  = _perf_stats.get("wins", sum(1 for t in closed_trades if (t.get("pnl") or 0) > 0))
+    total_pnl    = round(_perf_stats.get("total_pnl", sum(t.get("pnl") or 0 for t in closed_trades)), 4)
     win_rate     = round(trades_wins / trades_total * 100, 1) if trades_total else 0
     open_pos     = sum(1 for t in trade_log if t.get("status") == "open")
     recent_trades = list(reversed(trade_log))[:10]
@@ -7044,7 +7069,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.0.0",
+        "version": "10.2.0",
     }
 
 @app.get("/api/dashboard")
@@ -7192,8 +7217,9 @@ async def api_ai_chat(req: ChatRequest, request: Request):
         if rl[0] >= _AI_CHAT_LIMIT:
             raise HTTPException(status_code=429, detail="Rate limit exceeded. Max 20 requests/min.")
         _ai_chat_rl[client_ip] = (rl[0] + 1, rl[1])
-    if not ANTHROPIC_API_KEY:
-        return {"error": "No AI API keys configured", "success": False}
+    # v10.2: check for ANY AI key (DeepSeek is default tier, not Claude)
+    if not ANTHROPIC_API_KEY and not DEEPSEEK_API_KEY:
+        return {"error": "No AI API keys configured (need DEEPSEEK_API_KEY or ANTHROPIC_API_KEY)", "success": False}
     system_lines = [
         "Ты QuantumTrade AI — торговый советник в трейдинг-боте на KuCoin.",
         "Помогаешь понять рынок, сигналы и стратегию. Объясняй простым языком — многие новички.",
