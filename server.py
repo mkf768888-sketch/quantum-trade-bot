@@ -47,7 +47,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.2.3")
+app = FastAPI(title="QuantumTrade AI", version="10.3.0")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -1367,6 +1367,238 @@ async def earn_monitor_loop():
             log_activity(f"[earn_mon] error: {e}")
 
         await asyncio.sleep(900)  # every 15 min
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v10.3: SMART MONEY ROUTER — Automatic Fund Allocation Engine
+# Деньги НИКОГДА не простаивают: Arb Reserve → Trade Min → Earn (всё остальное)
+# Приоритет: Arb (секунды, ROI 1-3%) > Trade (часы, ROI 2-4%) > Earn (всегда, APR)
+# ══════════════════════════════════════════════════════════════════════════════
+
+ROUTER_ENABLED = os.getenv("ROUTER_ENABLED", "true").lower() == "true"
+ROUTER_INTERVAL = int(os.getenv("ROUTER_INTERVAL", "120"))  # seconds between routing checks
+ROUTER_TRADE_RESERVE_USDT = float(os.getenv("ROUTER_TRADE_RESERVE", "5.0"))  # keep $5 for trading
+ROUTER_ARB_RESERVE_USDT = ARB_RESERVE_USDT  # use same arb reserve ($3)
+ROUTER_EARN_THRESHOLD = float(os.getenv("ROUTER_EARN_THRESHOLD", "2.0"))  # min $2 for earn placement
+
+_router_stats = {
+    "runs": 0, "last_run": 0, "last_action": "",
+    "earn_placements": 0, "earn_redeems": 0,
+    "total_routed_to_earn": 0.0, "total_redeemed_for_trade": 0.0,
+    "decisions": [],  # last 20 routing decisions [{ts, exchange, action, amount, reason}]
+}
+
+
+async def smart_money_route() -> dict:
+    """v10.3: Smart Money Router — automatically allocate idle funds.
+
+    Algorithm:
+    1. Check balances on both exchanges
+    2. Reserve $3 for arb on each exchange
+    3. Reserve $5 for trading on primary exchange
+    4. Everything else → Earn (highest APR)
+    5. If trading needs money and Earn has it → auto-redeem
+
+    Returns: dict with actions taken
+    """
+    if not ROUTER_ENABLED:
+        return {"success": False, "reason": "router disabled"}
+
+    _router_stats["runs"] += 1
+    _router_stats["last_run"] = time.time()
+    actions = []
+
+    # ── Step 1: Get current balances ──────────────────────────────────────────
+    try:
+        kc_bal = await get_balance()
+        kc_usdt = kc_bal.get("available_usdt", kc_bal.get("total_usdt", 0)) if isinstance(kc_bal, dict) else 0
+    except Exception:
+        kc_usdt = 0
+
+    bb_usdt = 0.0
+    if BYBIT_ENABLED:
+        try:
+            bb_bal = await bybit_get_balance()
+            bb_usdt = bb_bal.get("total_usdt", 0) if bb_bal.get("success") else 0
+        except Exception:
+            pass
+
+    # ── Step 2: Calculate allocation per exchange ─────────────────────────────
+    # On each exchange: arb_reserve + trade_reserve = locked, rest = earnable
+
+    total_idle = 0.0
+    allocations = {}
+
+    for exch, balance in [("kucoin", kc_usdt), ("bybit", bb_usdt)]:
+        if balance <= 0:
+            allocations[exch] = {"balance": 0, "locked": 0, "earnable": 0, "action": "skip"}
+            continue
+
+        # Arb reserve — always keep liquid for cross-exchange arb
+        arb_lock = min(ROUTER_ARB_RESERVE_USDT, balance)
+        remaining = balance - arb_lock
+
+        # Trade reserve — keep enough for at least 1 spot trade
+        trade_lock = min(ROUTER_TRADE_RESERVE_USDT, remaining) if remaining > 0 else 0
+        remaining -= trade_lock
+
+        # Earnable — everything left over threshold
+        earnable = max(0, remaining) if remaining >= ROUTER_EARN_THRESHOLD else 0
+
+        allocations[exch] = {
+            "balance": round(balance, 2),
+            "arb_reserved": round(arb_lock, 2),
+            "trade_reserved": round(trade_lock, 2),
+            "earnable": round(earnable, 2),
+            "action": "earn" if earnable >= ROUTER_EARN_THRESHOLD else "hold",
+        }
+        total_idle += earnable
+
+    log_activity(f"[router] KC=${kc_usdt:.2f} BB=${bb_usdt:.2f} | "
+                 f"KC earnable=${allocations.get('kucoin',{}).get('earnable',0):.2f} "
+                 f"BB earnable=${allocations.get('bybit',{}).get('earnable',0):.2f}")
+
+    # ── Step 3: Place idle funds into Earn ────────────────────────────────────
+    if EARN_ENABLED:
+        for exch, alloc in allocations.items():
+            if alloc["action"] != "earn" or alloc["earnable"] < ROUTER_EARN_THRESHOLD:
+                continue
+
+            amount = alloc["earnable"]
+
+            try:
+                if exch == "kucoin":
+                    products = await kucoin_earn_get_savings_products("USDT")
+                    if products:
+                        p = products[0]
+                        pid = str(p.get("id", p.get("productId", "")))
+                        min_amt = float(p.get("userLowerLimit", p.get("minInvestAmount", 1)))
+                        if amount >= min_amt and pid:
+                            sub = await kucoin_earn_subscribe(pid, round(amount, 2))
+                            if sub["success"]:
+                                _earn_stats["subscriptions"] += 1
+                                _earn_stats["total_subscribed"] += amount
+                                _earn_stats["kucoin_subscribed"] += amount
+                                _earn_stats["last_action"] = time.time()
+                                _earn_positions.append({
+                                    "exchange": "kucoin", "product_id": pid,
+                                    "coin": "USDT", "amount": round(amount, 2),
+                                    "apr": 0, "subscribed_at": time.time(),
+                                    "order_id": sub.get("order_id", ""),
+                                })
+                                actions.append({"exchange": "kucoin", "action": "earn", "amount": round(amount, 2)})
+                                _router_stats["earn_placements"] += 1
+                                _router_stats["total_routed_to_earn"] += amount
+                                log_activity(f"[router] ✅ KC → Earn: ${amount:.2f}")
+                            else:
+                                log_activity(f"[router] ❌ KC Earn failed: {sub.get('error','?')}")
+
+                elif exch == "bybit":
+                    products = await bybit_earn_get_products("USDT")
+                    if products:
+                        p = products[0]
+                        pid = p.get("productId", "")
+                        min_amt = float(p.get("minStakeAmount", 1))
+                        if amount >= min_amt and pid:
+                            sub = await bybit_earn_subscribe(pid, round(amount, 2))
+                            if sub["success"]:
+                                _earn_stats["subscriptions"] += 1
+                                _earn_stats["total_subscribed"] += amount
+                                _earn_stats["bybit_subscribed"] += amount
+                                _earn_stats["last_action"] = time.time()
+                                _earn_positions.append({
+                                    "exchange": "bybit", "product_id": pid,
+                                    "coin": "USDT", "amount": round(amount, 2),
+                                    "apr": 0, "subscribed_at": time.time(),
+                                    "order_id": sub.get("order_id", ""),
+                                })
+                                actions.append({"exchange": "bybit", "action": "earn", "amount": round(amount, 2)})
+                                _router_stats["earn_placements"] += 1
+                                _router_stats["total_routed_to_earn"] += amount
+                                log_activity(f"[router] ✅ BB → Earn: ${amount:.2f}")
+                            else:
+                                log_activity(f"[router] ❌ BB Earn failed: {sub.get('error','?')}")
+            except Exception as e:
+                log_activity(f"[router] earn placement error on {exch}: {e}")
+
+    # ── Step 4: Record decision ───────────────────────────────────────────────
+    decision = {
+        "ts": time.time(),
+        "kc_balance": round(kc_usdt, 2),
+        "bb_balance": round(bb_usdt, 2),
+        "allocations": allocations,
+        "actions": actions,
+    }
+    _router_stats["decisions"].append(decision)
+    _router_stats["decisions"] = _router_stats["decisions"][-20:]  # keep last 20
+    _router_stats["last_action"] = "; ".join(f"{a['exchange']}→{a['action']}(${a['amount']:.2f})" for a in actions) or "no action"
+
+    return {"success": True, "actions": actions, "allocations": allocations}
+
+
+async def smart_money_pre_buy(exchange: str, amount_needed: float) -> dict:
+    """v10.3: Auto-redeem from Earn before BUY. Called from auto_trade_cycle.
+    Enhanced version of earn_redeem_for_trading with router awareness."""
+    if not ROUTER_ENABLED or not EARN_ENABLED:
+        return await earn_redeem_for_trading(exchange, amount_needed)
+
+    # Check if we have Earn positions on this exchange
+    exch_positions = [p for p in _earn_positions if p["exchange"] == exchange and p["coin"] == "USDT"]
+    if not exch_positions:
+        return {"success": True, "redeemed": 0, "reason": "no earn positions on " + exchange}
+
+    # Redeem just enough for the trade + keep arb reserve
+    result = await earn_redeem_for_trading(exchange, amount_needed)
+    if result.get("redeemed", 0) > 0:
+        _router_stats["earn_redeems"] += 1
+        _router_stats["total_redeemed_for_trade"] += result["redeemed"]
+        log_activity(f"[router] 📤 redeemed ${result['redeemed']:.2f} from {exchange} Earn for trade")
+
+    return result
+
+
+async def smart_money_post_sell(exchange: str):
+    """v10.3: Auto-route freed USDT after SELL. Called from spot_monitor_loop.
+    Immediately places idle funds into Earn."""
+    if not ROUTER_ENABLED:
+        if EARN_ENABLED:
+            await earn_auto_place_idle(exchange)
+        return
+
+    # Wait 2s for balance to settle after sell
+    await asyncio.sleep(2)
+
+    # Run the router for this specific exchange
+    try:
+        result = await smart_money_route()
+        if result.get("actions"):
+            actions_str = ", ".join(f"{a['exchange']}→{a['action']}(${a['amount']:.2f})" for a in result["actions"])
+            log_activity(f"[router] post-SELL routing: {actions_str}")
+    except Exception as e:
+        log_activity(f"[router] post-SELL routing error: {e}")
+
+
+async def smart_money_router_loop():
+    """v10.3: Background loop — runs router every ROUTER_INTERVAL seconds.
+    Ensures idle USDT is always working in Earn."""
+    await asyncio.sleep(180)  # wait 3 min after startup (let other systems init)
+    while True:
+        try:
+            if ROUTER_ENABLED:
+                result = await smart_money_route()
+                if result.get("actions"):
+                    # Notify via Telegram about routing actions
+                    actions_str = "\n".join(
+                        f"  {'✅' if a['action']=='earn' else '📤'} {a['exchange']}: ${a['amount']:.2f} → {a['action']}"
+                        for a in result["actions"]
+                    )
+                    await notify(
+                        f"🔄 <b>Smart Money Router</b>\n{actions_str}"
+                    )
+        except Exception as e:
+            log_activity(f"[router_loop] error: {e}")
+
+        await asyncio.sleep(ROUTER_INTERVAL)
 
 
 # ── v9.0: Cross-Exchange Arbitrage Monitor ─────────────────────────────────────
@@ -3967,15 +4199,15 @@ async def auto_trade_cycle():
                 log_activity(f"[cycle] {symbol}: PLACING spot BUY ${_buy_usdt:.2f} on {_buy_exchange}"
                              f"{' MF=' + str(mf_result['score']) if mf_result else ''}")
 
-                # v10.1: Auto-Earn — redeem USDT from Savings before BUY if needed
-                if EARN_ENABLED and _earn_positions:
+                # v10.3: Smart Money Router — auto-redeem from Earn before BUY
+                if (EARN_ENABLED or ROUTER_ENABLED) and _earn_positions:
                     try:
-                        _redeem = await earn_redeem_for_trading(_buy_exchange, _buy_usdt)
+                        _redeem = await smart_money_pre_buy(_buy_exchange, _buy_usdt)
                         if _redeem.get("redeemed", 0) > 0:
-                            log_activity(f"[earn] redeemed ${_redeem['redeemed']:.2f} from {_buy_exchange} Earn for BUY")
+                            log_activity(f"[router] redeemed ${_redeem['redeemed']:.2f} from {_buy_exchange} Earn for BUY")
                             await asyncio.sleep(1)  # brief wait for funds to settle
                     except Exception as _e:
-                        log_activity(f"[earn] pre-BUY redeem error: {_e}")
+                        log_activity(f"[router] pre-BUY redeem error: {_e}")
 
                 if _buy_exchange == "bybit" and BYBIT_ENABLED:
                     bb_res = await bybit_place_spot_order(symbol, "Buy", _buy_usdt)
@@ -4787,10 +5019,9 @@ async def spot_monitor_loop():
                                 f"Длительность: {duration_min}м"
                             )
                             log_activity(f"[spot_mon] {symbol} ({_exch_label}) {reason} SOLD PnL=${pnl_usdt:+.4f}")
-                            # v10.1: Auto-Earn — place freed USDT into Flexible Savings
-                            if EARN_ENABLED:
-                                _earn_exch = "bybit" if _trade_acct == "bybit_spot" else "kucoin"
-                                asyncio.ensure_future(earn_auto_place_idle(_earn_exch))
+                            # v10.3: Smart Money Router — route freed USDT after SELL
+                            _earn_exch = "bybit" if _trade_acct == "bybit_spot" else "kucoin"
+                            asyncio.ensure_future(smart_money_post_sell(_earn_exch))
                         else:
                             log_activity(f"[spot_mon] {symbol} ({_exch_label}) sell FAILED: {sell_result.get('error', sell_result.get('msg','?'))}")
                     else:
@@ -5625,7 +5856,8 @@ async def _tg_earn(chat_id: int):
     text += (
         f"💡 <i>Auto-Earn: USDT после продажи → Flexible Savings\n"
         f"Auto-Redeem: перед покупкой → погашение из Savings</i>\n\n"
-        f"📌 /earnplace — принудительно разместить idle USDT"
+        f"📌 /earnplace — принудительно разместить idle USDT\n"
+        f"🔄 /router — Smart Money Router (авто-распределение)"
     )
     await _tg_send(chat_id, text)
 
@@ -5648,6 +5880,82 @@ async def _tg_earn_place(chat_id: int):
             f"ℹ️ <b>Нечего размещать</b>\n"
             f"Свободный USDT ниже порога <code>${EARN_MIN_IDLE_USDT}</code>\n"
             f"(резерв: <code>${EARN_RESERVE_USDT}</code>)")
+
+
+async def _tg_router(chat_id: int):
+    """v10.3: Smart Money Router status."""
+    if not ROUTER_ENABLED:
+        await _tg_send(chat_id, "❌ Smart Money Router выключен\nВключить: ROUTER_ENABLED=true")
+        return
+
+    # Get current balances
+    try:
+        kc_bal = await get_balance()
+        kc_usdt = kc_bal.get("available_usdt", kc_bal.get("total_usdt", 0)) if isinstance(kc_bal, dict) else 0
+    except Exception:
+        kc_usdt = 0
+
+    bb_usdt = 0.0
+    if BYBIT_ENABLED:
+        try:
+            bb_bal = await bybit_get_balance()
+            bb_usdt = bb_bal.get("total_usdt", 0) if bb_bal.get("success") else 0
+        except Exception:
+            pass
+
+    # Earn positions
+    earn_kc = sum(p["amount"] for p in _earn_positions if p["exchange"] == "kucoin")
+    earn_bb = sum(p["amount"] for p in _earn_positions if p["exchange"] == "bybit")
+    earn_total = earn_kc + earn_bb
+
+    # Open trades value
+    open_trades = [t for t in trade_log if t.get("status") == "open"]
+    trades_value = sum(t.get("price", 0) * t.get("size", 0) for t in open_trades)
+
+    # Calculate total portfolio
+    total_portfolio = kc_usdt + bb_usdt + earn_total + trades_value
+
+    # Last routing actions
+    last_actions = ""
+    if _router_stats["decisions"]:
+        last = _router_stats["decisions"][-1]
+        last_ts = datetime.utcfromtimestamp(last["ts"]).strftime("%H:%M:%S")
+        if last.get("actions"):
+            last_actions = "\n".join(
+                f"  {'✅' if a['action']=='earn' else '📤'} {a['exchange']}: ${a['amount']:.2f} → {a['action']}"
+                for a in last["actions"]
+            )
+        else:
+            last_actions = "  ℹ️ Нет действий (средства уже распределены)"
+        last_actions = f"\n\n🕐 <b>Последний маршрут</b> ({last_ts} UTC):\n{last_actions}"
+
+    # Best APR
+    best = await earn_get_best_rate("USDT")
+    apr_text = f"{best['exchange']} {best['apr']}%" if best["apr"] > 0 else "нет данных"
+
+    text = (
+        f"🔄 <b>Smart Money Router v10.3</b>\n"
+        f"{'═' * 30}\n\n"
+        f"💰 <b>Портфель:</b> <code>${total_portfolio:.2f}</code>\n"
+        f"  KuCoin USDT: <code>${kc_usdt:.2f}</code>\n"
+        f"  ByBit USDT: <code>${bb_usdt:.2f}</code>\n"
+        f"  В Earn: <code>${earn_total:.2f}</code> (KC=${earn_kc:.2f} BB=${earn_bb:.2f})\n"
+        f"  В сделках: <code>${trades_value:.2f}</code> ({len(open_trades)} позиций)\n\n"
+        f"📊 <b>Статистика:</b>\n"
+        f"  Runs: {_router_stats['runs']} | Earn→: {_router_stats['earn_placements']} | ←Redeem: {_router_stats['earn_redeems']}\n"
+        f"  Отправлено в Earn: <code>${_router_stats['total_routed_to_earn']:.2f}</code>\n"
+        f"  Выкуплено для торговли: <code>${_router_stats['total_redeemed_for_trade']:.2f}</code>\n\n"
+        f"⚙️ <b>Настройки:</b>\n"
+        f"  Arb резерв: ${ROUTER_ARB_RESERVE_USDT:.0f} | Trade резерв: ${ROUTER_TRADE_RESERVE_USDT:.0f}\n"
+        f"  Earn мин: ${ROUTER_EARN_THRESHOLD:.0f} | Цикл: {ROUTER_INTERVAL}с\n"
+        f"  Лучший APR: {apr_text}\n"
+        f"  Интервал: каждые {ROUTER_INTERVAL // 60} мин"
+        f"{last_actions}\n\n"
+        f"💡 <i>Деньги НИКОГДА не простаивают:\n"
+        f"Arb Reserve → Trade Reserve → всё в Earn\n"
+        f"Перед BUY → auto-redeem из Earn</i>"
+    )
+    await _tg_send(chat_id, text)
 
 
 async def _tg_xarb(chat_id: int):
@@ -6224,6 +6532,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/xarb":                await _tg_xarb(chat_id)
         elif cmd == "/earn":                await _tg_earn(chat_id)
         elif cmd == "/earnplace":           await _tg_earn_place(chat_id)
+        elif cmd == "/router":              await _tg_router(chat_id)
         elif cmd == "/autopilot":
             AUTOPILOT = not AUTOPILOT
             state_emoji = "✅ ВКЛ" if AUTOPILOT else "❌ ВЫКЛ"
@@ -6451,6 +6760,7 @@ async def startup():
     asyncio.create_task(position_monitor_loop())
     asyncio.create_task(spot_monitor_loop())      # v8.3: spot position TP/SL monitor
     asyncio.create_task(earn_monitor_loop())      # v10.1: Earn Engine — auto-place idle USDT
+    asyncio.create_task(smart_money_router_loop())  # v10.3: Smart Money Router — auto fund allocation
     asyncio.create_task(_ws_price_feed())          # v8.3.3: WebSocket real-time prices
     asyncio.create_task(_arb_fast_scanner())       # v8.3.3: fast arb scanner (every 5s)
     asyncio.create_task(airdrop_digest_loop())
