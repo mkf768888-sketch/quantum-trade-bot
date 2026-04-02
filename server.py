@@ -47,7 +47,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.2.2")
+app = FastAPI(title="QuantumTrade AI", version="10.2.3")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -1154,32 +1154,40 @@ async def earn_get_best_rate(coin: str = "USDT") -> dict:
     best = {"exchange": "none", "product_id": "", "apr": 0.0, "min_amount": 0.0, "product_name": ""}
 
     # KuCoin rates
+    # v10.2.3: Real field names from API: returnRate, id, userLowerLimit
     try:
         kc_products = await kucoin_earn_get_savings_products(coin)
         for p in kc_products:
-            apr = float(p.get("recentAnnualInterestRate", p.get("annualInterestRate", 0)))
-            if apr > best["apr"]:
+            # v10.2.3: KuCoin uses "returnRate" (not "recentAnnualInterestRate")
+            apr_raw = p.get("returnRate", p.get("recentAnnualInterestRate", p.get("annualInterestRate", 0)))
+            apr = float(apr_raw) if apr_raw else 0.0
+            apr_pct = round(apr * 100, 2) if apr < 1 else round(apr, 2)
+            print(f"[earn/kc] APR parse: returnRate={p.get('returnRate','?')}, raw={apr_raw}, pct={apr_pct}%", flush=True)
+            if apr_pct > best["apr"]:
                 best = {
                     "exchange": "kucoin",
-                    "product_id": p.get("id", p.get("productId", "")),
-                    "apr": round(apr * 100, 2) if apr < 1 else round(apr, 2),  # normalize to %
-                    "min_amount": float(p.get("minInvestAmount", p.get("minPurchaseAmount", 0))),
+                    "product_id": str(p.get("id", p.get("productId", ""))),  # v10.2.3: KuCoin uses "id" not "productId"
+                    "apr": apr_pct,
+                    "min_amount": float(p.get("userLowerLimit", p.get("minInvestAmount", p.get("minPurchaseAmount", 0)))),
                     "product_name": p.get("productName", f"KuCoin {coin} Flex"),
                 }
     except Exception as e:
         log_activity(f"[earn] kucoin rate check error: {e}")
 
     # ByBit rates
+    # v10.2.3: Real field names from API: estimateApr, productId, minStakeAmount
     try:
         bb_products = await bybit_earn_get_products(coin)
         for p in bb_products:
-            apr_str = p.get("estimateAnnualYield", p.get("annualYield", "0"))
+            # v10.2.3: ByBit uses "estimateApr" (not "estimateAnnualYield")
+            apr_str = p.get("estimateApr", p.get("estimateAnnualYield", p.get("annualYield", "0")))
             apr = float(apr_str) if apr_str else 0.0
             apr_pct = round(apr * 100, 2) if apr < 1 else round(apr, 2)
+            print(f"[earn/bb] APR parse: estimateApr={p.get('estimateApr','?')}, raw={apr}, pct={apr_pct}%", flush=True)
             if apr_pct > best["apr"]:
                 best = {
                     "exchange": "bybit",
-                    "product_id": p.get("productId", ""),
+                    "product_id": str(p.get("productId", "")),
                     "apr": apr_pct,
                     "min_amount": float(p.get("minStakeAmount", p.get("minPurchaseAmount", 0))),
                     "product_name": p.get("productName", f"ByBit {coin} Flex"),
@@ -1233,8 +1241,8 @@ async def earn_auto_place_idle(exchange: str = "auto") -> dict:
             kc_products = await kucoin_earn_get_savings_products("USDT")
             if kc_products:
                 p = kc_products[0]
-                pid = p.get("id", p.get("productId", ""))
-                min_amt = float(p.get("minInvestAmount", p.get("minPurchaseAmount", 1)))
+                pid = str(p.get("id", p.get("productId", "")))  # v10.2.3: KuCoin uses "id"
+                min_amt = float(p.get("userLowerLimit", p.get("minInvestAmount", p.get("minPurchaseAmount", 1))))
                 if amount >= min_amt and pid:
                     sub = await kucoin_earn_subscribe(pid, round(amount, 2))
                     if sub["success"]:
