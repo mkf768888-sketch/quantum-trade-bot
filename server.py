@@ -6850,7 +6850,7 @@ async def auto_scanner_loop():
                 _scanner_state["ok_streak"] = 0
                 if not _scanner_state["alert_sent"]:
                     _scanner_state["alert_sent"] = True
-                    msg = "🔍 <b>QuantumTrade AutoScanner v8.3.0</b>\n\n"
+                    msg = f"🔍 <b>QuantumTrade AutoScanner v{app.version}</b>\n\n"
                     msg += "\n".join(issues)
                     if warnings: msg += "\n\n" + "\n".join(warnings[:3])
                     if recommendations: msg += "\n\n" + "\n".join(recommendations[:2])
@@ -6866,7 +6866,7 @@ async def auto_scanner_loop():
                         f"📊 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s\n"
                         f"🤖 AP: {'ВКЛ' if AUTOPILOT else 'ВЫКЛ'} · Arb: {'ВКЛ' if ARB_EXEC_ENABLED else 'ВЫКЛ'}\n"
                         f"📋 Сделок: {_perf_stats['total_trades']} · WR: {wr:.0f}% · PnL: ${_perf_stats['total_pnl']:.2f}\n"
-                        f"🔥 Streak: {_perf_stats['streak']} · Версия: 10.0.0"
+                        f"🔥 Streak: {_perf_stats['streak']} · Версия: {app.version}"
                     )
                     if warnings: msg += "\n\n" + "\n".join(warnings[:2])
                     if recommendations: msg += "\n\n" + "\n".join(recommendations[:2])
