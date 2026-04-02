@@ -4706,7 +4706,7 @@ async def _tg_stats(chat_id: int):
         bb_txt = f"\n🟡 ByBit: <code>{_bybit_stats['calls']}</code> calls · X-Arb checks: <code>{_xarb_stats['checks']}</code>"
     kb = {"inline_keyboard": [[{"text": "◀️ Меню", "callback_data": "menu_main"}]]}
     await _tg_send(chat_id,
-        f"📊 <b>Статистика трейдинга v10.0</b>\n"
+        f"📊 <b>Статистика трейдинга v{app.version}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"Закрытых сделок: <code>{total}</code> (открыто: <code>{open_}</code>)\n"
         f"Побед: <code>{wins}</code> / Потерь: <code>{losses}</code>\n"
@@ -4921,7 +4921,7 @@ async def _tg_diag(chat_id: int):
     # 17. v10.0: Security
     results.append(f"<b>🔒 Security:</b> Auth=✅ InputValidation=✅ RateLimit=func")
 
-    text = "🔬 <b>QuantumTrade Diagnostics v10.0</b>\n" + "━" * 30 + "\n\n" + "\n\n".join(results)
+    text = f"🔬 <b>QuantumTrade Diagnostics v{app.version}</b>\n" + "━" * 30 + "\n\n" + "\n\n".join(results)
     await _tg_send(chat_id, text)
 
 
@@ -5871,7 +5871,7 @@ async def _tg_ai_ask(chat_id: int, question: str):
             by_sym_str += f"\n  {sym}: {sdata['trades']} сделок, WR {swr}%, PnL ${sdata['pnl']:.2f}"
     arb_info = f"Арбитраж: {_arb_stats.get('total', 0)} попыток, {_arb_stats.get('success', 0)} успешных, PnL ${_arb_stats.get('total_pnl', 0):.4f}"
 
-    system = f"""Ты — AI-консультант торгового бота QuantumTrade v10.0.
+    system = f"""Ты — AI-консультант торгового бота QuantumTrade v{app.version}.
 Текущие показатели:
 - Всего сделок: {total}, Win Rate: {win_rate:.1f}%, PnL: ${total_pnl:.2f}
 - Streak (серия): {streak} ({'побед' if streak > 0 else 'поражений' if streak < 0 else 'нейтральная'})
@@ -6235,7 +6235,7 @@ async def startup():
     ai_chat_model = AI_TIER_CHAT.upper()
     ai_crit_model = AI_TIER_CRITICAL.upper()
     await notify(
-        f"⚛ <b>QuantumTrade v10.0</b>\n"
+        f"⚛ <b>QuantumTrade v{app.version}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 Режим: {mode} · Риск: {risk_pct}% · Леверидж: {MAX_LEVERAGE}x\n"
         f"🎯 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s\n"
