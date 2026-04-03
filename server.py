@@ -1938,7 +1938,7 @@ _xarb_history: list = []  # last 50 opportunities
 
 XARB_MIN_SPREAD = float(os.getenv("XARB_MIN_SPREAD", "0.003"))   # 0.3% min spread
 XARB_SYMBOLS = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]              # monitored pairs
-XARB_ENABLED = os.getenv("XARB_ENABLED", "true").lower() == "true"
+XARB_ENABLED = False  # v10.9.3: HARDCODED OFF — same reason as ARB_EXEC_ENABLED
 
 async def check_cross_exchange_arb() -> list:
     """v9.0: Compare prices between KuCoin and ByBit for arb opportunities.
@@ -5123,7 +5123,7 @@ async def _notify_arb(opp: dict):
 
 # ── v7.3.9: Triangular Arb EXECUTION (safe) ───────────────────────────────────
 ARB_EXEC_USDT     = float(os.getenv("ARB_EXEC_USDT", "5"))     # v8.3: lowered to $5 for small balance testing
-ARB_EXEC_ENABLED  = os.getenv("ARB_EXEC_ENABLED", "false").lower() == "true"  # v10.9.2: OFF by default — notification mode only (small accounts: legs fail, leaving stuck coins)
+ARB_EXEC_ENABLED  = False  # v10.9.3: HARDCODED OFF — env var ignored. Legs 2/3 fail on small balance leaving stuck coins. Re-enable only when capital > $500 by changing this line.
 ARB_MIN_PROFIT_PCT = 0.35  # v8.3.5: 0.35% (was 0.5%) — execute more arbs, still above 3x fee
 _arb_stats: dict   = {"total": 0, "success": 0, "failed": 0, "total_pnl": 0.0,
                        "opportunities_found": 0, "best_spread": 0.0, "last_opp_ts": 0}
