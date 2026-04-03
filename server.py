@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v10.5.0
+QuantumTrade AI - FastAPI Backend v10.7.0
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
@@ -91,7 +91,7 @@ DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")  
 AI_TIER_VISION    = os.getenv("AI_TIER_VISION", "haiku")     # haiku (default) | opus
 AI_TIER_CHAT      = os.getenv("AI_TIER_CHAT", "deepseek")    # deepseek (default) | haiku | sonnet
 AI_TIER_CRITICAL  = os.getenv("AI_TIER_CRITICAL", "opus")    # opus (default) | sonnet
-ORIGIN_QC_TOKEN   = os.getenv("ORIGIN_QC_TOKEN", "")     # Phase 6: Origin QC Wukong 180
+ORIGIN_QC_TOKEN   = os.getenv("ORIGIN_QC_TOKEN", "") or os.getenv("ORIGIN_QC_KEY", "")  # v10.7: fallback ORIGIN_QC_KEY
 LUNARCRUSH_API_KEY = os.getenv("LUNARCRUSH_API_KEY", "") # v10.2: LunarCrush v4 Bearer token
 AWS_ACCESS_KEY_ID  = os.getenv("AWS_ACCESS_KEY_ID",  "")   # v7.3.1: Amazon Braket
 AWS_SECRET_KEY     = os.getenv("AWS_SECRET_ACCESS_KEY", "") # v7.3.1: Amazon Braket
@@ -139,6 +139,11 @@ ARB_RESERVE_USDT = float(os.getenv("ARB_RESERVE_USDT", "3"))     # v10.0: $3 (wa
 SPOT_BUY_MIN_USDT = float(os.getenv("SPOT_BUY_MIN_USDT", "5"))   # v10.0: $5 (was $20) — allow small trades
 # v10.0: Max simultaneous open positions — prevents draining all USDT in 1 cycle
 MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "2"))     # v10.0: max 2 at a time (was unlimited)
+# v10.7: Capital protection — prevent aggressive USDT drain into coins
+USDT_FLOOR_PCT     = float(os.getenv("USDT_FLOOR_PCT", "0.30"))      # v10.7: keep ≥30% portfolio in USDT
+MAX_DAILY_BUYS     = int(os.getenv("MAX_DAILY_BUYS", "4"))           # v10.7: max 4 BUY trades per 24h
+POST_SELL_REST_SEC = int(os.getenv("POST_SELL_REST_SEC", "1800"))    # v10.7: 30 min rest after sell before re-buy
+_last_sell_ts: float = 0.0  # v10.7: timestamp of last sell (for rest period)
 # v7.2.3: TP/SL ratio улучшен до 3:1 (было 2:1) — исправляет асимметрию убытков
 TP_PCT         = 0.04   # v10.0: 4% (was 6%) — faster profit taking for small account
 SL_PCT         = 0.02   # v7.2.3: 2% (было 2.5%) → ratio 2:1
@@ -4611,6 +4616,34 @@ async def auto_trade_cycle():
             log_activity(f"[cycle] {symbol}: SKIP BUY — {open_count} open positions (max {MAX_OPEN_POSITIONS})")
             continue
 
+        # ── v10.7: Capital Protection — prevent aggressive USDT drain ─────────
+        if action == "BUY":
+            # 1) USDT Floor: keep minimum % of portfolio in USDT
+            _total_portfolio = total_usdt + sum(
+                t.get("usdt_size", 0) for t in trade_log if t.get("status") == "open"
+            )
+            if _total_portfolio > 0:
+                _usdt_ratio = total_usdt / _total_portfolio
+                if _usdt_ratio < USDT_FLOOR_PCT:
+                    log_activity(f"[cycle] {symbol}: SKIP BUY — USDT floor {_usdt_ratio:.0%} < {USDT_FLOOR_PCT:.0%} "
+                                 f"(USDT=${total_usdt:.1f} portfolio=${_total_portfolio:.1f})")
+                    continue
+
+            # 2) Daily buy limit: max N buys per rolling 24h
+            _cutoff_24h = time.time() - 86400
+            _buys_today = sum(1 for t in trade_log
+                              if t.get("side") == "BUY"
+                              and t.get("open_ts", 0) > _cutoff_24h)
+            if _buys_today >= MAX_DAILY_BUYS:
+                log_activity(f"[cycle] {symbol}: SKIP BUY — daily limit {_buys_today}/{MAX_DAILY_BUYS}")
+                continue
+
+            # 3) Post-sell rest: don't re-buy immediately after selling
+            if _last_sell_ts > 0 and (time.time() - _last_sell_ts) < POST_SELL_REST_SEC:
+                _rest_left = int(POST_SELL_REST_SEC - (time.time() - _last_sell_ts))
+                log_activity(f"[cycle] {symbol}: SKIP BUY — post-sell rest ({_rest_left}s left)")
+                continue
+
         # ── v10.0: Self-learning filter — skip symbols with terrible winrate ──
         if symbol in _learning_insights.get("avoid_symbols", []):
             log_activity(f"[cycle] {symbol}: SKIPPED by self-learning (avoid list)")
@@ -4731,6 +4764,8 @@ async def auto_trade_cycle():
                             "pattern": vision.get("pattern","?"), "pnl": pnl_usdt})
                         _sell_label = "ByBit" if _sell_acct == "bybit_spot" else "KuCoin"
                         log_activity(f"[cycle] {symbol}: SELL signal → {_sell_label} SOLD PnL=${pnl_usdt:+.4f}")
+                        # v10.7: Capital protection — rest timer after sell
+                        _last_sell_ts = time.time()
 
         # ── Фьючерсы: собираем кандидатов ────────────────────────────────────
         if symbol in ("BTC-USDT", "ETH-USDT", "SOL-USDT"):
@@ -5495,6 +5530,10 @@ async def spot_monitor_loop():
                                 f"Длительность: {duration_min}м"
                             )
                             log_activity(f"[spot_mon] {symbol} ({_exch_label}) {reason} SOLD PnL=${pnl_usdt:+.4f}")
+                            # v10.7: Capital protection — set rest timer so bot doesn't re-buy immediately
+                            global _last_sell_ts
+                            _last_sell_ts = time.time()
+                            log_activity(f"[capital] post-sell rest started ({POST_SELL_REST_SEC}s before next BUY)")
                             # v10.3: Smart Money Router — route freed USDT after SELL
                             _earn_exch = "bybit" if _trade_acct == "bybit_spot" else "kucoin"
                             asyncio.ensure_future(smart_money_post_sell(_earn_exch))
@@ -7536,7 +7575,8 @@ async def startup():
         f"🛡️ Opus Gate: сделки >${OPUS_GATE_MIN_USDT:.0f} → подтверждение AI\n"
         f"🤖 AI: {ai_chat_model} (чат) · {ai_crit_model} (критич.)\n"
         f"{qc_label}\n"
-        f"📦 Max позиций: {MAX_OPEN_POSITIONS} · Stale auto-sell: 12h\n"
+        f"📦 Max позиций: {MAX_OPEN_POSITIONS} · Stale auto-sell: 12h/48h\n"
+        f"🛡 USDT Floor: {USDT_FLOOR_PCT:.0%} · Daily buys: {MAX_DAILY_BUYS} · Rest: {POST_SELL_REST_SEC}s\n"
         f"💰 Резерв: ${ARB_RESERVE_USDT:.0f} · Min сделка: ${SPOT_BUY_MIN_USDT:.0f} · История: {len(trade_log)}"
     )
 
