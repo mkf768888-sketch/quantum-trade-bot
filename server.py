@@ -5104,7 +5104,7 @@ async def _notify_arb(opp: dict):
         f"\U0001f4b0 \u041f\u0440\u0438\u0431\u044b\u043b\u044c (\u043f\u043e\u0441\u043b\u0435 \u043a\u043e\u043c\u0438\u0441\u0441\u0438\u0439 0.3%):\n"
         f"  $100  \u2192 <code>${profit_100:+.3f}</code>\n"
         f"  $1000 \u2192 <code>${profit_1000:+.2f}</code>\n\n"
-        f"\u23f0 <i>\u0414\u0435\u0439\u0441\u0442\u0432\u0443\u0439 \u0431\u044b\u0441\u0442\u0440\u043e \u2014 \u0430\u0440\u0431\u0438\u0442\u0440\u0430\u0436 \u0436\u0438\u0432\u0451\u0442 \u0441\u0435\u043a\u0443\u043d\u0434\u044b!</i>"
+        f"\U0001f4a1 <i>{'Исполнение ВЫКЛ — только сигнал (ARB_EXEC_ENABLED=false)' if not ARB_EXEC_ENABLED else 'Арбитраж живёт секунды — бот исполняет!'}</i>"
     )
     await notify(msg)
     # v8.3.3: Track arb opportunity
@@ -5123,7 +5123,7 @@ async def _notify_arb(opp: dict):
 
 # ── v7.3.9: Triangular Arb EXECUTION (safe) ───────────────────────────────────
 ARB_EXEC_USDT     = float(os.getenv("ARB_EXEC_USDT", "5"))     # v8.3: lowered to $5 for small balance testing
-ARB_EXEC_ENABLED  = os.getenv("ARB_EXEC_ENABLED", "true").lower() == "true"  # v8.3: ON by default
+ARB_EXEC_ENABLED  = os.getenv("ARB_EXEC_ENABLED", "false").lower() == "true"  # v10.9.2: OFF by default — notification mode only (small accounts: legs fail, leaving stuck coins)
 ARB_MIN_PROFIT_PCT = 0.35  # v8.3.5: 0.35% (was 0.5%) — execute more arbs, still above 3x fee
 _arb_stats: dict   = {"total": 0, "success": 0, "failed": 0, "total_pnl": 0.0,
                        "opportunities_found": 0, "best_spread": 0.0, "last_opp_ts": 0}
