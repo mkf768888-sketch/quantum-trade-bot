@@ -104,6 +104,7 @@ AI_TIER_CHAT      = os.getenv("AI_TIER_CHAT", "deepseek")    # deepseek (default
 AI_TIER_CRITICAL  = os.getenv("AI_TIER_CRITICAL", "opus")    # opus (default) | sonnet
 ORIGIN_QC_TOKEN   = ""  # v10.7.2: Wukong отключён (¥20/сек = дорого). CPU sim + Braket = основная стратегия
 LUNARCRUSH_API_KEY = os.getenv("LUNARCRUSH_API_KEY", "") # v10.2: LunarCrush v4 Bearer token
+CRYPTOCOMPARE_API_KEY = os.getenv("CRYPTOCOMPARE_API_KEY", "")  # v10.9.6: CryptoCompare Social fallback
 AWS_ACCESS_KEY_ID  = os.getenv("AWS_ACCESS_KEY_ID",  "")   # v7.3.1: Amazon Braket
 AWS_SECRET_KEY     = os.getenv("AWS_SECRET_ACCESS_KEY", "") # v7.3.1: Amazon Braket
 AWS_REGION         = os.getenv("AWS_REGION", "us-east-1")  # v7.3.1: Braket region
@@ -471,7 +472,8 @@ _braket_bias: dict   = {}    # v7.3.1: последний bias от Braket
 _braket_ready: bool  = bool(os.getenv("AWS_ACCESS_KEY_ID","") and os.getenv("AWS_SECRET_ACCESS_KEY",""))  # v7.3.1
 if _braket_ready:
     _braket_interval_h = int(os.getenv("BRAKET_INTERVAL", "21600")) // 3600
-    print(f"[braket] ✅ AWS credentials found → IonQ Harmony QPU ready (every {_braket_interval_h}h)", flush=True)
+    _device_name = BRAKET_DEVICE_ARN.split("/")[-1] if BRAKET_DEVICE_ARN else "QPU"
+    print(f"[braket] ✅ AWS credentials found → {_device_name} ready (every {_braket_interval_h}h)", flush=True)
     print(f"[braket]    S3: {os.getenv('BRAKET_S3_BUCKET', 'NOT SET')} | Region: {os.getenv('AWS_REGION', 'us-east-1')}", flush=True)
 else:
     print("[braket] ⚠️ AWS credentials not set → Braket QPU disabled, CPU simulator only", flush=True)
@@ -1274,7 +1276,7 @@ async def bybit_earn_get_products(coin: str = "USDT") -> list:
                     # v10.2.2: Log first item fields for APR debugging
                     first = items[0]
                     print(f"[earn/bb] found {len(items)} products! First item keys: {list(first.keys())[:15]}", flush=True)
-                    print(f"[earn/bb] first item: productId={first.get('productId','?')}, coin={first.get('coin','?')}, estimateAnnualYield={first.get('estimateAnnualYield','?')}, annualYield={first.get('annualYield','?')}, minStakeAmount={first.get('minStakeAmount','?')}", flush=True)
+                    print(f"[earn/bb] first item: productId={first.get('productId','?')}, coin={first.get('coin','?')}, estimateApr={first.get('estimateApr','?')}, minStakeAmount={first.get('minStakeAmount','?')}", flush=True)
                     # v10.2.2: If searching without coin filter, filter results to our coin
                     if not coin_filter and coin:
                         items = [p for p in items if (p.get("coin", "") or "").upper() == coin.upper()]
@@ -3160,6 +3162,17 @@ async def mirofish_simulate(symbol: str, price: float, q_score: float,
             f"\nSocial (LunarCrush): Galaxy={lc.get('galaxy_score',0)}/100, "
             f"Sentiment={lc.get('sentiment',0)}, SocialVol={lc.get('social_volume',0)}"
         )
+    # v10.9.6: CryptoCompare Social — fallback когда LunarCrush недоступен
+    elif CRYPTOCOMPARE_API_KEY:
+        cc = _cryptocompare_social_cache.get(coin_key)
+        if cc:
+            market_ctx += (
+                f"\nSocial (CryptoCompare): "
+                f"Reddit={cc.get('reddit_posts_per_day',0):.0f}posts/day "
+                f"({cc.get('reddit_subscribers',0):,}subs), "
+                f"Twitter={cc.get('twitter_followers',0):,}followers, "
+                f"GitHub={cc.get('github_stars',0):,}⭐"
+            )
 
     # v10.0: Reddit sentiment
     if _reddit_cache.get("success"):
@@ -3925,6 +3938,67 @@ async def fetch_top_traders_positions() -> dict:
         return {"success": False, "error": str(e), "traders": [], "consensus": {}}
 
 
+
+# ── v10.9.6: CryptoCompare Social (fallback когда LunarCrush недоступен) ────────
+_cryptocompare_social_cache: dict = {}
+_cryptocompare_social_ts: float = 0.0
+_CC_COIN_IDS: dict = {
+    "BTC": 1182, "ETH": 7605, "SOL": 5426, "BNB": 311855, "XRP": 5031,
+    "AVAX": 328478, "DOGE": 4432, "LINK": 685, "ARB": 389038, "PEPE": 405070,
+    "MATIC": 3890, "DOT": 596244, "UNI": 392097, "LTC": 3808, "ATOM": 166905,
+}
+
+async def fetch_cryptocompare_social(symbols: list = None) -> dict:
+    """v10.9.6: Social metrics из CryptoCompare API (бесплатный план).
+    Fallback когда LunarCrush недоступен. Кэш 60 минут."""
+    global _cryptocompare_social_cache, _cryptocompare_social_ts
+    now = time.time()
+    if now - _cryptocompare_social_ts < 3600 and _cryptocompare_social_cache:
+        return _cryptocompare_social_cache
+    if not CRYPTOCOMPARE_API_KEY:
+        return {}
+    if symbols is None:
+        symbols = list(_CC_COIN_IDS.keys())
+    result = {}
+    try:
+        async with aiohttp.ClientSession() as session:
+            for sym in symbols:
+                coin_id = _CC_COIN_IDS.get(sym.upper())
+                if not coin_id:
+                    continue
+                try:
+                    url = "https://min-api.cryptocompare.com/data/social/coin/latest"
+                    params = {"coinId": coin_id, "api_key": CRYPTOCOMPARE_API_KEY}
+                    async with session.get(url, params=params,
+                                           timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                        if resp.status != 200:
+                            continue
+                        data = await resp.json()
+                    if data.get("Response") != "Success":
+                        continue
+                    d = data.get("Data", {})
+                    reddit = d.get("Reddit", {})
+                    twitter = d.get("Twitter", {})
+                    code_list = d.get("CodeRepository", {}).get("List", [{}])
+                    code = code_list[0] if code_list else {}
+                    result[sym] = {
+                        "reddit_posts_per_day":    reddit.get("posts_per_day", 0),
+                        "reddit_comments_per_day": reddit.get("comments_per_day", 0),
+                        "reddit_subscribers":      reddit.get("subscribers", 0),
+                        "twitter_followers":       twitter.get("followers", 0),
+                        "github_stars":            code.get("stars", 0),
+                        "github_forks":            code.get("forks", 0),
+                    }
+                    await asyncio.sleep(0.3)
+                except Exception as e:
+                    log_activity(f"[cc_social] {sym} error: {e}")
+        _cryptocompare_social_cache = result
+        _cryptocompare_social_ts = now
+        log_activity(f"[cc_social] ✅ обновлён: {len(result)} монет")
+    except Exception as e:
+        log_activity(f"[cc_social] fetch error: {e}")
+    return result
+
 # ── v10.0: LunarCrush Galaxy Score (Free API) ─────────────────────────────────
 _lunarcrush_cache: dict = {}
 _lunarcrush_ts: float = 0.0
@@ -4502,6 +4576,7 @@ async def _safe_background_enrich(fg_data: dict):
             fetch_macro_context(),
             fetch_whale_movements(),
             fetch_lunarcrush_sentiment(),
+            fetch_cryptocompare_social(),
             fetch_reddit_sentiment(),
             update_learning_insights(),
         ]
