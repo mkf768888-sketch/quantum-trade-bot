@@ -47,7 +47,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.6.1")
+app = FastAPI(title="QuantumTrade AI", version="10.6.2")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -5452,11 +5452,13 @@ async def spot_monitor_loop():
                     # v10.6: Extended stale — >48h regardless of PnL (capital locked too long)
                     elif (time.time() - open_ts) > 172800:
                         should_close = True
-                        reason = f"⏰ Stale (48h+, PnL {pnl_pct*100:+.1f}%)"
+                        reason = f"⏰ Stale ({(time.time()-open_ts)/3600:.0f}h, PnL {pnl_pct*100:+.1f}%)"
+                        log_activity(f"[spot_mon] {symbol}: triggering 48h+ stale close (age={int((time.time()-open_ts)/3600)}h)")
                     # v10.6: DevOps Agent flagged this trade for auto-close
                     elif trade.get("_devops_stale_sell"):
                         should_close = True
                         reason = "🔧 DevOps auto-close"
+                        log_activity(f"[spot_mon] {symbol}: DevOps flag detected, closing")
 
                     if should_close:
                         # v10.0: Sell on correct exchange
@@ -8717,8 +8719,8 @@ async def _agent_devops() -> list:
 
         # 6g. Trading cycle health — is the bot actually scanning?
         last_cycle = None
-        for e in reversed(activity_log[-20:]):
-            if "[cycle start]" in e.get("msg", ""):
+        for e in reversed(activity_log):  # search ALL entries, not just last 20
+            if "[cycle" in e.get("msg", ""):
                 last_cycle = e.get("ts", "")
                 break
         if last_cycle:
@@ -8731,9 +8733,10 @@ async def _agent_devops() -> list:
                                 f"possible stall. Autopilot is ON."})
             except Exception:
                 pass
-        elif AUTOPILOT and total_entries > 20:
+        elif AUTOPILOT and total_entries > 50:
+            # Only flag if enough time passed (>50 log entries = ~10+ min of uptime)
             findings.append({"agent": "DevOps", "severity": "warning",
-                "text": "No [cycle start] found in recent logs — trading loop may be dead"})
+                "text": "No [cycle] found in activity_log — trading loop may be dead"})
 
         # 6h. Summary of auto-fixes applied this session
         if _devops_fixes_applied:
