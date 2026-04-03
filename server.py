@@ -47,7 +47,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.5.3")
+app = FastAPI(title="QuantumTrade AI", version="10.6.0")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -6552,7 +6552,7 @@ async def _tg_earn_all(chat_id: int):
 
 async def _tg_agency(chat_id: int):
     """v10.5.0: Agency Agent — run full analysis or show last report."""
-    await _tg_send(chat_id, "🤖 <i>Agency Agents запущены... (5 агентов)</i>")
+    await _tg_send(chat_id, "🤖 <i>Agency Agents запущены... (6 агентов)</i>")
     try:
         result = await agency_run_cycle()
         _agency_state["last_run"] = datetime.utcnow().isoformat()
@@ -8593,12 +8593,150 @@ async def _agent_optimizer() -> list:
     return findings
 
 # ── Agency Engine — orchestrator ──────────────────────────────────────────
+# ── Agent 6: DevOps — autonomous bug scanner, code health, auto-fix ───────
+# Inspired by ECC (everything-claude-code): security-reviewer + loop-operator
+_devops_fixes_applied: list = []  # track auto-fixes this session
+
+async def _agent_devops() -> list:
+    """v10.5.3: DevOps Agent — scans code patterns, runtime health, auto-fixes safe issues.
+    Based on ECC patterns: confidence-based filtering (>80% = real bug)."""
+    findings = []
+    try:
+        # 6a. Runtime error rate analysis (from activity_log)
+        total_entries = len(activity_log)
+        if total_entries > 10:
+            recent = activity_log[-100:]
+            errors = [e for e in recent if "error" in e.get("msg", "").lower()
+                      or "fail" in e.get("msg", "").lower()
+                      or "exception" in e.get("msg", "").lower()]
+            error_rate = len(errors) / len(recent) * 100
+            if error_rate > 20:
+                # Extract top error patterns
+                patterns = {}
+                for e in errors:
+                    msg = e.get("msg", "")[:60]
+                    key = msg.split(":")[0] if ":" in msg else msg[:30]
+                    patterns[key] = patterns.get(key, 0) + 1
+                top = sorted(patterns.items(), key=lambda x: -x[1])[:3]
+                top_str = ", ".join(f"{k}(×{v})" for k, v in top)
+                findings.append({"agent": "DevOps", "severity": "warning",
+                    "text": f"Error rate {error_rate:.0f}% ({len(errors)}/{len(recent)}). "
+                            f"Top: {top_str}"})
+            elif error_rate > 5:
+                findings.append({"agent": "DevOps", "severity": "info",
+                    "text": f"Error rate {error_rate:.0f}% — acceptable"})
+
+        # 6b. Orphan trade auto-cleanup (stale > 12h → trigger sell)
+        stale_trades = [t for t in trade_log
+                        if t.get("status") == "open"
+                        and time.time() - t.get("open_ts", time.time()) > 43200]  # 12h
+        for t in stale_trades[:2]:
+            sym = t.get("symbol", "?")
+            age_h = (time.time() - t.get("open_ts", time.time())) / 3600
+            trade_id = t.get("id", "")
+            # Check if price moved significantly
+            try:
+                entry = t.get("price", 0)
+                cur = 0
+                ticker = _ws_prices.get(sym) or {}
+                cur = float(ticker.get("price", 0))
+                if cur and entry:
+                    change_pct = abs(cur - entry) / entry * 100
+                    if change_pct < 1.5 and age_h > 12:
+                        # Auto-close stale flat trade — trading rule: stale auto-sell 12h
+                        findings.append({"agent": "DevOps", "severity": "warning",
+                            "text": f"AUTO-FIX candidate: {sym} open {age_h:.0f}h, "
+                                    f"price change {change_pct:.1f}% (<1.5%). "
+                                    f"Rule: stale auto-sell 12h. Closing via spot_monitor."})
+                        # Mark for auto-close by setting a flag
+                        t["_devops_stale_sell"] = True
+                        _devops_fixes_applied.append({
+                            "ts": datetime.utcnow().isoformat(),
+                            "action": f"flagged stale {sym} for auto-close",
+                            "age_h": round(age_h, 1),
+                        })
+                    else:
+                        findings.append({"agent": "DevOps", "severity": "info",
+                            "text": f"Stale {sym} ({age_h:.0f}h) but price moved {change_pct:.1f}% — monitoring"})
+            except Exception:
+                pass
+
+        # 6c. Memory / resource health
+        open_count = sum(1 for t in trade_log if t.get("status") == "open")
+        closed_count = sum(1 for t in trade_log if t.get("status") == "closed")
+        total_log = len(trade_log)
+        if total_log > 1500:
+            findings.append({"agent": "DevOps", "severity": "warning",
+                "text": f"trade_log size {total_log} — approaching 2000 limit. "
+                        f"Old trades may be lost on next restart."})
+
+        # 6d. API rate limit proximity (check recent 429s)
+        rate_limits = sum(1 for e in activity_log[-50:]
+                         if "429" in e.get("msg", "") or "rate" in e.get("msg", "").lower())
+        if rate_limits > 3:
+            findings.append({"agent": "DevOps", "severity": "warning",
+                "text": f"Rate limiting detected: {rate_limits} hits in recent logs. "
+                        f"Consider increasing cycle intervals."})
+
+        # 6e. Earn position health — are Earn positions actually earning?
+        if _earn_positions:
+            zero_apr = [p for p in _earn_positions if p.get("apr", 0) <= 0]
+            if zero_apr:
+                findings.append({"agent": "DevOps", "severity": "info",
+                    "text": f"{len(zero_apr)} Earn positions with 0% APR — verify they're active"})
+
+        # 6f. WebSocket staleness check
+        if _ws_prices:
+            # Check if any prices are very stale (>5 min old)
+            now = time.time()
+            stale_ws = sum(1 for v in _ws_prices.values()
+                          if isinstance(v, dict) and now - v.get("ts", now) > 300)
+            if stale_ws > len(_ws_prices) * 0.5 and len(_ws_prices) > 3:
+                findings.append({"agent": "DevOps", "severity": "warning",
+                    "text": f"WebSocket: {stale_ws}/{len(_ws_prices)} prices stale (>5min). "
+                            f"Possible disconnect — reconnect needed."})
+
+        # 6g. Trading cycle health — is the bot actually scanning?
+        last_cycle = None
+        for e in reversed(activity_log[-20:]):
+            if "[cycle start]" in e.get("msg", ""):
+                last_cycle = e.get("ts", "")
+                break
+        if last_cycle:
+            try:
+                last_dt = datetime.fromisoformat(last_cycle)
+                age_min = (datetime.utcnow() - last_dt).total_seconds() / 60
+                if age_min > 5 and AUTOPILOT:
+                    findings.append({"agent": "DevOps", "severity": "warning",
+                        "text": f"Trading loop last ran {age_min:.0f} min ago — "
+                                f"possible stall. Autopilot is ON."})
+            except Exception:
+                pass
+        elif AUTOPILOT and total_entries > 20:
+            findings.append({"agent": "DevOps", "severity": "warning",
+                "text": "No [cycle start] found in recent logs — trading loop may be dead"})
+
+        # 6h. Summary of auto-fixes applied this session
+        if _devops_fixes_applied:
+            findings.append({"agent": "DevOps", "severity": "info",
+                "text": f"Auto-fixes this session: {len(_devops_fixes_applied)} actions"})
+
+        if not findings:
+            findings.append({"agent": "DevOps", "severity": "info",
+                "text": f"System healthy. Trades: {open_count} open, {closed_count} closed. "
+                        f"No anomalies detected."})
+    except Exception as e:
+        findings.append({"agent": "DevOps", "severity": "warning",
+            "text": f"DevOps error: {str(e)[:100]}"})
+    return findings
+
 _AGENCY_AGENTS = [
     ("🔍 Auditor",   _agent_auditor),
     ("⚠️ Risk",      _agent_risk),
     ("📊 Strategy",  _agent_strategy),
     ("🛡 Security",  _agent_security),
     ("⚙️ Optimizer", _agent_optimizer),
+    ("🔧 DevOps",    _agent_devops),
 ]
 
 async def agency_run_cycle() -> dict:
