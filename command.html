@@ -563,14 +563,31 @@ function saveApiKey(){const k=document.getElementById('apiKeyInput').value.trim(
 
 // ── Fetch & Update ────────────────────────────────────────────────────────
 async function fetchData(){
+  // Use manual AbortController instead of AbortSignal.timeout() for browser compatibility
+  // AbortSignal.timeout() fails in Telegram WebView, iOS Safari <15.4, and some envs
+  const ctrl=new AbortController();
+  const tid=setTimeout(()=>ctrl.abort(),8000);
   try{
-    const r=await fetch(`${BASE}/api/dashboard/live`,{signal:AbortSignal.timeout(8000)});
-    if(!r.ok)throw new Error(r.status);
+    const r=await fetch(`${BASE}/api/dashboard/live`,{signal:ctrl.signal});
+    clearTimeout(tid);
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
     const d=await r.json();
     const prev=D;D=d;tick++;
     document.getElementById('refreshTick').textContent=`#${tick}`;
+    const eb=document.getElementById('errBanner');if(eb)eb.remove();
     renderAll(d,prev);
-  }catch(e){document.getElementById('refreshTick').textContent='ERR';}
+  }catch(e){
+    clearTimeout(tid);
+    document.getElementById('refreshTick').textContent='ERR';
+    if(!document.getElementById('errBanner')){
+      const banner=document.createElement('div');
+      banner.id='errBanner';
+      banner.style.cssText='position:fixed;top:60px;left:50%;transform:translateX(-50%);background:rgba(244,63,94,.15);border:1px solid rgba(244,63,94,.4);color:#f43f5e;padding:10px 20px;border-radius:10px;font-size:.8rem;z-index:200;text-align:center;max-width:90vw';
+      const msg=e.name==='AbortError'?'Request timeout (8s)':e.message;
+      banner.innerHTML=`⚠️ <b>${msg}</b><br><span style="color:#94a3b8;font-size:.7rem">Open panel from Railway URL, not local file</span>`;
+      document.body.appendChild(banner);
+    }
+  }
 }
 
 // ── Main render ───────────────────────────────────────────────────────────
@@ -926,7 +943,7 @@ async function saveSettings(){
     const r=await fetch(`${BASE}/api/settings`,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':key},body:JSON.stringify(body)});
     const d=await r.json();
     if(r.ok){showToast('Settings saved ✅');playBeep(660,'sine',.1,.2);}
-    else showToast(`Error: ${d.detail||'Unknown'}','err'`);
+    else showToast(`Error: ${d.detail||'Unknown'}`, 'err');
   }catch(e){showToast('Connection error','err');}
 }
 async function toggleModule(mod,enabled){
@@ -950,7 +967,7 @@ async function togglePause(){
 }
 
 // ── Module info ────────────────────────────────────────────────────────────
-function moduleInfo(m){const info={'kucoin':'Main exchange — Spot & Futures trading','bybit':'Secondary exchange — X-Arb & backup','trading':'Auto-trade cycle every 15s, QAOA signal','quantum':'CPU Simulator (free) + AWS Braket IonQ (70%)','mirofish':'15 AI agents vote on each trade (75% veto)','earn':'Auto-place idle USDT into Flexible Earn','router':'Smart Money Router — $1 arb + $2 trade reserve','arb':'2-asset + 3-asset triangular arbitrage scanner','ws':'WebSocket real-time price feed (10 pairs)'};showToast(info[m]||m);}
+function moduleInfo(m){const info={'kucoin':'Main exchange — Spot & Futures trading','bybit':'Secondary exchange — X-Arb & backup','trading':'Auto-trade cycle every 15s, QAOA signal','quantum':'CPU Simulator (free) + AWS Braket IonQ (70%)','mirofish':'15 AI agents vote on each trade (75% veto)','earn':'Auto-place idle USDT into Flexible Earn','router':'Smart Money Router — $3 arb reserve + $20 trade reserve in spot','arb':'2-asset + 3-asset triangular arbitrage scanner','ws':'WebSocket real-time price feed (10 pairs)'};showToast(info[m]||m);}
 
 // ── Background canvas ──────────────────────────────────────────────────────
 (function initBg(){

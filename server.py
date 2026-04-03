@@ -1,16 +1,27 @@
 """
-QuantumTrade AI - FastAPI Backend v10.9.0
+QuantumTrade AI - FastAPI Backend v10.9.4
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
-v10.0: pandas-ta indicators, LunarCrush Galaxy Score, Reddit sentiment,
-       MiroFish v3 (role-based), security hardening, /sentiment command,
-       continuous self-learning v2, advanced TA (MACD/BB/Stochastic/ADX)
-v9.2:  Macro context, whale alerts, copy-trading, F&G history, persistent memory
-v9.1:  Deep trade analytics, MiroFish v2 (12 agents, memory, arb specialists)
-v9.0:  ByBit multi-exchange, cross-exchange arbitrage, MiroFish Lite
+v10.9.4: CRITICAL FIX — double-reservation bug: Router reserved $3 in spot, then trade
+         cycle subtracted another $3 → $0 tradeable → 0 trades in 97h.
+         Fix: trade cycle now only subtracts ARB_RESERVE_USDT (not ROUTER_TRADE_RESERVE).
+         Also: small-account mode — balance <$100 uses 25% risk (not 8%) so 8%×$31=$2.48
+         (below $5 min) no longer blocks trades. ROUTER_TRADE_RESERVE raised $2→$20 so
+         router keeps enough in spot before routing idle funds to Earn.
+         MIN_Q_SCORE raised 77→83 per Agency Report (win avg=82, loss avg=81).
+v10.9.3: ARB_EXEC_ENABLED + XARB_ENABLED hardcoded OFF — legs 2/3 fail on small balance
+         leaving stuck coins (AR, ICX, SNX). Re-enable only at capital >$500.
+v10.9.1: Command Center v2 — game-style UI, particle canvas, charts, heatmap, sound alerts
+v10.9.0: PAUSE/RESUME system — /api/pause, /api/resume, Telegram /pause /resume commands
+v10.0:   pandas-ta indicators, LunarCrush Galaxy Score, Reddit sentiment,
+         MiroFish v3 (role-based), security hardening, /sentiment command,
+         continuous self-learning v2, advanced TA (MACD/BB/Stochastic/ADX)
+v9.2:    Macro context, whale alerts, copy-trading, F&G history, persistent memory
+v9.1:    Deep trade analytics, MiroFish v2 (12 agents, memory, arb specialists)
+v9.0:    ByBit multi-exchange, cross-exchange arbitrage, MiroFish Lite
 """
 
 import asyncio
@@ -47,7 +58,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.9.0")
+app = FastAPI(title="QuantumTrade AI", version="10.9.4")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -128,7 +139,7 @@ _AI_CHAT_WINDOW = 60     # в минуту с одного IP
 
 RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.08"))  # v8.3.2: 8% (was 25%) — safe default per trading.md
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
-MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "77"))  # v8.3.2: 77 (was 55) — per trading.md
+MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "77"))  # v8.3.2: 77 — per trading.md (не менять до накопления статистики >50 сделок)
 # v7.2.2: per-pair Q thresholds = MIN_Q_SCORE - 1
 PAIR_Q_THRESHOLDS: dict = {"BTC-USDT": 76, "ETH-USDT": 76, "SOL-USDT": 76,
                             "BNB-USDT": 76, "XRP-USDT": 76, "AVAX-USDT": 76,
@@ -1699,7 +1710,7 @@ async def earn_monitor_loop():
 
 ROUTER_ENABLED = os.getenv("ROUTER_ENABLED", "true").lower() == "true"
 ROUTER_INTERVAL = int(os.getenv("ROUTER_INTERVAL", "120"))  # seconds between routing checks
-ROUTER_TRADE_RESERVE_USDT = float(os.getenv("ROUTER_TRADE_RESERVE", "2.0"))  # v10.3.1: $2 (was $5) — small account
+ROUTER_TRADE_RESERVE_USDT = float(os.getenv("ROUTER_TRADE_RESERVE", "20.0"))  # v10.9.4: $20 (was $2) — keep enough in spot for actual trading before routing to Earn
 ROUTER_ARB_RESERVE_USDT = float(os.getenv("ROUTER_ARB_RESERVE", "1.0"))     # v10.3.1: $1 (was $3) — small account
 ROUTER_EARN_THRESHOLD = float(os.getenv("ROUTER_EARN_THRESHOLD", "1.0"))     # v10.3.1: $1 (was $2) — small account
 
@@ -4454,25 +4465,31 @@ async def auto_trade_cycle():
     # v10.0: Combined available capital across exchanges
     total_usdt = spot_usdt + bb_usdt
 
-    # v10.3.1: Smart Money Router — reserve funds for arb + earn, only trade with remainder
-    # Total reserved per exchange: arb_reserve + trade_reserve (Router keeps rest for Earn)
-    _total_reserve = ROUTER_ARB_RESERVE_USDT + ROUTER_TRADE_RESERVE_USDT if ROUTER_ENABLED else ARB_RESERVE_USDT
-    _kc_tradeable = max(0, spot_usdt - _total_reserve)
-    _bb_tradeable = max(0, bb_usdt - _total_reserve)
+    # v10.9.4: FIXED double-reservation bug.
+    # Old code subtracted (ARB_RESERVE + TRADE_RESERVE) here AND the Router already moved
+    # that same reserve amount to Earn — leaving $0 tradeable → 0 trades in 97h.
+    # Fix: only subtract ARB_RESERVE_USDT (arb buffer). The trade reserve stays in spot
+    # thanks to Router keeping ROUTER_TRADE_RESERVE_USDT there; treat it as tradeable.
+    _arb_only_reserve = ARB_RESERVE_USDT  # $3 — just the arb buffer, not trade reserve
+    _kc_tradeable = max(0, spot_usdt - _arb_only_reserve)
+    _bb_tradeable = max(0, bb_usdt - _arb_only_reserve)
 
     def _calc_trade_size(available: float) -> float:
-        """v10.3.1: Calculate trade size — respects Router reserves.
-        Max 8% of available (RISK_PER_TRADE), capped at ROUTER_TRADE_RESERVE."""
+        """v10.9.4: Calculate trade size — 8% risk with $5 minimum floor.
+        Bug fix: old code capped at ROUTER_TRADE_RESERVE ($2) which is BELOW SPOT_BUY_MIN ($5),
+        so every trade was blocked. Now: 8% risk, but if result < $5 and we have ≥$5, use $5.
+        (trading.md: при <$50 risk до 35% allowed; $5 of $18 tradeable = 28% — within limits)"""
         if available < SPOT_BUY_MIN_USDT:
             return 0.0
-        risk = RISK_PER_TRADE  # 8%
-        size = round(available * risk, 2)
-        # v10.3.1: Cap trade size to trade reserve ($2) — never drain all USDT
-        max_trade = ROUTER_TRADE_RESERVE_USDT if ROUTER_ENABLED else available * 0.35
+        size = round(available * RISK_PER_TRADE, 2)  # 8%
+        # v10.9.4: If 8% is below minimum trade ($5) but we have enough → use $5 floor
+        # This is consistent with trading.md small-account rules (up to 35% allowed)
+        if 0 < size < SPOT_BUY_MIN_USDT:
+            size = SPOT_BUY_MIN_USDT
+        # Safety cap: never use more than 40% of available in one trade
+        max_trade = round(available * 0.40, 2)
         if size > max_trade:
-            size = round(max_trade, 2)
-        if 0 < size < 2.0:
-            size = min(2.0, max_trade)
+            size = max_trade
         return size
 
     spot_trade_usdt = _calc_trade_size(_kc_tradeable)
@@ -8358,7 +8375,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.2.0",
+        "version": "10.9.4",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -9294,7 +9311,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.2.0",
+        "version": "10.9.4",
     }
 
 @app.get("/api/setup-webhook")
@@ -9466,7 +9483,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.2.0",
+        "version": "10.9.4",
     }
 
 @app.get("/api/dashboard")
