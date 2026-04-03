@@ -805,3 +805,79 @@ async def migrate_from_json(trade_log: list, perf_stats: dict):
     except Exception as e:
         print(f"[db] migration error: {e}")
     return count
+
+
+# ── v10.9.5: Auto-cleanup — prevent volume growth ──────────────────────────
+
+async def cleanup_old_data() -> dict:
+    """v10.9.5: Delete old data from high-volume tables to prevent disk growth.
+    Retention policy:
+      - signals:         30 days  (logs every 15min × 9 pairs = ~26k rows/month)
+      - q_score_history: 30 days  (same frequency)
+      - mirofish_memory: 14 days  (AI memory, recent is enough)
+      - whale_events:    14 days  (market context, recent is enough)
+      - macro_snapshots: 14 days  (hourly snapshots)
+      - fg_history:      90 days  (low frequency, keep longer for analytics)
+      - trades (closed): 180 days (keep 6 months of trade history)
+    Runs VACUUM ANALYZE after cleanup to actually reclaim disk space.
+    """
+    if not is_ready():
+        return {}
+    deleted = {}
+    try:
+        async with _pool.acquire() as conn:
+            r = await conn.execute("DELETE FROM signals WHERE ts < NOW() - INTERVAL '30 days'")
+            deleted["signals"] = int(r.split()[-1])
+
+            r = await conn.execute("DELETE FROM q_score_history WHERE ts < NOW() - INTERVAL '30 days'")
+            deleted["q_score_history"] = int(r.split()[-1])
+
+            r = await conn.execute("DELETE FROM mirofish_memory WHERE ts < NOW() - INTERVAL '14 days'")
+            deleted["mirofish_memory"] = int(r.split()[-1])
+
+            r = await conn.execute("DELETE FROM whale_events WHERE ts < NOW() - INTERVAL '14 days'")
+            deleted["whale_events"] = int(r.split()[-1])
+
+            r = await conn.execute("DELETE FROM macro_snapshots WHERE ts < NOW() - INTERVAL '14 days'")
+            deleted["macro_snapshots"] = int(r.split()[-1])
+
+            r = await conn.execute("DELETE FROM fg_history WHERE ts < NOW() - INTERVAL '90 days'")
+            deleted["fg_history"] = int(r.split()[-1])
+
+            r = await conn.execute("DELETE FROM trades WHERE status = 'closed' AND ts < NOW() - INTERVAL '180 days'")
+            deleted["trades_old"] = int(r.split()[-1])
+
+            total = sum(deleted.values())
+            print(f"[db] 🧹 cleanup: удалено {total} строк → {deleted}", flush=True)
+
+            # VACUUM to actually reclaim disk space
+            await conn.execute("VACUUM ANALYZE signals")
+            await conn.execute("VACUUM ANALYZE q_score_history")
+            await conn.execute("VACUUM ANALYZE mirofish_memory")
+            await conn.execute("VACUUM ANALYZE whale_events")
+            await conn.execute("VACUUM ANALYZE macro_snapshots")
+            print(f"[db] 🧹 VACUUM ANALYZE завершён", flush=True)
+
+    except Exception as e:
+        print(f"[db] cleanup error: {e}", flush=True)
+    return deleted
+
+
+async def get_table_sizes() -> dict:
+    """v10.9.5: Get row counts and estimated sizes for all tables."""
+    if not is_ready():
+        return {}
+    try:
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT
+                    relname AS table_name,
+                    n_live_tup AS row_count,
+                    pg_size_pretty(pg_total_relation_size(relid)) AS total_size
+                FROM pg_stat_user_tables
+                ORDER BY n_live_tup DESC
+            """)
+            return {r["table_name"]: {"rows": r["row_count"], "size": r["total_size"]} for r in rows}
+    except Exception as e:
+        print(f"[db] get_table_sizes error: {e}")
+        return {}

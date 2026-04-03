@@ -108,7 +108,7 @@ AWS_ACCESS_KEY_ID  = os.getenv("AWS_ACCESS_KEY_ID",  "")   # v7.3.1: Amazon Brak
 AWS_SECRET_KEY     = os.getenv("AWS_SECRET_ACCESS_KEY", "") # v7.3.1: Amazon Braket
 AWS_REGION         = os.getenv("AWS_REGION", "us-east-1")  # v7.3.1: Braket region
 BRAKET_S3_BUCKET   = os.getenv("BRAKET_S3_BUCKET",   "")   # v7.3.1: S3 бакет для результатов
-BRAKET_DEVICE_ARN  = os.getenv("BRAKET_DEVICE_ARN",  "arn:aws:braket:us-east-1::device/qpu/ionq/Harmony")  # v7.3.1
+BRAKET_DEVICE_ARN  = os.getenv("BRAKET_DEVICE_ARN",  "arn:aws:braket:us-east-1::device/qpu/ionq/Forte-1")  # v10.9.5: Harmony retired Mar 2026 → Forte-1
 RAILWAY_TOKEN        = os.getenv("RAILWAY_TOKEN", "")       # v7.2.1: Railway API — persist variable changes
 RAILWAY_PUBLIC_DOMAIN= os.getenv("RAILWAY_PUBLIC_DOMAIN", "")  # v7.4.0: авто-URL Railway сервиса
 WEBAPP_URL           = os.getenv("WEBAPP_URL", "")          # v7.4.0: если не задан — берётся из Railway URL
@@ -7703,6 +7703,7 @@ async def startup():
     asyncio.create_task(spot_monitor_loop())      # v8.3: spot position TP/SL monitor
     asyncio.create_task(earn_monitor_loop())      # v10.1: Earn Engine — auto-place idle USDT
     asyncio.create_task(smart_money_router_loop())  # v10.3: Smart Money Router — auto fund allocation
+    asyncio.create_task(db_cleanup_loop())        # v10.9.5: Daily DB cleanup — prevent volume growth
     asyncio.create_task(_ws_price_feed())          # v8.3.3: WebSocket real-time prices
     asyncio.create_task(_arb_fast_scanner())       # v8.3.3: fast arb scanner (every 5s)
     asyncio.create_task(airdrop_digest_loop())
@@ -9293,6 +9294,25 @@ async def agency_run_cycle() -> dict:
         "criticals": len(criticals),
         "elapsed": elapsed,
     }
+
+async def db_cleanup_loop():
+    """v10.9.5: Daily cleanup of high-volume tables to prevent Railway volume growth.
+    Runs 6h after startup (let data accumulate first), then every 24h.
+    At 77% capacity with 500MB volume — this is urgent."""
+    await asyncio.sleep(6 * 3600)  # first run after 6h
+    while True:
+        try:
+            deleted = await db.cleanup_old_data()
+            total = sum(deleted.values())
+            if total > 0:
+                sizes = await db.get_table_sizes()
+                size_str = " | ".join(f"{t}: {v['rows']}r {v['size']}" for t, v in sizes.items())
+                print(f"[db_cleanup] 🧹 удалено {total} строк. Таблицы: {size_str}", flush=True)
+                await notify(f"🧹 <b>DB Cleanup</b>: удалено {total} строк\n{chr(10).join(f'  {k}: -{v}' for k, v in deleted.items() if v > 0)}")
+        except Exception as e:
+            print(f"[db_cleanup] error: {e}", flush=True)
+        await asyncio.sleep(24 * 3600)  # every 24h
+
 
 async def agency_agent_loop():
     """v10.5.0: Background loop — runs Agency Agents every 30 min."""
