@@ -1693,7 +1693,8 @@ async def earn_monitor_loop():
                         log_activity(f"[earn_mon] multi-asset error: {me}")
                 _earn_stats["_multi_cycle"] = _earn_stats.get("_multi_cycle", 0) + 1
 
-                # Sync positions with actual exchange data
+                # v10.9.5: Sync _earn_positions list from actual exchange data
+                # Critical: after Railway restart _earn_positions=[] even if funds are in Earn
                 try:
                     kc_holds = await kucoin_earn_get_hold_assets("USDT")
                     bb_holds = await bybit_earn_get_positions("USDT")
@@ -1701,8 +1702,42 @@ async def earn_monitor_loop():
                     total_bb = sum(float(h.get("amount", h.get("holdAmount", 0))) for h in bb_holds)
                     _earn_stats["kucoin_subscribed"] = round(total_kc, 2)
                     _earn_stats["bybit_subscribed"] = round(total_bb, 2)
-                except Exception:
-                    pass
+
+                    # Rebuild _earn_positions from real exchange data
+                    # Remove stale in-memory entries, add real ones
+                    existing_exch = {p["exchange"] for p in _earn_positions}
+
+                    if total_bb > 0 and "bybit" not in existing_exch:
+                        for h in bb_holds:
+                            amt = float(h.get("amount", h.get("holdAmount", 0)))
+                            if amt > 0:
+                                _earn_positions.append({
+                                    "exchange": "bybit",
+                                    "product_id": h.get("productId", h.get("product_id", "")),
+                                    "coin": "USDT", "amount": round(amt, 2),
+                                    "apr": float(h.get("estimateApr", 0)),
+                                    "subscribed_at": time.time(),
+                                    "order_id": str(h.get("orderId", h.get("order_id", ""))),
+                                })
+                        if total_bb > 0:
+                            log_activity(f"[earn_mon] 🔄 restored BB Earn positions from API: ${total_bb:.2f}")
+
+                    if total_kc > 0 and "kucoin" not in existing_exch:
+                        for h in kc_holds:
+                            amt = float(h.get("holdAmount", h.get("amount", 0)))
+                            if amt > 0:
+                                _earn_positions.append({
+                                    "exchange": "kucoin",
+                                    "product_id": str(h.get("productId", h.get("id", ""))),
+                                    "coin": "USDT", "amount": round(amt, 2),
+                                    "apr": float(h.get("annualRate", h.get("apr", 0))),
+                                    "subscribed_at": time.time(),
+                                    "order_id": str(h.get("orderId", h.get("order_id", ""))),
+                                })
+                        if total_kc > 0:
+                            log_activity(f"[earn_mon] 🔄 restored KC Earn positions from API: ${total_kc:.2f}")
+                except Exception as sync_e:
+                    log_activity(f"[earn_mon] position sync error: {sync_e}")
 
                 # Check best rates (refresh cache)
                 best = await earn_get_best_rate("USDT")
@@ -1807,6 +1842,22 @@ async def smart_money_route() -> dict:
           f"BB=${bb_usdt:.2f}(earn={bb_earnable:.2f}) "
           f"reserves: arb=${ROUTER_ARB_RESERVE_USDT} trade=${ROUTER_TRADE_RESERVE_USDT} "
           f"earn_min=${ROUTER_EARN_THRESHOLD}", flush=True)
+
+    # ── Step 2.5: Spot Replenishment — restore spot if below trade reserve ───────
+    # Fix circular dependency: if spot < reserve AND Earn has funds → withdraw proactively.
+    # Without this, ByBit stays stuck at $1 forever because pre_buy is never triggered.
+    if EARN_ENABLED and _earn_positions:
+        for exch, balance in [("kucoin", kc_usdt), ("bybit", bb_usdt)]:
+            if balance < ROUTER_TRADE_RESERVE:
+                needed = round(ROUTER_TRADE_RESERVE - balance, 2)
+                earn_pos = [p for p in _earn_positions if p["exchange"] == exch and p["coin"] == "USDT"]
+                if earn_pos and needed >= 1.0:
+                    result = await earn_redeem_for_trading(exch, needed)
+                    redeemed = result.get("redeemed", 0)
+                    if redeemed > 0:
+                        actions.append({"exchange": exch, "action": "restore_spot", "amount": redeemed})
+                        log_activity(f"[router] 💰 {exch}: восстановлен спот +${redeemed:.2f} "
+                                     f"(было ${balance:.2f} < резерв ${ROUTER_TRADE_RESERVE})")
 
     # ── Step 3: Place idle funds into Earn ────────────────────────────────────
     if EARN_ENABLED:
