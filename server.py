@@ -58,7 +58,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.9.4")
+app = FastAPI(title="QuantumTrade AI", version="10.9.5")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -715,7 +715,7 @@ async def run_qaoa_optimization(price_changes: Dict[str, float]) -> Dict[str, fl
     - Иначе → CPU симулятор (6 кубитов, p=2)
     Обновляет глобальный _quantum_bias. Вызывается каждые 15 минут.
     """
-    global _quantum_bias, _quantum_ts, _corr_cache, _corr_cache_ts, _braket_ts, _braket_bias
+    global _quantum_bias, _quantum_ts, _corr_cache, _corr_cache_ts, _braket_ts, _braket_bias, _braket_ready
     # v7.3.0: Мультитаймфреймовый вход QAOA — 50%×1h + 30%×4h + 20%×24h
     prices_snap = _cache_get("all_prices", 300) or {}
     all_p = prices_snap.get("prices", {})
@@ -772,7 +772,15 @@ async def run_qaoa_optimization(price_changes: Dict[str, float]) -> Dict[str, fl
                 log_b = " ".join(f"{p.split('-')[0]}={_braket_bias[p]:+.1f}" for p in PAIR_NAMES)
                 print(f"[braket] энсембль обновлён: {log_b}", flush=True)
             except Exception as be:
-                print(f"[braket] ошибка энсембля: {be}", flush=True)
+                err_str = str(be)
+                if "AccessDeniedException" in err_str:
+                    # v10.9.5: Disable Braket for this session on auth error — CPU fallback works.
+                    # Don't spam logs every 6h with the same error. Re-check on next restart.
+                    _braket_ready = False
+                    print(f"[braket] ⚠️ AccessDeniedException — отключён на эту сессию, CPU sim активен. "
+                          f"Проверь IAM политику: braket:CreateQuantumTask", flush=True)
+                else:
+                    print(f"[braket] ошибка энсембля: {be}", flush=True)
         elif _braket_bias and _braket_ready:
             # Между запусками Braket: смешиваем со старым Braket-результатом (50/50)
             for p in PAIR_NAMES:
@@ -1422,16 +1430,21 @@ async def earn_auto_place_idle(exchange: str = "auto") -> dict:
     # Get available USDT on each exchange
     idle = {}
     try:
+        # v10.9.5: Align Earn reserve with Router reserves to prevent spot drain.
+        # Old: EARN_RESERVE_USDT=$1 → idle=$30 → Earn drains spot → 0 tradeable again.
+        # Fix: when Router is active, use Router's full reserve (arb+trade=$21) as the
+        # Earn floor, so Earn only gets the truly idle amount the Router also agrees on.
+        _earn_spot_reserve = (ROUTER_ARB_RESERVE_USDT + ROUTER_TRADE_RESERVE_USDT) if ROUTER_ENABLED else EARN_RESERVE_USDT
         if exchange in ("auto", "kucoin"):
             kc_bal = await get_balance()
             kc_usdt = kc_bal.get("available_usdt", kc_bal.get("total_usdt", 0)) if isinstance(kc_bal, dict) else 0
-            idle["kucoin"] = max(0, kc_usdt - EARN_RESERVE_USDT)
-            print(f"[earn] KC balance: ${kc_usdt:.2f}, idle after reserve: ${idle['kucoin']:.2f}", flush=True)
+            idle["kucoin"] = max(0, kc_usdt - _earn_spot_reserve)
+            print(f"[earn] KC balance: ${kc_usdt:.2f}, idle after reserve: ${idle['kucoin']:.2f} (reserve=${_earn_spot_reserve:.0f})", flush=True)
         if exchange in ("auto", "bybit") and BYBIT_ENABLED:
             bb_bal = await bybit_get_balance()
-            bb_usdt = bb_bal.get("total_usdt", 0) if bb_bal.get("success") else 0  # v10.2.1: was "usdt" → "total_usdt"
-            idle["bybit"] = max(0, bb_usdt - EARN_RESERVE_USDT)
-            print(f"[earn] BB balance: ${bb_usdt:.2f}, idle after reserve: ${idle['bybit']:.2f}", flush=True)
+            bb_usdt = bb_bal.get("total_usdt", 0) if bb_bal.get("success") else 0
+            idle["bybit"] = max(0, bb_usdt - _earn_spot_reserve)
+            print(f"[earn] BB balance: ${bb_usdt:.2f}, idle after reserve: ${idle['bybit']:.2f} (reserve=${_earn_spot_reserve:.0f})", flush=True)
     except Exception as e:
         log_activity(f"[earn] balance check error: {e}")
         return {"success": False, "reason": str(e)}
@@ -3866,6 +3879,7 @@ _lunarcrush_cache: dict = {}
 _lunarcrush_ts: float = 0.0
 _lunarcrush_fail_ts: float = 0.0  # v10.2.2: fail cache to prevent 429 death spiral
 _lunarcrush_backoff: int = 1800   # v10.2.2: backoff seconds after failure (30 min)
+_lunarcrush_start_ts: float = time.time()  # v10.9.5: startup ts — wait 5min before first call
 
 async def fetch_lunarcrush_sentiment(symbols: list = None) -> dict:
     """v10.2.2: Fetch Galaxy Score + AltRank from LunarCrush v4 API.
@@ -3873,6 +3887,11 @@ async def fetch_lunarcrush_sentiment(symbols: list = None) -> dict:
     Fix: fail cache prevents 429 death spiral — on failure, won't retry for 30 min."""
     global _lunarcrush_cache, _lunarcrush_ts, _lunarcrush_fail_ts, _lunarcrush_backoff
     now = time.time()
+
+    # v10.9.5: Startup cooldown — skip first 5 min after restart to avoid immediate 429
+    # LC rate limit resets are server-side; fresh restarts always hit the limit.
+    if now - _lunarcrush_start_ts < 300:
+        return {"coins": {}, "success": False, "error": "startup_cooldown_5min"}
 
     # v10.2.2: Return cached success data if still fresh (10 min)
     if now - _lunarcrush_ts < 600 and _lunarcrush_cache:
@@ -4135,6 +4154,21 @@ async def update_learning_insights():
 
         _learning_insights["last_update"] = time.time()
         log_activity(f"[learning] insights updated: best_fg={best_fg} best_hour={_learning_insights.get('best_hour')} avoid={avoid}")
+
+        # v10.9.5: Notify via Telegram when self-learn optimal_q diverges >5 from MIN_Q_SCORE
+        opt_q = _learning_insights.get("optimal_q", MIN_Q_SCORE)
+        if abs(opt_q - MIN_Q_SCORE) >= 5 and _learning_insights.get("last_q_alert", 0) < time.time() - 3600:
+            _learning_insights["last_q_alert"] = time.time()
+            direction = "⬆️ повысить" if opt_q > MIN_Q_SCORE else "⬇️ снизить"
+            asyncio.ensure_future(notify(
+                f"🧠 <b>Self-Learn предлагает {direction} Q-порог</b>\n\n"
+                f"Текущий MIN_Q_SCORE: <code>{MIN_Q_SCORE}</code>\n"
+                f"Оптимальный (по истории): <code>{opt_q}</code>\n"
+                f"Разница: <code>{opt_q - MIN_Q_SCORE:+d}</code>\n\n"
+                f"<i>Измени через Settings в Command Center или /settings в Telegram.\n"
+                f"Не меняй автоматически — только после анализа.</i>"
+            ))
+
         return _learning_insights
     except Exception as e:
         log_activity(f"[learning] error: {e}")
