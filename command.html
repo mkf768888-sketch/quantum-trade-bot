@@ -2,600 +2,993 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>QuantumTrade AI — Command Center</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
-  --bg:#0a0e1a;--bg2:#111827;--bg3:#1a2235;
-  --neon:#00f0ff;--neon2:#7c3aed;--green:#10b981;--red:#ef4444;--yellow:#f59e0b;--orange:#f97316;
-  --text:#e2e8f0;--text2:#94a3b8;--text3:#64748b;
-  --glow:0 0 20px rgba(0,240,255,.3);
-  --glow-green:0 0 15px rgba(16,185,129,.4);
-  --glow-red:0 0 15px rgba(239,68,68,.4);
-  --glow-purple:0 0 15px rgba(124,58,237,.4);
+  --bg:#070b14;--bg2:#0d1526;--bg3:#131e35;--bg4:#1a2844;
+  --neon:#00f5ff;--neon2:#7c3aed;--neon3:#f0abfc;
+  --green:#10b981;--red:#f43f5e;--yellow:#fbbf24;--orange:#fb923c;--blue:#3b82f6;
+  --text:#e2e8f0;--text2:#94a3b8;--text3:#475569;
 }
-body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,-apple-system,sans-serif;overflow-x:hidden;min-height:100vh}
-/* Background grid */
-body::before{content:'';position:fixed;inset:0;background:
-  linear-gradient(rgba(0,240,255,.03) 1px,transparent 1px),
-  linear-gradient(90deg,rgba(0,240,255,.03) 1px,transparent 1px);
-  background-size:50px 50px;pointer-events:none;z-index:0}
-body::after{content:'';position:fixed;inset:0;background:radial-gradient(ellipse at 50% 0%,rgba(124,58,237,.1),transparent 70%);pointer-events:none;z-index:0}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;overflow-x:hidden;min-height:100vh}
 
-/* Header */
-.header{position:sticky;top:0;z-index:100;background:linear-gradient(180deg,rgba(10,14,26,.98),rgba(10,14,26,.9));
-  border-bottom:1px solid rgba(0,240,255,.15);padding:12px 24px;display:flex;align-items:center;justify-content:space-between;backdrop-filter:blur(20px)}
-.header h1{font-size:1.3rem;font-weight:700;background:linear-gradient(135deg,var(--neon),var(--neon2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.header .ver{font-size:.75rem;color:var(--text3);margin-left:10px}
-.header .status-pill{padding:4px 14px;border-radius:20px;font-size:.75rem;font-weight:600;letter-spacing:.5px;animation:pulse-glow 2s ease-in-out infinite}
-.status-pill.online{background:rgba(16,185,129,.15);color:var(--green);border:1px solid rgba(16,185,129,.3)}
-.status-pill.paused{background:rgba(245,158,11,.15);color:var(--yellow);border:1px solid rgba(245,158,11,.3)}
-@keyframes pulse-glow{0%,100%{opacity:1}50%{opacity:.7}}
+/* Animated background */
+#bgCanvas{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;opacity:.4}
 
-/* Controls */
-.controls{display:flex;gap:8px;align-items:center}
-.btn{padding:6px 16px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);color:var(--text);font-size:.8rem;cursor:pointer;transition:all .2s}
+/* Scanline overlay */
+body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.15) 2px,rgba(0,0,0,.15) 4px);pointer-events:none;z-index:1;animation:scanMove 8s linear infinite}
+@keyframes scanMove{from{background-position:0 0}to{background-position:0 100px}}
+
+/* ── HUD BAR ── */
+.hud{position:sticky;top:0;z-index:100;background:rgba(7,11,20,.92);border-bottom:1px solid rgba(0,245,255,.12);backdrop-filter:blur(20px);padding:0 20px}
+.hud-top{display:flex;align-items:center;justify-content:space-between;height:52px;gap:12px}
+.logo{font-size:1.1rem;font-weight:800;background:linear-gradient(135deg,var(--neon),var(--neon2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;white-space:nowrap}
+.logo span{font-size:.65rem;color:var(--text3);-webkit-text-fill-color:var(--text3);margin-left:6px}
+.hud-stats{display:flex;gap:20px;align-items:center}
+.hud-stat{text-align:center}
+.hud-stat .val{font-size:1rem;font-weight:700;font-variant-numeric:tabular-nums}
+.hud-stat .lbl{font-size:.55rem;color:var(--text3);text-transform:uppercase;letter-spacing:.5px}
+.status-badge{padding:3px 12px;border-radius:20px;font-size:.7rem;font-weight:700;letter-spacing:.5px;animation:blink 2s ease-in-out infinite}
+.status-badge.online{background:rgba(16,185,129,.15);color:var(--green);border:1px solid rgba(16,185,129,.3)}
+.status-badge.paused{background:rgba(251,191,36,.15);color:var(--yellow);border:1px solid rgba(251,191,36,.3)}
+.status-badge.standby{background:rgba(59,130,246,.15);color:var(--blue);border:1px solid rgba(59,130,246,.3)}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.6}}
+.hud-controls{display:flex;gap:8px;align-items:center}
+.btn{padding:5px 14px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.04);color:var(--text);font-size:.75rem;cursor:pointer;transition:all .2s;white-space:nowrap}
 .btn:hover{background:rgba(255,255,255,.1);transform:translateY(-1px)}
-.btn.pause{border-color:rgba(245,158,11,.4);color:var(--yellow)}
-.btn.resume{border-color:rgba(16,185,129,.4);color:var(--green)}
-.btn.active{background:rgba(0,240,255,.15);border-color:var(--neon)}
+.btn.danger{border-color:rgba(251,191,36,.4);color:var(--yellow)}
+.btn.success{border-color:rgba(16,185,129,.4);color:var(--green)}
+.btn.active{background:rgba(0,245,255,.1);border-color:rgba(0,245,255,.4);color:var(--neon)}
 
-/* Main grid */
-.main{position:relative;z-index:1;padding:16px;max-width:1400px;margin:0 auto}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-bottom:14px}
-.grid-wide{display:grid;grid-template-columns:2fr 1fr;gap:14px;margin-bottom:14px}
-@media(max-width:768px){.grid-wide{grid-template-columns:1fr}}
+/* Ticker bar */
+.ticker{border-top:1px solid rgba(255,255,255,.05);height:30px;overflow:hidden;display:flex;align-items:center}
+.ticker-track{display:flex;gap:0;animation:tickerScroll 40s linear infinite;white-space:nowrap}
+.ticker-item{padding:0 24px;font-size:.7rem;display:flex;gap:6px;align-items:center;border-right:1px solid rgba(255,255,255,.05)}
+.ticker-item .sym{color:var(--text3);font-weight:600}
+.ticker-item .prc{color:var(--text);font-variant-numeric:tabular-nums}
+@keyframes tickerScroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
 
-/* Node cards */
-.node{background:var(--bg2);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:16px;position:relative;overflow:hidden;transition:all .3s}
-.node:hover{border-color:rgba(0,240,255,.2);transform:translateY(-2px);box-shadow:var(--glow)}
-.node::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--neon),transparent);opacity:0;transition:opacity .3s}
-.node:hover::before{opacity:1}
-.node-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
-.node-title{font-size:.85rem;font-weight:600;color:var(--text);display:flex;align-items:center;gap:8px}
-.node-title .icon{width:32px;height:32px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.1rem}
-.node-badge{padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:600;letter-spacing:.3px}
-.badge-on{background:rgba(16,185,129,.15);color:var(--green);border:1px solid rgba(16,185,129,.2)}
-.badge-off{background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.2)}
-.badge-wait{background:rgba(245,158,11,.15);color:var(--yellow);border:1px solid rgba(245,158,11,.2)}
+/* ── TABS ── */
+.tabs{position:sticky;top:82px;z-index:99;background:rgba(7,11,20,.9);backdrop-filter:blur(20px);border-bottom:1px solid rgba(255,255,255,.05);padding:0 20px;display:flex;gap:0}
+.tab{padding:10px 18px;font-size:.8rem;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;transition:all .2s;user-select:none}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--neon);border-bottom-color:var(--neon)}
+
+/* ── MAIN ── */
+.page{position:relative;z-index:2;padding:16px 20px;max-width:1600px;margin:0 auto;display:none}
+.page.active{display:block}
+
+/* Grid layouts */
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:14px}
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:14px}
+.g2-1{display:grid;grid-template-columns:2fr 1fr;gap:14px;margin-bottom:14px}
+.g1-2{display:grid;grid-template-columns:1fr 2fr;gap:14px;margin-bottom:14px}
+.g-full{margin-bottom:14px}
+@media(max-width:900px){.g2,.g3,.g4,.g2-1,.g1-2{grid-template-columns:1fr}}
+@media(max-width:600px){.tabs{overflow-x:auto}.tab{padding:10px 12px;font-size:.7rem}}
+
+/* Cards */
+.card{background:var(--bg2);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:18px;position:relative;overflow:hidden;transition:border-color .3s}
+.card:hover{border-color:rgba(0,245,255,.15)}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;opacity:0;transition:opacity .3s}
+.card:hover::before{opacity:1}
+.card.neon::before{background:linear-gradient(90deg,transparent,var(--neon),transparent)}
+.card.purple::before{background:linear-gradient(90deg,transparent,var(--neon2),transparent)}
+.card.green::before{background:linear-gradient(90deg,transparent,var(--green),transparent)}
+.card.red::before{background:linear-gradient(90deg,transparent,var(--red),transparent)}
+.card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.card-title{display:flex;align-items:center;gap:10px;font-size:.85rem;font-weight:600}
+.card-icon{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0}
+.badge{padding:2px 10px;border-radius:12px;font-size:.65rem;font-weight:700;letter-spacing:.3px}
+.badge-on{background:rgba(16,185,129,.12);color:var(--green);border:1px solid rgba(16,185,129,.2)}
+.badge-off{background:rgba(244,63,94,.12);color:var(--red);border:1px solid rgba(244,63,94,.2)}
+.badge-warn{background:rgba(251,191,36,.12);color:var(--yellow);border:1px solid rgba(251,191,36,.2)}
+.badge-blue{background:rgba(59,130,246,.12);color:var(--blue);border:1px solid rgba(59,130,246,.2)}
 
 /* Metrics */
 .metrics{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
-.metric{background:rgba(255,255,255,.03);border-radius:8px;padding:8px 10px}
-.metric-label{font-size:.65rem;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px}
-.metric-value{font-size:1.1rem;font-weight:700;font-variant-numeric:tabular-nums}
-.metric-value.positive{color:var(--green)}
-.metric-value.negative{color:var(--red)}
-.metric-value.neutral{color:var(--neon)}
-.metric-sm{font-size:.85rem}
-.metrics-row{display:flex;gap:8px;flex-wrap:wrap}
+.metrics-3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.m-box{background:rgba(255,255,255,.03);border-radius:10px;padding:10px 12px}
+.m-lbl{font-size:.6rem;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
+.m-val{font-size:1.1rem;font-weight:700;font-variant-numeric:tabular-nums}
+.m-val.pos{color:var(--green)} .m-val.neg{color:var(--red)} .m-val.neon{color:var(--neon)} .m-val.blue{color:var(--blue)}
+.m-val.sm{font-size:.85rem}
 
-/* Connection lines (SVG overlay) */
-.connections{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0}
+/* Big number */
+.big-num{font-size:2.5rem;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
+.big-sub{font-size:.7rem;color:var(--text3);margin-top:2px}
 
-/* Activity feed */
-.feed{max-height:320px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--bg3) transparent}
-.feed::-webkit-scrollbar{width:4px}
-.feed::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:4px}
-.feed-item{padding:6px 10px;border-left:2px solid var(--bg3);margin-bottom:4px;font-size:.75rem;color:var(--text2);font-family:'Fira Code',monospace;word-break:break-all;transition:border-color .2s}
-.feed-item:hover{border-color:var(--neon);background:rgba(0,240,255,.03)}
-.feed-item .ts{color:var(--text3);margin-right:6px}
-.feed-item.cycle{border-color:var(--green)}
-.feed-item.error{border-color:var(--red)}
-.feed-item.pause{border-color:var(--yellow)}
-.feed-item.trade{border-color:var(--neon)}
+/* System Map with canvas */
+.system-map-wrap{position:relative;padding:10px 0}
+#mapCanvas{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none}
+.map-nodes{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;position:relative;z-index:2}
+.map-node{width:94px;height:72px;border-radius:14px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:.65rem;font-weight:600;border:1px solid rgba(255,255,255,.08);position:relative;cursor:pointer;transition:all .3s;user-select:none}
+.map-node .mn-icon{font-size:1.3rem}
+.map-node .mn-dot{width:7px;height:7px;border-radius:50%;position:absolute;top:8px;right:8px;transition:all .3s}
+.mn-dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
+.mn-dot.off{background:var(--red);box-shadow:0 0 8px var(--red)}
+.map-node.active{animation:nodePulse 2.5s ease-in-out infinite}
+.map-node.paused-node{opacity:.35}
+@keyframes nodePulse{0%,100%{box-shadow:0 0 0 0 rgba(0,245,255,.15)}60%{box-shadow:0 0 0 8px rgba(0,245,255,0)}}
+.map-node:hover{transform:scale(1.08);border-color:rgba(0,245,255,.3)}
+
+/* Toggle switch */
+.toggle-wrap{display:flex;align-items:center;gap:8px;font-size:.75rem}
+.toggle{position:relative;width:36px;height:20px;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0}
+.toggle-slider{position:absolute;inset:0;border-radius:20px;background:var(--bg3);cursor:pointer;transition:.3s}
+.toggle-slider::before{content:'';position:absolute;width:14px;height:14px;left:3px;bottom:3px;border-radius:50%;background:#fff;transition:.3s}
+.toggle input:checked + .toggle-slider{background:var(--green)}
+.toggle input:checked + .toggle-slider::before{transform:translateX(16px)}
+
+/* Range slider */
+.slider-wrap{margin-top:8px}
+.slider-lbl{display:flex;justify-content:space-between;font-size:.7rem;color:var(--text2);margin-bottom:4px}
+input[type=range]{width:100%;height:4px;border-radius:2px;background:var(--bg3);outline:none;cursor:pointer;-webkit-appearance:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--neon);cursor:pointer;box-shadow:0 0 8px rgba(0,245,255,.5)}
 
 /* Pairs grid */
-.pairs-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px}
-.pair-card{background:rgba(255,255,255,.03);border-radius:8px;padding:8px;text-align:center;border:1px solid transparent;transition:all .2s}
-.pair-card:hover{border-color:rgba(0,240,255,.2)}
-.pair-name{font-size:.7rem;color:var(--text3);margin-bottom:2px}
-.pair-price{font-size:.85rem;font-weight:600;font-variant-numeric:tabular-nums}
-.pair-bias{font-size:.65rem;margin-top:2px}
+.pairs-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}
+.pair-card{background:rgba(255,255,255,.03);border-radius:10px;padding:10px;border:1px solid transparent;transition:all .2s;position:relative;overflow:hidden}
+.pair-card:hover{border-color:rgba(0,245,255,.2)}
+.pair-card .pc-name{font-size:.65rem;color:var(--text3);margin-bottom:2px}
+.pair-card .pc-price{font-size:.95rem;font-weight:700;font-variant-numeric:tabular-nums}
+.pair-card .pc-sparkline{margin-top:6px;height:28px}
 
-/* Positions */
-.pos-item{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,.03);border-radius:8px;margin-bottom:6px;border-left:3px solid var(--green)}
-.pos-item.sell{border-left-color:var(--red)}
-.pos-symbol{font-weight:600;font-size:.85rem}
-.pos-detail{font-size:.7rem;color:var(--text2)}
-.pos-size{font-size:.85rem;font-weight:600;color:var(--neon)}
+/* Correlation heatmap */
+.heatmap{display:grid;gap:3px;margin-top:8px}
+.hm-cell{aspect-ratio:1;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:.55rem;font-weight:600;cursor:default;transition:all .2s}
+.hm-cell:hover{transform:scale(1.15);z-index:10;position:relative}
+.hm-label{font-size:.6rem;color:var(--text3);text-align:center;padding:2px}
 
-/* System map (visual node graph) */
-.system-map{position:relative;min-height:200px;display:flex;align-items:center;justify-content:center;gap:0;flex-wrap:wrap}
-.map-node{width:100px;height:70px;border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:.7rem;font-weight:600;border:1px solid rgba(255,255,255,.1);position:relative;cursor:default;transition:all .3s;margin:6px}
-.map-node:hover{transform:scale(1.05)}
-.map-node .map-icon{font-size:1.3rem;margin-bottom:2px}
-.map-node .map-status{width:6px;height:6px;border-radius:50%;position:absolute;top:6px;right:6px}
-.map-node .map-status.on{background:var(--green);box-shadow:var(--glow-green)}
-.map-node .map-status.off{background:var(--red);box-shadow:var(--glow-red)}
+/* Activity feed */
+.feed{max-height:300px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--bg3) transparent}
+.feed::-webkit-scrollbar{width:3px}
+.feed::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px}
+.feed-item{padding:5px 10px;border-left:2px solid var(--bg3);margin-bottom:3px;font-size:.7rem;font-family:'Fira Code',monospace;color:var(--text2);word-break:break-all;transition:border-color .2s}
+.feed-item:hover{border-color:var(--neon);background:rgba(0,245,255,.02)}
+.feed-item.t-cycle{border-color:rgba(16,185,129,.4)}
+.feed-item.t-trade{border-color:var(--neon);background:rgba(0,245,255,.03)}
+.feed-item.t-error{border-color:var(--red)}
+.feed-item.t-pause{border-color:var(--yellow)}
+.feed-item .ft{color:var(--text3);margin-right:6px}
 
-/* Pulse animation for active nodes */
-@keyframes node-pulse{0%{box-shadow:0 0 0 0 rgba(0,240,255,.2)}70%{box-shadow:0 0 0 8px rgba(0,240,255,0)}100%{box-shadow:0 0 0 0 rgba(0,240,255,0)}}
-.map-node.active{animation:node-pulse 2s infinite;border-color:rgba(0,240,255,.3)}
-.map-node.paused{opacity:.4;border-color:rgba(245,158,11,.3)}
+/* Trade history table */
+.trade-table{width:100%;border-collapse:collapse;font-size:.75rem}
+.trade-table th{color:var(--text3);font-weight:600;text-align:left;padding:6px 8px;border-bottom:1px solid rgba(255,255,255,.06);font-size:.65rem;text-transform:uppercase;letter-spacing:.5px}
+.trade-table td{padding:7px 8px;border-bottom:1px solid rgba(255,255,255,.03)}
+.trade-table tr:hover td{background:rgba(255,255,255,.02)}
 
-/* Big number display */
-.big-num{font-size:2rem;font-weight:800;font-variant-numeric:tabular-nums;line-height:1}
-.big-label{font-size:.7rem;color:var(--text3);margin-top:2px}
+/* Position card */
+.pos-card{background:rgba(255,255,255,.03);border-radius:10px;padding:12px;border-left:3px solid var(--green);margin-bottom:8px;display:flex;align-items:center;justify-content:space-between}
+.pos-card.sell{border-left-color:var(--red)}
 
-/* Quantum visualizer */
-.qubit-viz{display:flex;gap:4px;align-items:flex-end;height:40px;margin-top:8px}
-.qubit-bar{width:8px;border-radius:3px 3px 0 0;background:linear-gradient(to top,var(--neon2),var(--neon));transition:height .5s ease;min-height:4px}
+/* Qubit animation */
+.qubit-viz{display:flex;gap:3px;align-items:flex-end;height:44px;margin-top:10px}
+.qb{width:8px;min-height:4px;border-radius:3px 3px 0 0;background:linear-gradient(to top,var(--neon2),var(--neon));transition:height .6s ease}
 
-/* Loading skeleton */
-.skeleton{background:linear-gradient(90deg,var(--bg3) 25%,rgba(255,255,255,.05) 50%,var(--bg3) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:4px;height:20px}
-@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+/* Money flow */
+.money-flow{position:relative;display:flex;align-items:center;justify-content:space-around;padding:10px 0;gap:10px;flex-wrap:wrap}
+.mf-box{background:rgba(255,255,255,.04);border-radius:12px;padding:10px 14px;text-align:center;flex:1;min-width:80px}
+.mf-box .mf-icon{font-size:1.4rem;margin-bottom:4px}
+.mf-box .mf-lbl{font-size:.6rem;color:var(--text3)}
+.mf-box .mf-val{font-size:.9rem;font-weight:700;color:var(--neon)}
+.mf-arrow{font-size:1.2rem;color:var(--text3);animation:flowPulse 1.5s ease-in-out infinite}
+@keyframes flowPulse{0%,100%{opacity:.3;transform:scale(.9)}50%{opacity:1;transform:scale(1.1)}}
 
-/* Toast notification */
-.toast{position:fixed;bottom:20px;right:20px;background:var(--bg2);border:1px solid rgba(0,240,255,.3);border-radius:12px;padding:12px 20px;font-size:.8rem;box-shadow:var(--glow);z-index:1000;transform:translateY(100px);opacity:0;transition:all .3s}
+/* Notification toast */
+.toast{position:fixed;bottom:24px;right:24px;background:var(--bg2);border:1px solid rgba(0,245,255,.25);border-radius:14px;padding:12px 20px;font-size:.8rem;z-index:999;transform:translateY(80px);opacity:0;transition:all .35s;box-shadow:0 0 30px rgba(0,245,255,.1)}
 .toast.show{transform:translateY(0);opacity:1}
+.toast.err{border-color:rgba(244,63,94,.4);box-shadow:0 0 30px rgba(244,63,94,.15)}
 
-/* Responsive */
-@media(max-width:600px){
-  .header{padding:10px 14px;flex-wrap:wrap;gap:8px}
-  .header h1{font-size:1rem}
-  .main{padding:10px}
-  .grid{grid-template-columns:1fr}
-  .pairs-grid{grid-template-columns:repeat(2,1fr)}
-}
+/* Sound button */
+.sound-btn{width:28px;height:28px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.03);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:.9rem;transition:all .2s}
+.sound-btn:hover{background:rgba(255,255,255,.08)}
+
+/* Trade alert flash */
+@keyframes tradeFlash{0%{box-shadow:0 0 0 0 rgba(0,245,255,.6)}100%{box-shadow:0 0 0 30px rgba(0,245,255,0)}}
+.trade-flash{animation:tradeFlash .8s ease-out}
 </style>
 </head>
 <body>
-<!-- Header -->
-<div class="header">
-  <div style="display:flex;align-items:center">
-    <h1>QUANTUMTRADE AI</h1>
-    <span class="ver" id="version">v...</span>
+<canvas id="bgCanvas"></canvas>
+
+<!-- HUD -->
+<div class="hud">
+  <div class="hud-top">
+    <div class="logo">QUANTUMTRADE AI <span id="ver">v...</span></div>
+    <div class="hud-stats" id="hudStats">
+      <div class="hud-stat"><div class="val" id="hPnl" style="color:var(--green)">$0.00</div><div class="lbl">P&L</div></div>
+      <div class="hud-stat"><div class="val" id="hWr">0%</div><div class="lbl">Win Rate</div></div>
+      <div class="hud-stat"><div class="val" id="hTrades">0</div><div class="lbl">Trades</div></div>
+      <div class="hud-stat"><div class="val" id="hQ" style="color:var(--neon)">--</div><div class="lbl">Q-Score</div></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="status-badge online" id="systemBadge">ONLINE</span>
+      <div class="sound-btn" id="soundBtn" onclick="toggleSound()" title="Sound alerts">🔊</div>
+      <button class="btn danger" id="pauseBtn" onclick="togglePause()">⏸ PAUSE</button>
+      <span style="font-size:.65rem;color:var(--text3)" id="refreshTick"></span>
+    </div>
   </div>
-  <div id="systemStatus" class="status-pill online">ONLINE</div>
-  <div class="controls">
-    <button class="btn pause" id="btnPause" onclick="togglePause()">PAUSE</button>
-    <span style="font-size:.7rem;color:var(--text3)" id="updateTimer">--</span>
-  </div>
+  <div class="ticker"><div class="ticker-track" id="tickerTrack">
+    <span class="ticker-item"><span class="sym">Loading...</span></span>
+  </div></div>
 </div>
 
-<!-- Main Content -->
-<div class="main">
+<!-- TABS -->
+<div class="tabs">
+  <div class="tab active" onclick="showTab('overview')">🗺 Overview</div>
+  <div class="tab" onclick="showTab('trading')">📈 Trading</div>
+  <div class="tab" onclick="showTab('quantum')">⚛️ Quantum</div>
+  <div class="tab" onclick="showTab('analytics')">📊 Analytics</div>
+  <div class="tab" onclick="showTab('settings')">⚙️ Settings</div>
+</div>
 
-<!-- Row 1: System Map + Performance -->
-<div class="grid-wide">
+<!-- ══════════════ OVERVIEW TAB ══════════════ -->
+<div class="page active" id="tab-overview">
+
   <!-- System Map -->
-  <div class="node">
-    <div class="node-header">
-      <div class="node-title"><span class="icon" style="background:rgba(0,240,255,.1)">🗺️</span> System Map</div>
-    </div>
-    <div class="system-map" id="systemMap">
-      <div class="map-node active" id="mn-kucoin" style="background:rgba(0,240,255,.05)">
-        <div class="map-status on"></div><div class="map-icon">🟢</div><div>KuCoin</div>
+  <div class="g-full">
+    <div class="card neon">
+      <div class="card-head">
+        <div class="card-title"><div class="card-icon" style="background:rgba(0,245,255,.08)">🗺️</div>System Map — Live Architecture</div>
+        <span id="mapStatus" class="badge badge-on">ALL SYSTEMS GO</span>
       </div>
-      <div class="map-node active" id="mn-bybit" style="background:rgba(124,58,237,.05)">
-        <div class="map-status on"></div><div class="map-icon">🟡</div><div>ByBit</div>
-      </div>
-      <div class="map-node active" id="mn-trading" style="background:rgba(16,185,129,.05)">
-        <div class="map-status on"></div><div class="map-icon">📈</div><div>Trading</div>
-      </div>
-      <div class="map-node active" id="mn-quantum" style="background:rgba(0,240,255,.05)">
-        <div class="map-status on"></div><div class="map-icon">⚛️</div><div>Quantum</div>
-      </div>
-      <div class="map-node active" id="mn-mirofish" style="background:rgba(59,130,246,.05)">
-        <div class="map-status on"></div><div class="map-icon">🐟</div><div>MiroFish</div>
-      </div>
-      <div class="map-node active" id="mn-earn" style="background:rgba(245,158,11,.05)">
-        <div class="map-status on"></div><div class="map-icon">💰</div><div>Earn</div>
-      </div>
-      <div class="map-node active" id="mn-router" style="background:rgba(16,185,129,.05)">
-        <div class="map-status on"></div><div class="map-icon">🔄</div><div>Router</div>
-      </div>
-      <div class="map-node active" id="mn-arb" style="background:rgba(239,68,68,.05)">
-        <div class="map-status on"></div><div class="map-icon">⚡</div><div>Arb</div>
-      </div>
-      <div class="map-node active" id="mn-ws" style="background:rgba(99,102,241,.05)">
-        <div class="map-status on"></div><div class="map-icon">📡</div><div>WebSocket</div>
+      <div class="system-map-wrap" id="systemMapWrap">
+        <canvas id="mapCanvas"></canvas>
+        <div class="map-nodes" id="mapNodes">
+          <div class="map-node active" id="mn-kucoin" style="background:rgba(0,245,255,.04)" onclick="moduleInfo('kucoin')">
+            <div class="mn-dot on"></div><div class="mn-icon">🟢</div><div>KuCoin</div>
+          </div>
+          <div class="map-node active" id="mn-bybit" style="background:rgba(124,58,237,.04)" onclick="moduleInfo('bybit')">
+            <div class="mn-dot on"></div><div class="mn-icon">🟡</div><div>ByBit</div>
+          </div>
+          <div class="map-node active" id="mn-trading" style="background:rgba(16,185,129,.04)" onclick="moduleInfo('trading')">
+            <div class="mn-dot on"></div><div class="mn-icon">📈</div><div>Trading</div>
+          </div>
+          <div class="map-node active" id="mn-quantum" style="background:rgba(0,245,255,.04)" onclick="moduleInfo('quantum')">
+            <div class="mn-dot on"></div><div class="mn-icon">⚛️</div><div>Quantum</div>
+          </div>
+          <div class="map-node active" id="mn-mirofish" style="background:rgba(59,130,246,.04)" onclick="moduleInfo('mirofish')">
+            <div class="mn-dot on"></div><div class="mn-icon">🐟</div><div>MiroFish</div>
+          </div>
+          <div class="map-node active" id="mn-earn" style="background:rgba(251,191,36,.04)" onclick="moduleInfo('earn')">
+            <div class="mn-dot on"></div><div class="mn-icon">💰</div><div>Earn</div>
+          </div>
+          <div class="map-node active" id="mn-router" style="background:rgba(16,185,129,.04)" onclick="moduleInfo('router')">
+            <div class="mn-dot on"></div><div class="mn-icon">🔄</div><div>Router</div>
+          </div>
+          <div class="map-node active" id="mn-arb" style="background:rgba(244,63,94,.04)" onclick="moduleInfo('arb')">
+            <div class="mn-dot on"></div><div class="mn-icon">⚡</div><div>Arb</div>
+          </div>
+          <div class="map-node active" id="mn-ws" style="background:rgba(99,102,241,.04)" onclick="moduleInfo('ws')">
+            <div class="mn-dot on"></div><div class="mn-icon">📡</div><div>WebSocket</div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 
-  <!-- Performance Card -->
-  <div class="node">
-    <div class="node-header">
-      <div class="node-title"><span class="icon" style="background:rgba(16,185,129,.1)">📊</span> Performance</div>
+  <!-- Performance + P&L Chart -->
+  <div class="g2-1">
+    <div class="card green">
+      <div class="card-head">
+        <div class="card-title"><div class="card-icon" style="background:rgba(16,185,129,.08)">📈</div>P&L Chart</div>
+        <span style="font-size:.65rem;color:var(--text3)">Last 30 trades</span>
+      </div>
+      <canvas id="pnlChart" height="140"></canvas>
     </div>
-    <div style="text-align:center;padding:10px 0">
-      <div class="big-num" id="pnlTotal">$0.00</div>
-      <div class="big-label">Total P&L</div>
+    <div class="card neon">
+      <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(0,245,255,.08)">📊</div>Performance</div></div>
+      <div style="text-align:center;margin-bottom:14px">
+        <div class="big-num" id="bigPnl" style="color:var(--green)">$+0.00</div>
+        <div class="big-sub">Total P&L</div>
+      </div>
+      <div class="metrics">
+        <div class="m-box"><div class="m-lbl">Win Rate</div><div class="m-val neon" id="wr">0%</div></div>
+        <div class="m-box"><div class="m-lbl">Trades</div><div class="m-val" id="trades">0</div></div>
+        <div class="m-box"><div class="m-lbl">Wins 🏆</div><div class="m-val pos" id="wins">0</div></div>
+        <div class="m-box"><div class="m-lbl">Losses</div><div class="m-val neg" id="losses">0</div></div>
+        <div class="m-box"><div class="m-lbl">Streak</div><div class="m-val" id="streak">0</div></div>
+        <div class="m-box"><div class="m-lbl">Q-Score</div><div class="m-val neon" id="qscore">--</div></div>
+      </div>
     </div>
-    <div class="metrics">
-      <div class="metric"><div class="metric-label">Win Rate</div><div class="metric-value neutral" id="winRate">0%</div></div>
-      <div class="metric"><div class="metric-label">Trades</div><div class="metric-value" id="totalTrades">0</div></div>
-      <div class="metric"><div class="metric-label">Wins</div><div class="metric-value positive" id="wins">0</div></div>
-      <div class="metric"><div class="metric-label">Losses</div><div class="metric-value negative" id="losses">0</div></div>
-      <div class="metric"><div class="metric-label">Streak</div><div class="metric-value" id="streak">0</div></div>
-      <div class="metric"><div class="metric-label">Q-Score</div><div class="metric-value neutral" id="qScore">--</div></div>
+  </div>
+
+  <!-- Money Flow + Open Positions + Activity -->
+  <div class="g3">
+    <div class="card purple">
+      <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(124,58,237,.08)">💸</div>Money Flow</div></div>
+      <div class="money-flow" id="moneyFlow">
+        <div class="mf-box"><div class="mf-icon">🏦</div><div class="mf-lbl">KuCoin</div><div class="mf-val" id="mfKC">--</div></div>
+        <div class="mf-arrow">→</div>
+        <div class="mf-box"><div class="mf-icon">📈</div><div class="mf-lbl">Trading</div><div class="mf-val" id="mfTrade">--</div></div>
+        <div class="mf-arrow">→</div>
+        <div class="mf-box"><div class="mf-icon">💰</div><div class="mf-lbl">Earn</div><div class="mf-val" id="mfEarn">--</div></div>
+      </div>
+      <div class="money-flow" style="margin-top:6px">
+        <div class="mf-box"><div class="mf-icon">🟡</div><div class="mf-lbl">ByBit</div><div class="mf-val" id="mfBB">--</div></div>
+        <div class="mf-arrow">⚡</div>
+        <div class="mf-box"><div class="mf-icon">🔄</div><div class="mf-lbl">Router</div><div class="mf-val" id="mfRouter">--</div></div>
+        <div class="mf-arrow">→</div>
+        <div class="mf-box"><div class="mf-icon">🔒</div><div class="mf-lbl">Floor</div><div class="mf-val" id="mfFloor">30%</div></div>
+      </div>
+    </div>
+    <div class="card neon">
+      <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(0,245,255,.08)">💼</div>Open Positions</div><span class="badge badge-blue" id="posCount">0</span></div>
+      <div id="positionsList"><div style="text-align:center;color:var(--text3);font-size:.8rem;padding:20px 0">No open positions</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(99,102,241,.08)">📋</div>Activity Feed</div></div>
+      <div class="feed" id="actFeed"><div class="feed-item">Connecting...</div></div>
     </div>
   </div>
 </div>
 
-<!-- Row 2: Trading + Quantum + Positions -->
-<div class="grid">
-  <!-- Trading Engine -->
-  <div class="node">
-    <div class="node-header">
-      <div class="node-title"><span class="icon" style="background:rgba(16,185,129,.1)">📈</span> Trading Engine</div>
-      <span class="node-badge badge-on" id="tradingBadge">ACTIVE</span>
+<!-- ══════════════ TRADING TAB ══════════════ -->
+<div class="page" id="tab-trading">
+  <!-- Engine status -->
+  <div class="g3">
+    <div class="card green">
+      <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(16,185,129,.08)">📈</div>Trading Engine</div><span class="badge badge-on" id="t-badge">ACTIVE</span></div>
+      <div class="metrics">
+        <div class="m-box"><div class="m-lbl">Pairs</div><div class="m-val" id="t-pairs">10</div></div>
+        <div class="m-box"><div class="m-lbl">Open / Max</div><div class="m-val" id="t-pos">0/2</div></div>
+        <div class="m-box"><div class="m-lbl">USDT Floor</div><div class="m-val neon" id="t-floor">30%</div></div>
+        <div class="m-box"><div class="m-lbl">Risk/Trade</div><div class="m-val" id="t-risk">8%</div></div>
+        <div class="m-box"><div class="m-lbl">TP / SL</div><div class="m-val sm" id="t-tpsl">4% / 2%</div></div>
+        <div class="m-box"><div class="m-lbl">Daily Buys</div><div class="m-val" id="t-dbuys">0/4</div></div>
+      </div>
     </div>
-    <div class="metrics">
-      <div class="metric"><div class="metric-label">Pairs</div><div class="metric-value" id="pairsCount">10</div></div>
-      <div class="metric"><div class="metric-label">Open Pos</div><div class="metric-value" id="openPos">0/2</div></div>
-      <div class="metric"><div class="metric-label">USDT Floor</div><div class="metric-value" id="usdtFloor">30%</div></div>
-      <div class="metric"><div class="metric-label">Risk/Trade</div><div class="metric-value" id="riskTrade">8%</div></div>
-      <div class="metric"><div class="metric-label">Min Q</div><div class="metric-value" id="minQ">77</div></div>
-      <div class="metric"><div class="metric-label">Cooldown</div><div class="metric-value metric-sm" id="cooldown">600s</div></div>
+    <div class="card red">
+      <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(244,63,94,.08)">⚡</div>Arbitrage</div><span class="badge badge-on" id="arb-badge">SCANNING</span></div>
+      <div class="metrics">
+        <div class="m-box"><div class="m-lbl">Checks</div><div class="m-val" id="arb-checks">0</div></div>
+        <div class="m-box"><div class="m-lbl">Found</div><div class="m-val pos" id="arb-opp">0</div></div>
+        <div class="m-box"><div class="m-lbl">X-Arb</div><div class="m-val" id="arb-xarb">--</div></div>
+        <div class="m-box"><div class="m-lbl">WS Pairs</div><div class="m-val" id="arb-ws">0</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(251,191,36,.08)">💰</div>Earn Engine</div><span class="badge badge-on" id="earn-badge">ON</span></div>
+      <div class="metrics">
+        <div class="m-box"><div class="m-lbl">KuCoin Earn</div><div class="m-val pos" id="earn-kc">$0.00</div></div>
+        <div class="m-box"><div class="m-lbl">ByBit Earn</div><div class="m-val pos" id="earn-bb">$0.00</div></div>
+      </div>
     </div>
   </div>
 
-  <!-- Quantum Engine -->
-  <div class="node">
-    <div class="node-header">
-      <div class="node-title"><span class="icon" style="background:rgba(124,58,237,.1)">⚛️</span> Quantum Engine</div>
-      <span class="node-badge badge-on" id="quantumBadge">ACTIVE</span>
-    </div>
-    <div class="metrics">
-      <div class="metric"><div class="metric-label">CPU Sim</div><div class="metric-value positive">ON</div></div>
-      <div class="metric"><div class="metric-label">Braket</div><div class="metric-value" id="braketStatus">--</div></div>
-      <div class="metric"><div class="metric-label">Device</div><div class="metric-value metric-sm" id="braketDevice">--</div></div>
-      <div class="metric"><div class="metric-label">Ensemble</div><div class="metric-value metric-sm neutral">CPU 30% + QPU 70%</div></div>
-    </div>
-    <div class="qubit-viz" id="qubitViz"></div>
+  <!-- Live Prices -->
+  <div class="card g-full neon">
+    <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(0,245,255,.08)">💹</div>Live Prices (10 Pairs)</div><span style="font-size:.65rem;color:var(--text3)" id="priceAge">--</span></div>
+    <div class="pairs-grid" id="pairsGrid"></div>
   </div>
 
-  <!-- Open Positions -->
-  <div class="node">
-    <div class="node-header">
-      <div class="node-title"><span class="icon" style="background:rgba(0,240,255,.1)">💼</span> Open Positions</div>
-    </div>
-    <div id="positionsList">
-      <div style="text-align:center;color:var(--text3);font-size:.8rem;padding:20px">No open positions</div>
+  <!-- Trade history table -->
+  <div class="card g-full">
+    <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(16,185,129,.08)">📜</div>Trade History (Last 30)</div></div>
+    <div style="overflow-x:auto">
+      <table class="trade-table">
+        <thead><tr><th>Pair</th><th>Side</th><th>PnL</th><th>Size</th><th>Entry→Exit</th><th>Exchange</th><th>Closed</th></tr></thead>
+        <tbody id="tradeHistBody"><tr><td colspan="7" style="text-align:center;color:var(--text3);padding:20px">No closed trades yet</td></tr></tbody>
+      </table>
     </div>
   </div>
 </div>
 
-<!-- Row 3: AI Agents + Exchanges -->
-<div class="grid">
-  <!-- MiroFish AI -->
-  <div class="node">
-    <div class="node-header">
-      <div class="node-title"><span class="icon" style="background:rgba(59,130,246,.1)">🐟</span> MiroFish v3</div>
-      <span class="node-badge badge-on" id="mirofishBadge">15 AGENTS</span>
+<!-- ══════════════ QUANTUM TAB ══════════════ -->
+<div class="page" id="tab-quantum">
+  <div class="g2">
+    <div class="card purple">
+      <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(124,58,237,.08)">⚛️</div>Quantum Engine</div><span class="badge badge-on" id="q-badge">ACTIVE</span></div>
+      <div class="metrics">
+        <div class="m-box"><div class="m-lbl">CPU Simulator</div><div class="m-val pos">ONLINE</div></div>
+        <div class="m-box"><div class="m-lbl">AWS Braket</div><div class="m-val" id="q-braket">--</div></div>
+        <div class="m-box"><div class="m-lbl">Device</div><div class="m-val sm" id="q-device">Harmony</div></div>
+        <div class="m-box"><div class="m-lbl">Ensemble</div><div class="m-val sm neon">CPU 30% + QPU 70%</div></div>
+      </div>
+      <div style="margin-top:14px">
+        <div style="font-size:.7rem;color:var(--text3);margin-bottom:6px">QAOA Qubit State Visualizer (10 pairs)</div>
+        <div class="qubit-viz" id="qubitViz"></div>
+      </div>
     </div>
-    <div class="metrics">
-      <div class="metric"><div class="metric-label">Calls</div><div class="metric-value" id="mfCalls">0</div></div>
-      <div class="metric"><div class="metric-label">Avg Score</div><div class="metric-value neutral" id="mfAvg">0.0</div></div>
+    <div class="card neon">
+      <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(59,130,246,.08)">🐟</div>MiroFish v3</div><span class="badge badge-blue" id="mf-badge">15 AGENTS</span></div>
+      <div class="metrics">
+        <div class="m-box"><div class="m-lbl">Total Calls</div><div class="m-val" id="mf-calls">0</div></div>
+        <div class="m-box"><div class="m-lbl">Avg Score</div><div class="m-val neon" id="mf-avg">0.0</div></div>
+      </div>
+      <div style="margin-top:12px;font-size:.7rem;color:var(--text3)">Agent roster (15 agents vote on each trade)</div>
+      <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px" id="agentGrid">
+        <!-- populated by JS -->
+      </div>
     </div>
   </div>
 
-  <!-- Earn Engine -->
-  <div class="node">
-    <div class="node-header">
-      <div class="node-title"><span class="icon" style="background:rgba(245,158,11,.1)">💰</span> Earn Engine</div>
-      <span class="node-badge badge-on" id="earnBadge">ON</span>
+  <!-- Correlation Heatmap -->
+  <div class="card g-full neon">
+    <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(0,245,255,.08)">🔥</div>Correlation Heatmap (10×10)</div>
+      <div style="display:flex;gap:12px;font-size:.65rem;color:var(--text3);align-items:center">
+        <span>Low <span style="display:inline-block;width:30px;height:8px;background:linear-gradient(90deg,#1e3a5f,#7c3aed,#ef4444);border-radius:2px;vertical-align:middle"></span> High</span>
+      </div>
     </div>
-    <div class="metrics">
-      <div class="metric"><div class="metric-label">KuCoin Earn</div><div class="metric-value" id="earnKC">$0.00</div></div>
-      <div class="metric"><div class="metric-label">ByBit Earn</div><div class="metric-value" id="earnBB">$0.00</div></div>
+    <div id="heatmapWrap" style="overflow-x:auto"></div>
+  </div>
+</div>
+
+<!-- ══════════════ ANALYTICS TAB ══════════════ -->
+<div class="page" id="tab-analytics">
+  <div class="g2">
+    <div class="card green">
+      <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(16,185,129,.08)">📈</div>Cumulative P&L</div></div>
+      <canvas id="pnlChart2" height="200"></canvas>
+    </div>
+    <div class="card">
+      <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(124,58,237,.08)">🥧</div>Win/Loss Breakdown</div></div>
+      <canvas id="wlChart" height="200"></canvas>
     </div>
   </div>
-
-  <!-- Arbitrage -->
-  <div class="node">
-    <div class="node-header">
-      <div class="node-title"><span class="icon" style="background:rgba(239,68,68,.1)">⚡</span> Arbitrage</div>
-      <span class="node-badge badge-on" id="arbBadge">SCANNING</span>
+  <div class="g2">
+    <div class="card">
+      <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(251,191,36,.08)">📊</div>Performance by Pair</div></div>
+      <canvas id="pairChart" height="200"></canvas>
     </div>
-    <div class="metrics">
-      <div class="metric"><div class="metric-label">Checks</div><div class="metric-value" id="arbChecks">0</div></div>
-      <div class="metric"><div class="metric-label">Found</div><div class="metric-value" id="arbFound">0</div></div>
+    <div class="card">
+      <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(244,63,94,.08)">⚡</div>Recent Trades</div></div>
+      <div style="overflow-y:auto;max-height:220px">
+        <table class="trade-table">
+          <thead><tr><th>Pair</th><th>PnL</th><th>Side</th></tr></thead>
+          <tbody id="tradeHistBody2"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 </div>
 
-<!-- Row 4: Live Prices -->
-<div class="node" style="margin-bottom:14px">
-  <div class="node-header">
-    <div class="node-title"><span class="icon" style="background:rgba(0,240,255,.1)">💹</span> Live Prices</div>
-    <span style="font-size:.65rem;color:var(--text3)" id="priceCount">0 pairs</span>
-  </div>
-  <div class="pairs-grid" id="pairsGrid"></div>
-</div>
+<!-- ══════════════ SETTINGS TAB ══════════════ -->
+<div class="page" id="tab-settings">
+  <div class="g2">
+    <div class="card neon">
+      <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(0,245,255,.08)">🎛️</div>Risk Parameters</div>
+        <button class="btn active" onclick="saveSettings()">💾 Save</button>
+      </div>
+      <div class="slider-wrap"><div class="slider-lbl"><span>Min Q-Score</span><span id="slQVal">77</span></div>
+        <input type="range" id="slQ" min="65" max="95" value="77" oninput="document.getElementById('slQVal').textContent=this.value">
+      </div>
+      <div class="slider-wrap" style="margin-top:12px"><div class="slider-lbl"><span>Risk per Trade</span><span id="slRiskVal">8%</span></div>
+        <input type="range" id="slRisk" min="2" max="15" value="8" oninput="document.getElementById('slRiskVal').textContent=this.value+'%'">
+      </div>
+      <div class="slider-wrap" style="margin-top:12px"><div class="slider-lbl"><span>USDT Floor</span><span id="slFloorVal">30%</span></div>
+        <input type="range" id="slFloor" min="5" max="50" value="30" oninput="document.getElementById('slFloorVal').textContent=this.value+'%'">
+      </div>
+      <div class="slider-wrap" style="margin-top:12px"><div class="slider-lbl"><span>Cooldown</span><span id="slCoolVal">600s</span></div>
+        <input type="range" id="slCool" min="300" max="3600" step="60" value="600" oninput="document.getElementById('slCoolVal').textContent=this.value+'s'">
+      </div>
+      <div class="slider-wrap" style="margin-top:12px"><div class="slider-lbl"><span>Max Daily Buys</span><span id="slBuysVal">4</span></div>
+        <input type="range" id="slBuys" min="1" max="10" value="4" oninput="document.getElementById('slBuysVal').textContent=this.value">
+      </div>
+    </div>
 
-<!-- Row 5: Activity Feed -->
-<div class="node">
-  <div class="node-header">
-    <div class="node-title"><span class="icon" style="background:rgba(99,102,241,.1)">📋</span> Activity Feed</div>
-    <span style="font-size:.65rem;color:var(--text3)" id="feedCount">Live</span>
+    <div class="card">
+      <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(124,58,237,.08)">🔧</div>Module Controls</div></div>
+      <div style="display:flex;flex-direction:column;gap:14px;margin-top:4px">
+        <div class="toggle-wrap">
+          <label class="toggle"><input type="checkbox" id="tog-trading" checked onchange="toggleModule('trading',this.checked)"><span class="toggle-slider"></span></label>
+          <span>📈 Trading (Autopilot)</span>
+        </div>
+        <div class="toggle-wrap">
+          <label class="toggle"><input type="checkbox" id="tog-mirofish" checked onchange="toggleModule('mirofish',this.checked)"><span class="toggle-slider"></span></label>
+          <span>🐟 MiroFish AI Agents</span>
+        </div>
+        <div class="toggle-wrap">
+          <label class="toggle"><input type="checkbox" id="tog-earn" checked onchange="toggleModule('earn',this.checked)"><span class="toggle-slider"></span></label>
+          <span>💰 Earn Engine</span>
+        </div>
+        <div class="toggle-wrap">
+          <label class="toggle"><input type="checkbox" id="tog-router" checked onchange="toggleModule('router',this.checked)"><span class="toggle-slider"></span></label>
+          <span>🔄 Smart Money Router</span>
+        </div>
+        <div class="toggle-wrap">
+          <label class="toggle"><input type="checkbox" id="tog-arb" checked onchange="toggleModule('arb',this.checked)"><span class="toggle-slider"></span></label>
+          <span>⚡ Arbitrage</span>
+        </div>
+        <div class="toggle-wrap">
+          <label class="toggle"><input type="checkbox" id="tog-xarb" checked onchange="toggleModule('xarb',this.checked)"><span class="toggle-slider"></span></label>
+          <span>🔀 Cross-Exchange Arb</span>
+        </div>
+      </div>
+    </div>
   </div>
-  <div class="feed" id="activityFeed">
-    <div class="feed-item">Connecting to system...</div>
+
+  <div class="card">
+    <div class="card-head"><div class="card-title"><div class="card-icon" style="background:rgba(251,191,36,.08)">🔑</div>API Key Setup</div></div>
+    <div style="display:flex;gap:10px;align-items:center">
+      <input id="apiKeyInput" type="password" placeholder="Enter API Secret for controls" style="flex:1;background:var(--bg3);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:8px 12px;color:var(--text);font-size:.8rem;outline:none">
+      <button class="btn active" onclick="saveApiKey()">Save Key</button>
+    </div>
+    <div style="font-size:.7rem;color:var(--text3);margin-top:8px">Or add ?key=YOUR_API_SECRET to the URL. Key is stored only in memory.</div>
   </div>
 </div>
-
-</div><!-- /main -->
 
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
 <script>
-const API_BASE = window.location.origin;
-let refreshInterval = null;
-let lastData = null;
-let updateCount = 0;
+const BASE = window.location.origin;
+let D = null;          // last data
+let soundEnabled = true;
+let tick = 0;
+let pnlChartObj = null, pnlChart2Obj = null, wlChartObj = null, pairChartObj = null;
+let audioCtx = null;
+const AGENTS = ['Auditor','Risk','Strategy','Security','Optimizer','DevOps','Trend','Volume','Sentiment','Pattern','Macro','Whale','Arb','Quant','ML'];
 
-// ── Fetch dashboard data ──────────────────────────────────────────────
-async function fetchDashboard() {
-  try {
-    const ctrl = new AbortController();
-    const tid = setTimeout(() => ctrl.abort(), 8000);
-    const res = await fetch(`${API_BASE}/api/dashboard/live`, {signal: ctrl.signal});
-    clearTimeout(tid);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    lastData = data;
-    updateCount++;
-    renderAll(data);
-    document.getElementById('updateTimer').textContent = `#${updateCount}`;
-  } catch (e) {
-    console.error('Dashboard fetch error:', e);
-    document.getElementById('updateTimer').textContent = 'ERR';
-  }
+// ── Sound ────────────────────────────────────────────────────────────────
+function getAudioCtx(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();return audioCtx}
+function playBeep(freq=440,type='sine',dur=0.15,vol=0.3){
+  if(!soundEnabled)return;
+  try{
+    const ac=getAudioCtx(),osc=ac.createOscillator(),g=ac.createGain();
+    osc.connect(g);g.connect(ac.destination);
+    osc.type=type;osc.frequency.value=freq;
+    g.gain.setValueAtTime(vol,ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(.001,ac.currentTime+dur);
+    osc.start();osc.stop(ac.currentTime+dur);
+  }catch(e){}
+}
+function playTrade(win){win?playBeep(880,'sine',.25,.4):playBeep(220,'sawtooth',.2,.3)}
+function playPause(){playBeep(300,'triangle',.4,.2)}
+function toggleSound(){
+  soundEnabled=!soundEnabled;
+  document.getElementById('soundBtn').textContent=soundEnabled?'🔊':'🔇';
+  showToast(soundEnabled?'Sound ON 🔊':'Sound OFF 🔇');
 }
 
-// ── Render all sections ───────────────────────────────────────────────
-function renderAll(d) {
-  // Version
-  document.getElementById('version').textContent = `v${d.version}`;
+// ── Tab switching ─────────────────────────────────────────────────────────
+function showTab(name){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');
+  event.target.classList.add('active');
+  if(name==='analytics'&&D)renderAnalytics(D);
+  if(name==='quantum'&&D)renderHeatmap(D.corr_matrix);
+}
 
-  // System status
-  const statusEl = document.getElementById('systemStatus');
-  const btnPause = document.getElementById('btnPause');
-  if (d.system.paused) {
-    statusEl.textContent = 'PAUSED';
-    statusEl.className = 'status-pill paused';
-    btnPause.textContent = 'RESUME';
-    btnPause.className = 'btn resume';
-  } else {
-    statusEl.textContent = d.system.autopilot ? 'ONLINE' : 'STANDBY';
-    statusEl.className = 'status-pill online';
-    btnPause.textContent = 'PAUSE';
-    btnPause.className = 'btn pause';
-  }
+// ── API Key ───────────────────────────────────────────────────────────────
+function getKey(){return new URLSearchParams(location.search).get('key')||sessionStorage.getItem('qt_key')||'';}
+function saveApiKey(){const k=document.getElementById('apiKeyInput').value.trim();if(k){sessionStorage.setItem('qt_key',k);showToast('API key saved ✅');}else showToast('Enter a key first','err');}
+
+// ── Fetch & Update ────────────────────────────────────────────────────────
+async function fetchData(){
+  try{
+    const r=await fetch(`${BASE}/api/dashboard/live`,{signal:AbortSignal.timeout(8000)});
+    if(!r.ok)throw new Error(r.status);
+    const d=await r.json();
+    const prev=D;D=d;tick++;
+    document.getElementById('refreshTick').textContent=`#${tick}`;
+    renderAll(d,prev);
+  }catch(e){document.getElementById('refreshTick').textContent='ERR';}
+}
+
+// ── Main render ───────────────────────────────────────────────────────────
+function renderAll(d,prev){
+  // Version
+  document.getElementById('ver').textContent=`v${d.version}`;
+
+  // System state
+  const paused=d.system.paused,ap=d.system.autopilot;
+  const sb=document.getElementById('systemBadge'),pb=document.getElementById('pauseBtn');
+  if(paused){sb.textContent='⏸ PAUSED';sb.className='status-badge paused';pb.textContent='▶ RESUME';pb.className='btn success';}
+  else if(ap){sb.textContent='● ONLINE';sb.className='status-badge online';pb.textContent='⏸ PAUSE';pb.className='btn danger';}
+  else{sb.textContent='◉ STANDBY';sb.className='status-badge standby';pb.textContent='⏸ PAUSE';pb.className='btn danger';}
+
+  // Sound on pause change
+  if(prev&&prev.system.paused!==paused)playPause();
+
+  // HUD stats
+  const pnl=d.performance.total_pnl;
+  set('hPnl',`$${pnl>=0?'+':''}${pnl.toFixed(2)}`,pnl>=0?'var(--green)':'var(--red)');
+  set('hWr',`${d.performance.winrate}%`);
+  set('hTrades',d.performance.total_trades);
+  set('hQ',d.trading.last_q_score||'--','var(--neon)');
+
+  // Ticker
+  renderTicker(d.prices);
 
   // Performance
-  const pnl = d.performance.total_pnl;
-  const pnlEl = document.getElementById('pnlTotal');
-  pnlEl.textContent = `$${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}`;
-  pnlEl.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
-  document.getElementById('winRate').textContent = `${d.performance.winrate}%`;
-  document.getElementById('totalTrades').textContent = d.performance.total_trades;
-  document.getElementById('wins').textContent = d.performance.wins;
-  document.getElementById('losses').textContent = d.performance.losses;
-  const streak = d.performance.streak;
-  const streakEl = document.getElementById('streak');
-  streakEl.textContent = `${streak > 0 ? '+' : ''}${streak}`;
-  streakEl.className = `metric-value ${streak > 0 ? 'positive' : streak < 0 ? 'negative' : ''}`;
-  document.getElementById('qScore').textContent = d.trading.last_q_score || '--';
+  set('bigPnl',`$${pnl>=0?'+':''}${pnl.toFixed(2)}`,pnl>=0?'var(--green)':'var(--red)');
+  set('wr',`${d.performance.winrate}%`,'var(--neon)');
+  set('trades',d.performance.total_trades);
+  set('wins',d.performance.wins,'var(--green)');
+  set('losses',d.performance.losses,'var(--red)');
+  const str=d.performance.streak;
+  set('streak',`${str>0?'+':''}${str}`,str>0?'var(--green)':str<0?'var(--red)':'');
+  set('qscore',d.trading.last_q_score||'--','var(--neon)');
 
-  // Trading
-  const isPaused = d.system.paused;
-  setBadge('tradingBadge', d.system.autopilot && !isPaused, d.system.autopilot ? 'ACTIVE' : 'OFF');
-  document.getElementById('pairsCount').textContent = d.trading.spot_pairs.length;
-  document.getElementById('openPos').textContent = `${d.trading.open_positions}/${d.trading.max_positions}`;
-  document.getElementById('usdtFloor').textContent = `${(d.trading.usdt_floor_pct * 100).toFixed(0)}%`;
-  document.getElementById('riskTrade').textContent = `${(d.trading.risk_per_trade * 100).toFixed(0)}%`;
-  document.getElementById('minQ').textContent = d.trading.min_q_score;
-  document.getElementById('cooldown').textContent = `${d.modules.trading.cooldown}s`;
+  // Trading tab
+  const mod=d.modules;
+  setBadge('t-badge',ap&&!paused,ap?'ACTIVE':'OFF');
+  set('t-pairs',d.trading.spot_pairs.length);
+  set('t-pos',`${d.trading.open_positions}/${d.trading.max_positions}`);
+  set('t-floor',`${(d.trading.usdt_floor_pct*100).toFixed(0)}%`,'var(--neon)');
+  set('t-risk',`${(d.trading.risk_per_trade*100).toFixed(0)}%`);
+  if(d.settings){set('t-tpsl',`${(d.settings.tp_pct*100).toFixed(0)}% / ${(d.settings.sl_pct*100).toFixed(0)}%`);}
+  // Daily buys
+  const cutoff=Date.now()/1000-86400;
+  const buysToday=(d.trade_history||[]).filter(t=>t.side==='BUY'&&t.close_ts>cutoff).length;
+  set('t-dbuys',`${buysToday}/${d.trading.daily_buys_limit}`);
+  setBadge('arb-badge',mod.arb.enabled&&!paused,mod.arb.enabled?'SCANNING':'OFF');
+  set('arb-checks',mod.arb.checks);
+  set('arb-opp',mod.arb.opportunities,'var(--green)');
+  set('arb-xarb',mod.arb.xarb?'ON':'OFF',mod.arb.xarb?'var(--green)':'var(--red)');
+  set('arb-ws',mod.ws.pairs_tracked);
+  setBadge('earn-badge',mod.earn.enabled&&!paused,mod.earn.enabled?'ON':'OFF');
+  set('earn-kc',`$${mod.earn.kc.toFixed(2)}`,'var(--green)');
+  set('earn-bb',`$${mod.earn.bb.toFixed(2)}`,'var(--green)');
 
-  // Quantum
-  const braketOn = d.modules.quantum.braket;
-  setBadge('quantumBadge', true, braketOn ? 'CPU + QPU' : 'CPU ONLY');
-  document.getElementById('braketStatus').textContent = braketOn ? 'READY' : 'OFF';
-  document.getElementById('braketStatus').className = `metric-value ${braketOn ? 'positive' : 'negative'}`;
-  document.getElementById('braketDevice').textContent = d.modules.quantum.braket_arn || 'N/A';
-  renderQubitViz(d.trading.spot_pairs.length);
+  // Quantum tab
+  setBadge('q-badge',true,mod.quantum.braket?'CPU + QPU':'CPU ONLY');
+  set('q-braket',mod.quantum.braket?'READY':'OFFLINE',mod.quantum.braket?'var(--green)':'var(--red)');
+  set('q-device',mod.quantum.braket_arn||'N/A');
+  setBadge('mf-badge',mod.mirofish.enabled,'15 AGENTS');
+  set('mf-calls',mod.mirofish.calls);
+  set('mf-avg',mod.mirofish.avg_score.toFixed(1),'var(--neon)');
+  renderAgents();
+  animateQubits(d.trading.spot_pairs.length);
 
-  // MiroFish
-  setBadge('mirofishBadge', d.modules.mirofish.enabled, d.modules.mirofish.enabled ? '15 AGENTS' : 'OFF');
-  document.getElementById('mfCalls').textContent = d.modules.mirofish.calls;
-  document.getElementById('mfAvg').textContent = d.modules.mirofish.avg_score.toFixed(1);
+  // System map
+  updateMap(d);
 
-  // Earn
-  setBadge('earnBadge', d.modules.earn.enabled && !isPaused, d.modules.earn.enabled ? 'ON' : 'OFF');
-  document.getElementById('earnKC').textContent = `$${d.modules.earn.kc.toFixed(2)}`;
-  document.getElementById('earnBB').textContent = `$${d.modules.earn.bb.toFixed(2)}`;
-
-  // Arb
-  setBadge('arbBadge', d.modules.arb.enabled && !isPaused, d.modules.arb.enabled ? 'SCANNING' : 'OFF');
-  document.getElementById('arbChecks').textContent = d.modules.arb.checks;
-  document.getElementById('arbFound').textContent = d.modules.arb.opportunities;
-
-  // System map nodes
-  updateMapNode('mn-trading', d.system.autopilot && !isPaused);
-  updateMapNode('mn-quantum', true);
-  updateMapNode('mn-mirofish', d.modules.mirofish.enabled && !isPaused);
-  updateMapNode('mn-earn', d.modules.earn.enabled && !isPaused);
-  updateMapNode('mn-router', d.modules.router.enabled && !isPaused);
-  updateMapNode('mn-arb', d.modules.arb.enabled && !isPaused);
-  updateMapNode('mn-kucoin', true);
-  updateMapNode('mn-bybit', d.modules.bybit.enabled);
-  updateMapNode('mn-ws', d.modules.ws.connected);
-
-  // Prices
-  renderPrices(d.prices, d.trading.spot_pairs);
+  // Money flow
+  set('mfKC',`$${mod.earn.kc.toFixed(1)}`,'var(--neon)');
+  set('mfTrade',`${d.trading.open_positions} pos`,'var(--neon)');
+  set('mfEarn',`$${(mod.earn.kc+mod.earn.bb).toFixed(1)}`,'var(--neon)');
+  set('mfBB',`$${mod.earn.bb.toFixed(1)}`,'var(--neon)');
+  set('mfRouter',mod.router.enabled?'ON':'OFF',mod.router.enabled?'var(--green)':'var(--red)');
+  set('mfFloor',`${(d.trading.usdt_floor_pct*100).toFixed(0)}%`,'var(--neon)');
 
   // Positions
   renderPositions(d.positions);
 
-  // Activity feed
-  renderFeed(d.activity);
-}
+  // Activity
+  renderFeed(d.activity,prev);
 
-function setBadge(id, on, text) {
-  const el = document.getElementById(id);
-  el.textContent = text;
-  el.className = `node-badge ${on ? 'badge-on' : 'badge-off'}`;
-}
+  // Prices
+  renderPrices(d.prices,d.trading.spot_pairs);
 
-function updateMapNode(id, active) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  const statusDot = el.querySelector('.map-status');
-  if (lastData && lastData.system.paused) {
-    el.className = 'map-node paused';
-    if (statusDot) statusDot.className = 'map-status off';
-  } else {
-    el.className = `map-node ${active ? 'active' : ''}`;
-    if (statusDot) statusDot.className = `map-status ${active ? 'on' : 'off'}`;
+  // Trade history
+  renderTradeHistory(d.trade_history||[]);
+
+  // PnL Chart (overview)
+  renderPnlChart(d.pnl_series||[]);
+
+  // Settings sliders sync
+  if(d.settings)syncSliders(d.settings);
+
+  // Toggles
+  syncToggles(d);
+
+  // Price age
+  const wsOk=mod.ws.connected;
+  const pe=document.getElementById('priceAge');
+  if(pe)pe.textContent=wsOk?'● Live':'○ Cached';
+
+  // Sound on new trade
+  if(prev&&d.performance.total_trades>prev.performance.total_trades){
+    const win=d.performance.wins>prev.performance.wins;
+    playTrade(win);
+    flashElement(document.getElementById('bigPnl'));
   }
 }
 
-function renderQubitViz(numPairs) {
-  const container = document.getElementById('qubitViz');
-  container.innerHTML = '';
-  for (let i = 0; i < numPairs; i++) {
-    const bar = document.createElement('div');
-    bar.className = 'qubit-bar';
-    const h = 10 + Math.random() * 30;
-    bar.style.height = `${h}px`;
-    bar.style.animationDelay = `${i * 0.1}s`;
-    bar.title = `Qubit ${i}`;
-    container.appendChild(bar);
-  }
-}
+function set(id,val,color){const e=document.getElementById(id);if(!e)return;e.textContent=val;if(color)e.style.color=color;}
+function setBadge(id,on,txt){const e=document.getElementById(id);if(!e)return;e.textContent=txt;e.className=`badge ${on?'badge-on':'badge-off'}`;}
+function flashElement(el){if(!el)return;el.classList.remove('trade-flash');void el.offsetWidth;el.classList.add('trade-flash');}
 
-function renderPrices(prices, pairs) {
-  const grid = document.getElementById('pairsGrid');
-  const count = Object.keys(prices).length;
-  document.getElementById('priceCount').textContent = `${count} pairs live`;
-
-  // Build cards for all trading pairs
-  let html = '';
-  for (const pair of pairs) {
-    const key = pair.replace('-', '');
-    const price = prices[key] || prices[pair] || null;
-    const displayName = pair.replace('-USDT', '');
-    html += `<div class="pair-card">
-      <div class="pair-name">${displayName}</div>
-      <div class="pair-price">${price ? formatPrice(price) : '--'}</div>
-    </div>`;
-  }
-  grid.innerHTML = html;
-}
-
-function formatPrice(p) {
-  if (p >= 1000) return `$${p.toLocaleString('en', {maximumFractionDigits: 0})}`;
-  if (p >= 1) return `$${p.toFixed(2)}`;
-  if (p >= 0.001) return `$${p.toFixed(4)}`;
-  return `$${p.toFixed(8)}`;
-}
-
-function renderPositions(positions) {
-  const el = document.getElementById('positionsList');
-  if (!positions || positions.length === 0) {
-    el.innerHTML = '<div style="text-align:center;color:var(--text3);font-size:.8rem;padding:20px">No open positions</div>';
-    return;
-  }
-  el.innerHTML = positions.map(p => `
-    <div class="pos-item ${p.side === 'SELL' ? 'sell' : ''}">
-      <div>
-        <div class="pos-symbol">${p.symbol.replace('-USDT','')}</div>
-        <div class="pos-detail">${p.side} @ ${formatPrice(p.entry)} · ${p.exchange}</div>
-      </div>
-      <div class="pos-size">$${p.size_usdt.toFixed(2)}</div>
-    </div>
-  `).join('');
-}
-
-function renderFeed(activity) {
-  const el = document.getElementById('activityFeed');
-  if (!activity || activity.length === 0) return;
-  el.innerHTML = activity.map(a => {
-    const msg = a.msg || '';
-    let cls = 'feed-item';
-    if (msg.includes('[cycle')) cls += ' cycle';
-    if (msg.includes('error') || msg.includes('ERROR')) cls += ' error';
-    if (msg.includes('PAUSE') || msg.includes('pause')) cls += ' pause';
-    if (msg.includes('BUY') || msg.includes('SELL')) cls += ' trade';
-    const ts = a.ts ? a.ts.split('T')[1]?.substring(0, 8) || '' : '';
-    return `<div class="${cls}"><span class="ts">${ts}</span>${escHtml(msg)}</div>`;
+// ── Ticker ────────────────────────────────────────────────────────────────
+function renderTicker(prices){
+  const items=Object.entries(prices).slice(0,20).map(([k,v])=>{
+    const s=k.replace('USDT','');
+    return `<span class="ticker-item"><span class="sym">${s}</span><span class="prc">${fmtPrice(v)}</span></span>`;
   }).join('');
+  const t=document.getElementById('tickerTrack');
+  if(t)t.innerHTML=items+items; // double for seamless loop
 }
 
-function escHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
+// ── System Map ────────────────────────────────────────────────────────────
+function updateMap(d){
+  const paused=d.system.paused;
+  const states={
+    'mn-kucoin':true,'mn-bybit':d.modules.bybit.enabled,
+    'mn-trading':d.system.autopilot&&!paused,'mn-quantum':true,
+    'mn-mirofish':d.modules.mirofish.enabled&&!paused,
+    'mn-earn':d.modules.earn.enabled&&!paused,
+    'mn-router':d.modules.router.enabled&&!paused,
+    'mn-arb':d.modules.arb.enabled&&!paused,
+    'mn-ws':d.modules.ws.connected
+  };
+  const mapStatus=document.getElementById('mapStatus');
+  const allOn=Object.values(states).every(Boolean);
+  const anyOff=Object.values(states).some(v=>!v);
+  mapStatus.textContent=paused?'⏸ PAUSED':allOn?'ALL SYSTEMS GO':anyOff?'DEGRADED':'OK';
+  mapStatus.className=`badge ${paused?'badge-warn':allOn?'badge-on':'badge-off'}`;
+
+  Object.entries(states).forEach(([id,on])=>{
+    const el=document.getElementById(id);if(!el)return;
+    const dot=el.querySelector('.mn-dot');
+    if(paused){el.className='map-node paused-node';if(dot)dot.className='mn-dot off';}
+    else{el.className=`map-node ${on?'active':''}`;if(dot)dot.className=`mn-dot ${on?'on':'off'}`;}
+  });
+  drawMapConnections();
 }
 
-// ── Pause/Resume ──────────────────────────────────────────────────────
-async function togglePause() {
-  const isPaused = lastData && lastData.system.paused;
-  const endpoint = isPaused ? '/api/resume' : '/api/pause';
-
-  // Need API key from URL param or prompt
-  const apiKey = getApiKey();
-  if (!apiKey) {
-    showToast('Set API key: add ?key=YOUR_KEY to URL');
-    return;
-  }
-
-  try {
-    const res = await fetch(`${API_BASE}${endpoint}`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json', 'X-API-Key': apiKey},
-      body: JSON.stringify({reason: 'Command Center'})
-    });
-    const data = await res.json();
-    if (res.ok) {
-      showToast(isPaused ? 'System RESUMED' : 'System PAUSED');
-      setTimeout(fetchDashboard, 500);
-    } else {
-      showToast(`Error: ${data.detail || 'Unknown'}`);
-    }
-  } catch (e) {
-    showToast(`Connection error: ${e.message}`);
-  }
-}
-
-function getApiKey() {
-  const params = new URLSearchParams(window.location.search);
-  return params.get('key') || localStorage.getItem('qt_api_key') || '';
-}
-
-function showToast(msg) {
-  const el = document.getElementById('toast');
-  el.textContent = msg;
-  el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 3000);
-}
-
-// ── Qubit animation ───────────────────────────────────────────────────
-function animateQubits() {
-  const bars = document.querySelectorAll('.qubit-bar');
-  bars.forEach(bar => {
-    const h = 10 + Math.random() * 30;
-    bar.style.height = `${h}px`;
+// ── Canvas connections ─────────────────────────────────────────────────────
+function drawMapConnections(){
+  const wrap=document.getElementById('systemMapWrap');
+  const canvas=document.getElementById('mapCanvas');
+  if(!wrap||!canvas)return;
+  const rect=wrap.getBoundingClientRect();
+  canvas.width=rect.width;canvas.height=rect.height;
+  const ctx=canvas.getContext('2d');
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  const pairs=[['mn-kucoin','mn-trading'],['mn-bybit','mn-trading'],['mn-trading','mn-quantum'],
+    ['mn-trading','mn-mirofish'],['mn-trading','mn-earn'],['mn-earn','mn-router'],
+    ['mn-router','mn-kucoin'],['mn-arb','mn-ws'],['mn-ws','mn-kucoin']];
+  pairs.forEach(([a,b])=>{
+    const ea=document.getElementById(a),eb=document.getElementById(b);
+    if(!ea||!eb)return;
+    const ra=ea.getBoundingClientRect(),rb=eb.getBoundingClientRect();
+    const ax=ra.left-rect.left+ra.width/2,ay=ra.top-rect.top+ra.height/2;
+    const bx=rb.left-rect.left+rb.width/2,by=rb.top-rect.top+rb.height/2;
+    ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);
+    ctx.strokeStyle='rgba(0,245,255,.12)';ctx.lineWidth=1;ctx.setLineDash([4,6]);ctx.stroke();
+    ctx.setLineDash([]);
   });
 }
 
-// ── Init ──────────────────────────────────────────────────────────────
-async function init() {
-  await fetchDashboard();
-  // Refresh every 5 seconds
-  refreshInterval = setInterval(fetchDashboard, 5000);
-  // Animate qubits every 2 seconds
-  setInterval(animateQubits, 2000);
+// ── Positions ─────────────────────────────────────────────────────────────
+function renderPositions(positions){
+  const el=document.getElementById('positionsList');
+  const cnt=document.getElementById('posCount');
+  if(cnt)cnt.textContent=positions.length;
+  if(!el)return;
+  if(!positions.length){el.innerHTML='<div style="text-align:center;color:var(--text3);font-size:.8rem;padding:20px 0">No open positions</div>';return;}
+  el.innerHTML=positions.map(p=>`
+    <div class="pos-card ${p.side==='SELL'?'sell':''}">
+      <div><div style="font-weight:700">${p.symbol.replace('-USDT','')}</div>
+        <div style="font-size:.7rem;color:var(--text2)">${p.side} @ ${fmtPrice(p.entry)} · ${p.exchange}</div></div>
+      <div style="font-weight:700;color:var(--neon)">$${p.size_usdt.toFixed(2)}</div>
+    </div>`).join('');
 }
 
-init();
+// ── Activity Feed ──────────────────────────────────────────────────────────
+function renderFeed(activity,prev){
+  const el=document.getElementById('actFeed');if(!el||!activity)return;
+  el.innerHTML=activity.map(a=>{
+    const msg=a.msg||'';let cls='feed-item';
+    if(msg.includes('[cycle'))cls+=' t-cycle';
+    if(/BUY|SELL/.test(msg))cls+=' t-trade';
+    if(/error|ERROR/.test(msg))cls+=' t-error';
+    if(/PAUSE|pause/.test(msg))cls+=' t-pause';
+    const ts=a.ts?a.ts.split('T')[1]?.substring(0,8)||'':'';
+    return `<div class="${cls}"><span class="ft">${ts}</span>${esc(msg)}</div>`;
+  }).join('');
+}
+
+// ── Prices ─────────────────────────────────────────────────────────────────
+function renderPrices(prices,pairs){
+  const el=document.getElementById('pairsGrid');if(!el)return;
+  el.innerHTML=pairs.map(pair=>{
+    const k=pair.replace('-','');
+    const p=prices[k]||prices[pair]||null;
+    const name=pair.replace('-USDT','');
+    return `<div class="pair-card">
+      <div class="pc-name">${name}/USDT</div>
+      <div class="pc-price">${p?fmtPrice(p):'--'}</div>
+      <canvas class="pc-sparkline" id="spark-${name}"></canvas>
+    </div>`;
+  }).join('');
+}
+
+// ── Trade History ──────────────────────────────────────────────────────────
+function renderTradeHistory(history){
+  const bodies=['tradeHistBody','tradeHistBody2'];
+  const rows=history.slice().reverse().map(t=>{
+    const pnl=t.pnl||0;const win=pnl>=0;
+    const dt=t.close_ts?new Date(t.close_ts*1000).toLocaleString('ru',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'--';
+    return `<tr>
+      <td style="font-weight:600">${t.symbol.replace('-USDT','')}</td>
+      <td><span style="color:${t.side==='BUY'?'var(--green)':'var(--red)'}">${t.side}</span></td>
+      <td style="font-weight:700;color:${win?'var(--green)':'var(--red)'}">${pnl>=0?'+':''}$${pnl.toFixed(4)}</td>
+      <td>$${t.size_usdt.toFixed(2)}</td>
+      <td style="font-size:.65rem;color:var(--text3)">${fmtPrice(t.entry)}→${fmtPrice(t.exit||0)}</td>
+      <td style="color:var(--text3)">${t.exchange.replace('_spot','').replace('bybit','BB').replace('spot','KC')}</td>
+      <td style="color:var(--text3)">${dt}</td>
+    </tr>`;
+  }).join('');
+  bodies.forEach(id=>{const e=document.getElementById(id);if(e)e.innerHTML=rows||'<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:20px">No trades</td></tr>';});
+}
+
+// ── PnL Chart ──────────────────────────────────────────────────────────────
+function renderPnlChart(series){
+  const canvas=document.getElementById('pnlChart');if(!canvas)return;
+  const labels=series.map((_,i)=>'');
+  const data=series.map(s=>s.pnl);
+  const lastPnl=data[data.length-1]||0;
+  const color=lastPnl>=0?'rgba(16,185,129,.8)':'rgba(244,63,94,.8)';
+  const fillColor=lastPnl>=0?'rgba(16,185,129,.1)':'rgba(244,63,94,.1)';
+  const cfg={type:'line',data:{labels,datasets:[{data,borderColor:color,backgroundColor:fillColor,fill:true,tension:.4,pointRadius:0,borderWidth:2}]},
+    options:{responsive:true,plugins:{legend:{display:false}},scales:{x:{display:false},y:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',font:{size:10},callback:v=>`$${v.toFixed(2)}`}}},animation:{duration:400}}};
+  if(pnlChartObj)pnlChartObj.destroy();
+  pnlChartObj=new Chart(canvas,cfg);
+}
+
+// ── Analytics charts ───────────────────────────────────────────────────────
+function renderAnalytics(d){
+  // PnL Chart 2
+  const c2=document.getElementById('pnlChart2');
+  if(c2&&d.pnl_series){
+    const data=(d.pnl_series||[]).map(s=>s.pnl);
+    const lastPnl=data[data.length-1]||0;
+    const color=lastPnl>=0?'rgba(16,185,129,.8)':'rgba(244,63,94,.8)';
+    if(pnlChart2Obj)pnlChart2Obj.destroy();
+    pnlChart2Obj=new Chart(c2,{type:'line',data:{labels:data.map((_,i)=>i+1),datasets:[{data,borderColor:color,backgroundColor:color.replace('.8)','.1)'),fill:true,tension:.4,pointRadius:2,borderWidth:2}]},
+      options:{responsive:true,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#94a3b8',font:{size:10}}},y:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',font:{size:10}}}},animation:{duration:600}}});
+  }
+  // Win/Loss Pie
+  const wl=document.getElementById('wlChart');
+  if(wl){
+    const w=d.performance.wins,l=d.performance.losses;
+    if(wlChartObj)wlChartObj.destroy();
+    wlChartObj=new Chart(wl,{type:'doughnut',data:{labels:['Wins','Losses'],datasets:[{data:[w,l],backgroundColor:['rgba(16,185,129,.7)','rgba(244,63,94,.7)'],borderColor:['rgba(16,185,129,.3)','rgba(244,63,94,.3)'],borderWidth:1}]},
+      options:{responsive:true,plugins:{legend:{labels:{color:'#94a3b8',font:{size:11}}}},animation:{duration:600}}});
+  }
+  // Per-pair chart
+  const pc=document.getElementById('pairChart');
+  if(pc&&d.trade_history){
+    const byPair={};
+    d.trade_history.forEach(t=>{const s=t.symbol.replace('-USDT','');if(!byPair[s])byPair[s]={pnl:0,c:0};byPair[s].pnl+=t.pnl;byPair[s].c++;});
+    const pairs=Object.keys(byPair);const pnls=pairs.map(p=>byPair[p].pnl);
+    if(pairChartObj)pairChartObj.destroy();
+    pairChartObj=new Chart(pc,{type:'bar',data:{labels:pairs,datasets:[{data:pnls,backgroundColor:pnls.map(v=>v>=0?'rgba(16,185,129,.6)':'rgba(244,63,94,.6)'),borderRadius:4}]},
+      options:{responsive:true,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#94a3b8',font:{size:9}}},y:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#94a3b8',font:{size:10}}}},animation:{duration:600}}});
+  }
+}
+
+// ── Heatmap ────────────────────────────────────────────────────────────────
+function renderHeatmap(corrData){
+  const wrap=document.getElementById('heatmapWrap');if(!wrap||!corrData)return;
+  const pairs=corrData.pairs.map(p=>p.replace('-USDT',''));
+  const matrix=corrData.matrix;
+  const n=pairs.length;
+  const cellSize=Math.min(44,Math.floor((wrap.clientWidth-60)/n));
+  let html=`<div style="display:grid;grid-template-columns:${cellSize}px repeat(${n},${cellSize}px);gap:2px;min-width:max-content">`;
+  // Header row
+  html+=`<div></div>`+pairs.map(p=>`<div class="hm-label" style="width:${cellSize}px">${p}</div>`).join('');
+  // Data rows
+  for(let i=0;i<n;i++){
+    html+=`<div class="hm-label" style="display:flex;align-items:center;justify-content:flex-end;padding-right:4px">${pairs[i]}</div>`;
+    for(let j=0;j<n;j++){
+      const v=matrix[i][j];
+      const r=Math.round(v<.5?v*2*30:30+(v-.5)*2*70);// blue→purple→red
+      const bg=`hsl(${200-v*200},70%,${20+v*15}%)`;
+      html+=`<div class="hm-cell" style="width:${cellSize}px;height:${cellSize}px;background:${bg};color:rgba(255,255,255,${v>.6?.9:.5})" title="${pairs[i]} / ${pairs[j]}: ${v.toFixed(2)}">${v.toFixed(2)}</div>`;
+    }
+  }
+  html+='</div>';
+  wrap.innerHTML=html;
+}
+
+// ── Agents ────────────────────────────────────────────────────────────────
+function renderAgents(){
+  const el=document.getElementById('agentGrid');if(!el)return;
+  if(el.children.length)return;// only render once
+  el.innerHTML=AGENTS.map(a=>`<div style="background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.15);border-radius:6px;padding:3px 8px;font-size:.65rem;color:var(--blue)">${a}</div>`).join('');
+}
+
+// ── Qubit viz ─────────────────────────────────────────────────────────────
+function animateQubits(n){
+  const el=document.getElementById('qubitViz');if(!el)return;
+  if(el.children.length!==n){el.innerHTML=Array.from({length:n},()=>`<div class="qb"></div>`).join('');}
+  el.querySelectorAll('.qb').forEach(q=>{q.style.height=`${8+Math.random()*36}px`;});
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────
+function syncSliders(s){
+  const sl=(id,val)=>{const e=document.getElementById(id);if(e&&!e.matches(':active'))e.value=val;};
+  const st=(id,val)=>{const e=document.getElementById(id);if(e)e.textContent=val;};
+  sl('slQ',s.min_q_score);st('slQVal',s.min_q_score);
+  sl('slRisk',Math.round(s.risk_per_trade*100));st('slRiskVal',Math.round(s.risk_per_trade*100)+'%');
+  sl('slFloor',Math.round(s.usdt_floor_pct*100));st('slFloorVal',Math.round(s.usdt_floor_pct*100)+'%');
+  sl('slCool',s.cooldown);st('slCoolVal',s.cooldown+'s');
+  sl('slBuys',s.max_daily_buys);st('slBuysVal',s.max_daily_buys);
+}
+function syncToggles(d){
+  const t=(id,val)=>{const e=document.getElementById(id);if(e)e.checked=val;};
+  t('tog-trading',d.system.autopilot);
+  t('tog-mirofish',d.modules.mirofish.enabled);
+  t('tog-earn',d.modules.earn.enabled);
+  t('tog-router',d.modules.router.enabled);
+  t('tog-arb',d.modules.arb.enabled);
+  t('tog-xarb',d.modules.arb.xarb);
+}
+async function saveSettings(){
+  const key=getKey();if(!key){showToast('API key required','err');return;}
+  const body={
+    min_q_score:parseInt(document.getElementById('slQ').value),
+    cooldown:parseInt(document.getElementById('slCool').value),
+    risk_per_trade:parseInt(document.getElementById('slRisk').value)/100,
+  };
+  try{
+    const r=await fetch(`${BASE}/api/settings`,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':key},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(r.ok){showToast('Settings saved ✅');playBeep(660,'sine',.1,.2);}
+    else showToast(`Error: ${d.detail||'Unknown'}','err'`);
+  }catch(e){showToast('Connection error','err');}
+}
+async function toggleModule(mod,enabled){
+  const key=getKey();if(!key){showToast('API key required — Settings tab','err');return;}
+  try{
+    const r=await fetch(`${BASE}/api/module/toggle`,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':key},body:JSON.stringify({module:mod,enabled})});
+    if(r.ok){showToast(`${mod} ${enabled?'ON ✅':'OFF ❌'}`);playBeep(enabled?550:300,'sine',.1,.15);}
+    else{showToast('Error toggling module','err');const e=document.getElementById(`tog-${mod}`);if(e)e.checked=!enabled;}
+  }catch(e){showToast('Connection error','err');}
+}
+
+// ── Pause/Resume ───────────────────────────────────────────────────────────
+async function togglePause(){
+  const key=getKey();if(!key){showToast('API key required — Settings tab','err');return;}
+  const paused=D&&D.system.paused;
+  try{
+    const r=await fetch(`${BASE}/api/${paused?'resume':'pause'}`,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':key},body:JSON.stringify({reason:'Command Center'})});
+    if(r.ok){showToast(paused?'▶ Resumed':'⏸ Paused');playPause();setTimeout(fetchData,600);}
+    else showToast('Error','err');
+  }catch(e){showToast('Connection error','err');}
+}
+
+// ── Module info ────────────────────────────────────────────────────────────
+function moduleInfo(m){const info={'kucoin':'Main exchange — Spot & Futures trading','bybit':'Secondary exchange — X-Arb & backup','trading':'Auto-trade cycle every 15s, QAOA signal','quantum':'CPU Simulator (free) + AWS Braket IonQ (70%)','mirofish':'15 AI agents vote on each trade (75% veto)','earn':'Auto-place idle USDT into Flexible Earn','router':'Smart Money Router — $1 arb + $2 trade reserve','arb':'2-asset + 3-asset triangular arbitrage scanner','ws':'WebSocket real-time price feed (10 pairs)'};showToast(info[m]||m);}
+
+// ── Background canvas ──────────────────────────────────────────────────────
+(function initBg(){
+  const c=document.getElementById('bgCanvas');
+  const ctx=c.getContext('2d');
+  let W,H,particles=[];
+  function resize(){W=c.width=window.innerWidth;H=c.height=window.innerHeight;}
+  resize();window.addEventListener('resize',resize);
+  function Particle(){this.x=Math.random()*W;this.y=Math.random()*H;this.vx=(Math.random()-.5)*.3;this.vy=(Math.random()-.5)*.3;this.r=Math.random()*1.5+.5;this.a=Math.random();}
+  for(let i=0;i<80;i++)particles.push(new Particle());
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+    particles.forEach((p,i)=>{
+      p.x+=p.vx;p.y+=p.vy;
+      if(p.x<0)p.x=W;if(p.x>W)p.x=0;if(p.y<0)p.y=H;if(p.y>H)p.y=0;
+      ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fillStyle=`rgba(0,245,255,${p.a*.4})`;ctx.fill();
+      for(let j=i+1;j<particles.length;j++){
+        const q=particles[j],dx=p.x-q.x,dy=p.y-q.y,d=Math.sqrt(dx*dx+dy*dy);
+        if(d<120){ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(q.x,q.y);ctx.strokeStyle=`rgba(0,245,255,${.08*(1-d/120)})`;ctx.lineWidth=.5;ctx.stroke();}
+      }
+    });
+    requestAnimationFrame(draw);
+  }
+  draw();
+})();
+
+// ── Utils ─────────────────────────────────────────────────────────────────
+function fmtPrice(p){if(!p)return'--';if(p>=1000)return`$${p.toLocaleString('en',{maximumFractionDigits:0})}`;if(p>=1)return`$${p.toFixed(2)}`;if(p>=.001)return`$${p.toFixed(4)}`;return`$${p.toFixed(8)}`;}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+let _toastTimer=null;
+function showToast(msg,type=''){const e=document.getElementById('toast');e.textContent=msg;e.className=`toast show${type==='err'?' err':''}`;clearTimeout(_toastTimer);_toastTimer=setTimeout(()=>e.classList.remove('show'),3000);}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+fetchData();
+setInterval(fetchData,5000);
+setInterval(()=>D&&animateQubits(D.trading.spot_pairs.length),1500);
+setInterval(drawMapConnections,3000);
+window.addEventListener('resize',drawMapConnections);
 </script>
 </body>
 </html>

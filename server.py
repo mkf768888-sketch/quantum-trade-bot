@@ -8218,6 +8218,26 @@ async def dashboard_live():
     # Recent activity (last 20)
     recent_log = list(reversed(activity_log[-20:]))
 
+    # Recent closed trades (last 30 for chart + history)
+    recent_closed = sorted(
+        [t for t in closed_trades if t.get("close_ts")],
+        key=lambda x: x.get("close_ts", 0)
+    )[-30:]
+    trade_history = [
+        {"symbol": t.get("symbol","?"), "side": t.get("side","?"),
+         "pnl": round(t.get("pnl", 0), 4),
+         "entry": t.get("entry_price", 0), "exit": t.get("exit_price", 0),
+         "size_usdt": round(t.get("usdt_size", 0), 2),
+         "exchange": t.get("account", "spot"), "close_ts": t.get("close_ts", 0)}
+        for t in recent_closed
+    ]
+    # Cumulative PnL series for chart
+    cum_pnl = 0.0
+    pnl_series = []
+    for t in recent_closed:
+        cum_pnl = round(cum_pnl + t.get("pnl", 0), 4)
+        pnl_series.append({"ts": t.get("close_ts", 0), "pnl": cum_pnl})
+
     return {
         "ts": time.time(),
         "version": app.version,
@@ -8279,7 +8299,58 @@ async def dashboard_live():
         "prices": prices_snap,
         # Activity
         "activity": recent_log,
+        # Trade history + PnL chart data
+        "trade_history": trade_history,
+        "pnl_series": pnl_series,
+        # Correlation matrix
+        "corr_matrix": {"pairs": PAIR_NAMES, "matrix": CORR_MATRIX},
+        # Settings (for sliders)
+        "settings": {
+            "min_q_score": MIN_Q_SCORE, "cooldown": COOLDOWN,
+            "risk_per_trade": RISK_PER_TRADE, "max_leverage": MAX_LEVERAGE,
+            "usdt_floor_pct": USDT_FLOOR_PCT, "max_daily_buys": MAX_DAILY_BUYS,
+            "tp_pct": TP_PCT, "sl_pct": SL_PCT,
+        },
     }
+
+# ── v10.9: Module Toggle API ────────────────────────────────────────────────
+@app.post("/api/module/toggle")
+async def module_toggle(body: dict, _auth=Depends(verify_api_key)):
+    """v10.9: Toggle individual modules on/off from Command Center."""
+    global AUTOPILOT, EARN_ENABLED, ROUTER_ENABLED, ARB_EXEC_ENABLED, XARB_ENABLED, MIROFISH_ENABLED
+    module = body.get("module", "")
+    enabled = body.get("enabled")
+    if enabled is None:
+        raise HTTPException(400, "enabled field required")
+    changed = {}
+    if module == "trading":
+        AUTOPILOT = bool(enabled)
+        changed["autopilot"] = AUTOPILOT
+        log_activity(f"[module/api] Trading {'ON' if AUTOPILOT else 'OFF'}")
+    elif module == "earn":
+        EARN_ENABLED = bool(enabled)
+        changed["earn_enabled"] = EARN_ENABLED
+        log_activity(f"[module/api] Earn {'ON' if EARN_ENABLED else 'OFF'}")
+    elif module == "router":
+        ROUTER_ENABLED = bool(enabled)
+        changed["router_enabled"] = ROUTER_ENABLED
+        log_activity(f"[module/api] Router {'ON' if ROUTER_ENABLED else 'OFF'}")
+    elif module == "arb":
+        ARB_EXEC_ENABLED = bool(enabled)
+        changed["arb_enabled"] = ARB_EXEC_ENABLED
+        log_activity(f"[module/api] Arb {'ON' if ARB_EXEC_ENABLED else 'OFF'}")
+    elif module == "xarb":
+        XARB_ENABLED = bool(enabled)
+        changed["xarb_enabled"] = XARB_ENABLED
+        log_activity(f"[module/api] X-Arb {'ON' if XARB_ENABLED else 'OFF'}")
+    elif module == "mirofish":
+        MIROFISH_ENABLED = bool(enabled)
+        changed["mirofish_enabled"] = MIROFISH_ENABLED
+        log_activity(f"[module/api] MiroFish {'ON' if MIROFISH_ENABLED else 'OFF'}")
+    else:
+        raise HTTPException(400, f"Unknown module: {module}")
+    await notify(f"🔧 <b>Module {module}</b>: {'ON ✅' if bool(enabled) else 'OFF ❌'} (via Command Center)")
+    return {"ok": True, "changed": changed}
 
 @app.head("/health")  # v10.2: Railway sends HEAD for health checks
 @app.get("/health")
