@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v10.7.0
+QuantumTrade AI - FastAPI Backend v10.7.2
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
@@ -91,7 +91,7 @@ DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")  
 AI_TIER_VISION    = os.getenv("AI_TIER_VISION", "haiku")     # haiku (default) | opus
 AI_TIER_CHAT      = os.getenv("AI_TIER_CHAT", "deepseek")    # deepseek (default) | haiku | sonnet
 AI_TIER_CRITICAL  = os.getenv("AI_TIER_CRITICAL", "opus")    # opus (default) | sonnet
-ORIGIN_QC_TOKEN   = os.getenv("ORIGIN_QC_TOKEN", "") or os.getenv("ORIGIN_QC_KEY", "")  # v10.7: fallback ORIGIN_QC_KEY
+ORIGIN_QC_TOKEN   = ""  # v10.7.2: Wukong отключён (¥20/сек = дорого). CPU sim + Braket = основная стратегия
 LUNARCRUSH_API_KEY = os.getenv("LUNARCRUSH_API_KEY", "") # v10.2: LunarCrush v4 Bearer token
 AWS_ACCESS_KEY_ID  = os.getenv("AWS_ACCESS_KEY_ID",  "")   # v7.3.1: Amazon Braket
 AWS_SECRET_KEY     = os.getenv("AWS_SECRET_ACCESS_KEY", "") # v7.3.1: Amazon Braket
@@ -451,6 +451,12 @@ _corr_cache_ts: float    = 0.0  # v7.3.0: время последнего обн
 _braket_ts: float    = 0.0   # v7.3.1: timestamp последнего запуска Braket
 _braket_bias: dict   = {}    # v7.3.1: последний bias от Braket
 _braket_ready: bool  = bool(os.getenv("AWS_ACCESS_KEY_ID","") and os.getenv("AWS_SECRET_ACCESS_KEY",""))  # v7.3.1
+if _braket_ready:
+    _braket_interval_h = int(os.getenv("BRAKET_INTERVAL", "21600")) // 3600
+    print(f"[braket] ✅ AWS credentials found → IonQ Harmony QPU ready (every {_braket_interval_h}h)", flush=True)
+    print(f"[braket]    S3: {os.getenv('BRAKET_S3_BUCKET', 'NOT SET')} | Region: {os.getenv('AWS_REGION', 'us-east-1')}", flush=True)
+else:
+    print("[braket] ⚠️ AWS credentials not set → Braket QPU disabled, CPU simulator only", flush=True)
 
 # v7.2.0: QAOA rolling average smoother (окно=3, clamp=±5 на CPU, ±15 на чипе)
 _qaoa_history: Dict[str, list] = {}    # symbol → последние N значений
@@ -7925,26 +7931,30 @@ async def airdrops_send_digest():
 
 @app.get("/api/quantum")
 async def quantum_status():
-    """Phase 3+6: текущий QAOA quantum bias, режим чипа и статус Origin QC."""
+    """v10.7.2: Quantum status — CPU sim + AWS Braket ensemble."""
     age_sec = int(time.time() - _quantum_ts) if _quantum_ts else None
-    if _qcloud_ready:
-        chip      = "Wukong_180"
-        p_layers  = 1
-        note      = "⚛️ Реальный квантовый чип Origin Wukong 180 активен (chip_id=72)"
-    else:
-        chip      = "CPU_simulator"
-        p_layers  = 2
-        note      = ("Установи ORIGIN_QC_TOKEN в Railway для активации Wukong 180"
-                     if not ORIGIN_QC_TOKEN else
-                     "ORIGIN_QC_TOKEN задан, но pyqpanda3 недоступен → CPU fallback")
+    braket_age = int(time.time() - _braket_ts) if _braket_ts else None
+    braket_interval = int(os.getenv("BRAKET_INTERVAL", "21600"))
+    runs_per_day = 86400 // braket_interval if braket_interval > 0 else 0
+    cost_per_day = runs_per_day * 0.36  # ~$0.36/run on IonQ Harmony
+
+    chip = "CPU_simulator"
+    if _braket_ready:
+        chip += "+Braket_IonQ"
+    note = (f"CPU sim (30%) + Braket IonQ Harmony (70%). "
+            f"Braket: {'✅ ready' if _braket_ready else '❌ no AWS creds'}. "
+            f"~${cost_per_day:.2f}/day ({runs_per_day} runs). Wukong отключён (дорого ¥20/сек).")
     return {
-        "quantum_bias":    _quantum_bias,
+        "quantum_bias":     _quantum_bias,
         "last_run_ago_sec": age_sec,
-        "chip":            chip,
-        "chip_ready":      _qcloud_ready,
-        "p_layers":        p_layers,
-        "pairs":           PAIR_NAMES,
-        "note":            note,
+        "chip":             chip,
+        "braket_ready":     _braket_ready,
+        "braket_last_ago":  braket_age,
+        "braket_runs_day":  runs_per_day,
+        "braket_cost_day":  f"${cost_per_day:.2f}",
+        "p_layers":         2,
+        "pairs":            PAIR_NAMES,
+        "note":             note,
     }
 
 @app.post("/api/settings")
