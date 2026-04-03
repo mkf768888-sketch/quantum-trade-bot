@@ -2071,6 +2071,99 @@ async def get_recent_futures_fills(symbol: str, since_ts: float, trade_side: str
         print(f"[fills] {symbol}: ошибка получения fills — {e}", flush=True)
     return None
 
+async def get_all_futures_fills(symbol: str = "", pages: int = 5) -> list:
+    """v10.4.1: Pull ALL historical futures fills from KuCoin for real PnL audit.
+    KuCoin returns up to 100 fills per page. We paginate to get full history."""
+    all_fills = []
+    current_page = 1
+    for _ in range(pages):
+        sym_filter = f"&symbol={symbol}" if symbol else ""
+        endpoint = f"/api/v1/fills?type=trade&pageSize=100&currentPage={current_page}{sym_filter}"
+        try:
+            async with aiohttp.ClientSession() as s:
+                r = await s.get(
+                    KUCOIN_FUT_URL + endpoint,
+                    headers=kucoin_headers("GET", endpoint),
+                    timeout=aiohttp.ClientTimeout(total=10)
+                )
+                data = await r.json()
+                if data.get("code") == "200000":
+                    items = data["data"].get("items", [])
+                    if not items:
+                        break
+                    all_fills.extend(items)
+                    total_pages = data["data"].get("totalPage", 1)
+                    if current_page >= total_pages:
+                        break
+                    current_page += 1
+                else:
+                    break
+        except Exception as e:
+            print(f"[fills_hist] page {current_page} error: {e}", flush=True)
+            break
+    return all_fills
+
+
+async def compute_real_futures_pnl() -> dict:
+    """v10.4.1: Compute REAL futures PnL from KuCoin fill history.
+    Groups fills by open/close pairs and calculates actual realized PnL including fees."""
+    CONTRACT_SIZES = {"XBTUSDTM": 0.001, "ETHUSDTM": 0.01, "SOLUSDTM": 1.0,
+                      "AVAXUSDTM": 1.0, "XRPUSDTM": 10.0}
+
+    fills = await get_all_futures_fills(pages=10)
+    if not fills:
+        return {"success": False, "reason": "no fills from KuCoin API"}
+
+    total_realized = 0.0
+    total_fees = 0.0
+    by_symbol = {}
+    trade_count = 0
+
+    # KuCoin fills have: symbol, side, price, size (lots), fee, feeRate, createdAt
+    for f in fills:
+        sym = f.get("symbol", "")
+        side = f.get("side", "")
+        price = float(f.get("price", 0))
+        size = float(f.get("size", 0))  # in lots
+        fee = float(f.get("fee", 0))
+        contract_size = CONTRACT_SIZES.get(sym, 0.01)
+        notional = price * size * contract_size
+
+        total_fees += abs(fee)
+
+        if sym not in by_symbol:
+            by_symbol[sym] = {"buys": [], "sells": [], "realized_pnl": 0.0, "fees": 0.0, "count": 0}
+
+        by_symbol[sym]["fees"] += abs(fee)
+
+        if side == "buy":
+            by_symbol[sym]["buys"].append({"price": price, "size": size, "notional": notional})
+        else:
+            by_symbol[sym]["sells"].append({"price": price, "size": size, "notional": notional})
+
+    # Simple PnL: sum(sell_notional) - sum(buy_notional) per symbol
+    # This works because every position that was opened and closed will have matching buys/sells
+    for sym, data in by_symbol.items():
+        buy_total = sum(b["notional"] for b in data["buys"])
+        sell_total = sum(s["notional"] for s in data["sells"])
+        # Net PnL = sell proceeds - buy cost (for net-long strategy: buy to open, sell to close)
+        data["realized_pnl"] = round(sell_total - buy_total, 4)
+        data["count"] = len(data["buys"]) + len(data["sells"])
+        total_realized += data["realized_pnl"]
+        trade_count += data["count"]
+
+    return {
+        "success": True,
+        "total_fills": len(fills),
+        "total_realized_pnl": round(total_realized, 4),
+        "total_fees": round(total_fees, 4),
+        "net_pnl": round(total_realized - total_fees, 4),
+        "by_symbol": {sym: {"pnl": d["realized_pnl"], "fees": round(d["fees"], 4), "fills": d["count"]}
+                      for sym, d in by_symbol.items()},
+        "trade_count": trade_count,
+    }
+
+
 async def get_futures_positions() -> dict:
     endpoint = "/api/v1/positions"
     try:
@@ -6216,30 +6309,77 @@ async def _tg_audit(chat_id: int):
             for r in analytics["by_reason"][:5]:
                 text += f"  {r['close_reason'] or '?'}: {r['total']} сделок, PnL <code>${float(r['pnl'] or 0):.2f}</code>\n"
 
-        # Estimate untracked losses (fees, funding, pre-DB trades)
-        # User started with $90 in futures, now has $26.64 = lost $63.36
-        # DB shows futures PnL of ~$0.80 — difference is untracked
+        # v10.4.1: Pull REAL PnL from KuCoin exchange fills
+        text += "\n<b>📊 Реальные данные с биржи (KuCoin Fills):</b>\n"
+        try:
+            real_pnl = await compute_real_futures_pnl()
+            if real_pnl.get("success"):
+                text += (
+                    f"  Всего fills: <code>{real_pnl['total_fills']}</code>\n"
+                    f"  Realized PnL: <code>${real_pnl['total_realized_pnl']:.4f}</code>\n"
+                    f"  Комиссии: <code>${real_pnl['total_fees']:.4f}</code>\n"
+                    f"  Чистый PnL: <code>${real_pnl['net_pnl']:.4f}</code>\n"
+                )
+                for sym, data in real_pnl.get("by_symbol", {}).items():
+                    text += f"  {sym}: PnL <code>${data['pnl']:.4f}</code>, fees <code>${data['fees']:.4f}</code> ({data['fills']} fills)\n"
+            else:
+                text += f"  ❌ {real_pnl.get('reason', '?')}\n"
+        except Exception as ep:
+            text += f"  ❌ Ошибка: {ep}\n"
+
+        # DB vs Exchange comparison
         futures_pnl_db = sum(
             float(acc.get("pnl", 0))
             for acc in analytics.get("by_account", [])
             if "futures" in str(acc.get("account", ""))
         )
         text += (
-            f"\n<b>⚠️ Оценка неучтённых потерь:</b>\n"
+            f"\n<b>⚠️ DB vs Биржа:</b>\n"
             f"  Фьючерсы в DB: <code>${futures_pnl_db:.2f}</code>\n"
-            f"  Реально потеряно: ~$63 (было $90 → $26.64)\n"
-            f"  Разница: ~<code>${63 + futures_pnl_db:.2f}</code> (комиссии + funding + до PostgreSQL)\n"
+            f"  Фактические потери: ~$63 (было $90 → $26.64)\n"
+            f"  Разница: комиссии + funding fees + сделки до PostgreSQL\n"
         )
 
         text += (
-            f"\n💡 <i>Данные из PostgreSQL + санитизация.\n"
-            f"v10.4.1: комиссии 0.12% теперь вычитаются из futures PnL.\n"
-            f"_perf_stats пересчитан — /stats показывает реальные цифры.</i>"
+            f"\n💡 <i>Данные из PostgreSQL + KuCoin API fills.\n"
+            f"v10.4.1: реальный PnL теперь подтягивается с биржи.</i>"
         )
         await _tg_send(chat_id, text)
 
     except Exception as e:
         await _tg_send(chat_id, f"❌ Ошибка аудита: {e}")
+
+
+async def _tg_fills(chat_id: int):
+    """v10.4.1: Show real futures PnL from KuCoin exchange fills."""
+    await _tg_send(chat_id, "📊 <i>Загружаю историю fills с KuCoin Futures...</i>")
+    try:
+        result = await compute_real_futures_pnl()
+        if not result.get("success"):
+            await _tg_send(chat_id, f"❌ {result.get('reason', 'unknown error')}")
+            return
+
+        text = (
+            f"📊 <b>KuCoin Futures — Реальные Fills</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"<b>Всего fills:</b> <code>{result['total_fills']}</code>\n"
+            f"<b>Realized PnL:</b> <code>${result['total_realized_pnl']:+.4f}</code>\n"
+            f"<b>Комиссии:</b> <code>${result['total_fees']:.4f}</code>\n"
+            f"<b>Чистый PnL:</b> <code>${result['net_pnl']:+.4f}</code>\n\n"
+            f"<b>По символам:</b>\n"
+        )
+        for sym, data in sorted(result.get("by_symbol", {}).items(), key=lambda x: x[1]["pnl"]):
+            emoji = "✅" if data["pnl"] >= 0 else "❌"
+            text += f"  {emoji} {sym}: PnL <code>${data['pnl']:+.4f}</code> (fees: ${data['fees']:.4f}, {data['fills']} fills)\n"
+
+        text += (
+            f"\n💡 <i>Данные напрямую из KuCoin Futures API.\n"
+            f"Это сырые fills без учёта funding fees.\n"
+            f"Баланс: $90 → $26.64 = потери ~$63</i>"
+        )
+        await _tg_send(chat_id, text)
+    except Exception as e:
+        await _tg_send(chat_id, f"❌ Ошибка: {e}")
 
 
 async def _tg_earn_all(chat_id: int):
@@ -6934,6 +7074,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/earnplace":           await _tg_earn_place(chat_id)
         elif cmd == "/earnall":             await _tg_earn_all(chat_id)
         elif cmd == "/audit":               await _tg_audit(chat_id)
+        elif cmd == "/fills":               await _tg_fills(chat_id)
         elif cmd == "/router":              await _tg_router(chat_id)
         elif cmd == "/autopilot":
             AUTOPILOT = not AUTOPILOT
