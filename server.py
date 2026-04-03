@@ -47,7 +47,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.5.2")
+app = FastAPI(title="QuantumTrade AI", version="10.5.3")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -8260,12 +8260,33 @@ async def _agent_auditor() -> list:
                 findings.append({"agent": "Auditor", "severity": "critical",
                     "text": f"Found {corrupted} trades with suspicious PnL >$50. Run _sanitize_db_trades()"})
 
-        # 1c. trade_log sanity
+        # 1c. trade_log sanity — orphan positions with full details
         open_trades = [t for t in trade_log if t.get("status") == "open"]
         stale = [t for t in open_trades if time.time() - t.get("open_ts", time.time()) > 86400]
         if stale:
-            findings.append({"agent": "Auditor", "severity": "warning",
-                "text": f"{len(stale)} open trades older than 24h — possible orphan positions"})
+            for t in stale[:3]:
+                age_h = (time.time() - t.get("open_ts", time.time())) / 3600
+                sym = t.get("symbol", "?")
+                side = t.get("side", "?")
+                entry = t.get("price", 0)
+                size = t.get("size", 0)
+                acct = t.get("account", "?")
+                trade_id = t.get("id", "?")
+                # Try to get current price for PnL estimate
+                cur_price = 0
+                try:
+                    ticker = _ws_prices.get(sym) or {}
+                    cur_price = float(ticker.get("price", 0))
+                except Exception:
+                    pass
+                pnl_est = ""
+                if cur_price and entry:
+                    unrealized = (cur_price - entry) * size if side == "buy" else (entry - cur_price) * size
+                    pnl_est = f", unrealized ~${unrealized:+.2f}"
+                findings.append({"agent": "Auditor", "severity": "warning",
+                    "text": f"Orphan: {sym} {side} {size}@${entry:.4f} ({acct}) — "
+                            f"open {age_h:.0f}h{pnl_est}. "
+                            f"Action: /close {trade_id} или подожди stale auto-sell (12ч)"})
 
         if not findings:
             findings.append({"agent": "Auditor", "severity": "info",
@@ -8310,13 +8331,38 @@ async def _agent_risk() -> list:
                 "text": f"Losing streak: {abs(_perf_stats['streak'])} trades. "
                         f"Self-learning должен был повысить порог."})
 
-        # 2e. Balance adequacy
+        # 2e. Balance adequacy + portfolio breakdown
         try:
             bal = await get_balance()
             usdt = bal.get("available_usdt", 0) if bal.get("success") else 0
             if usdt < 5 and AUTOPILOT:
+                # Get full portfolio picture for actionable advice
+                spot_assets = []
+                try:
+                    assets = bal.get("assets", []) if isinstance(bal, dict) else []
+                    for a in assets:
+                        if a.get("currency") != "USDT" and float(a.get("balance", 0)) > 0:
+                            spot_assets.append(f"{a['currency']}:{a.get('balance','?')}")
+                except Exception:
+                    pass
+                # Check earn positions
+                earn_total = sum(p.get("amount", 0) for p in _earn_positions)
+                # Router explanation
+                need = ROUTER_ARB_RESERVE_USDT + ROUTER_TRADE_RESERVE_USDT
+                explanation = (
+                    f"USDT: ${usdt:.2f} (нужно ${need:.0f} для router: "
+                    f"arb=${ROUTER_ARB_RESERVE_USDT} + trade=${ROUTER_TRADE_RESERVE_USDT}). "
+                )
+                if spot_assets:
+                    explanation += f"Крипта на споте: {', '.join(spot_assets[:5])}. "
+                if earn_total > 0:
+                    explanation += f"В Earn: ${earn_total:.2f}. "
+                explanation += (
+                    "Router работает только с USDT — крипто-активы не перераспределяет. "
+                    "Для торговли: продай часть крипты или пополни USDT"
+                )
                 findings.append({"agent": "Risk", "severity": "warning",
-                    "text": f"Available USDT: ${usdt:.2f} — недостаточно для спот торговли при активном автопилоте"})
+                    "text": explanation})
         except Exception:
             pass
 
