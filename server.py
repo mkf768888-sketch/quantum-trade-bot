@@ -47,7 +47,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.6.0")
+app = FastAPI(title="QuantumTrade AI", version="10.6.1")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -5449,6 +5449,14 @@ async def spot_monitor_loop():
                     elif (time.time() - open_ts) > 43200 and abs(pnl_pct) < 0.015:
                         should_close = True
                         reason = "⏰ Stale (12h)"
+                    # v10.6: Extended stale — >48h regardless of PnL (capital locked too long)
+                    elif (time.time() - open_ts) > 172800:
+                        should_close = True
+                        reason = f"⏰ Stale (48h+, PnL {pnl_pct*100:+.1f}%)"
+                    # v10.6: DevOps Agent flagged this trade for auto-close
+                    elif trade.get("_devops_stale_sell"):
+                        should_close = True
+                        reason = "🔧 DevOps auto-close"
 
                     if should_close:
                         # v10.0: Sell on correct exchange
@@ -8626,10 +8634,10 @@ async def _agent_devops() -> list:
                 findings.append({"agent": "DevOps", "severity": "info",
                     "text": f"Error rate {error_rate:.0f}% — acceptable"})
 
-        # 6b. Orphan trade auto-cleanup (stale > 12h → trigger sell)
+        # 6b. Orphan trade auto-cleanup (stale > 12h flat OR > 48h any)
         stale_trades = [t for t in trade_log
                         if t.get("status") == "open"
-                        and time.time() - t.get("open_ts", time.time()) > 43200]  # 12h
+                        and time.time() - t.get("open_ts", time.time()) > 43200]  # 12h+
         for t in stale_trades[:2]:
             sym = t.get("symbol", "?")
             age_h = (time.time() - t.get("open_ts", time.time())) / 3600
@@ -8645,19 +8653,30 @@ async def _agent_devops() -> list:
                     if change_pct < 1.5 and age_h > 12:
                         # Auto-close stale flat trade — trading rule: stale auto-sell 12h
                         findings.append({"agent": "DevOps", "severity": "warning",
-                            "text": f"AUTO-FIX candidate: {sym} open {age_h:.0f}h, "
-                                    f"price change {change_pct:.1f}% (<1.5%). "
-                                    f"Rule: stale auto-sell 12h. Closing via spot_monitor."})
-                        # Mark for auto-close by setting a flag
+                            "text": f"AUTO-FIX: {sym} open {age_h:.0f}h, "
+                                    f"price Δ{change_pct:.1f}% (<1.5%). "
+                                    f"Flagging for auto-close → USDT recycling."})
                         t["_devops_stale_sell"] = True
                         _devops_fixes_applied.append({
                             "ts": datetime.utcnow().isoformat(),
-                            "action": f"flagged stale {sym} for auto-close",
+                            "action": f"flagged stale flat {sym}",
+                            "age_h": round(age_h, 1),
+                        })
+                    elif age_h > 48:
+                        # v10.6: Extended stale — >48h regardless of price move
+                        findings.append({"agent": "DevOps", "severity": "warning",
+                            "text": f"AUTO-FIX: {sym} locked for {age_h:.0f}h "
+                                    f"(Δ{change_pct:.1f}%). Capital frozen >48h → "
+                                    f"spot_monitor will close next cycle."})
+                        t["_devops_stale_sell"] = True
+                        _devops_fixes_applied.append({
+                            "ts": datetime.utcnow().isoformat(),
+                            "action": f"flagged stale 48h+ {sym}",
                             "age_h": round(age_h, 1),
                         })
                     else:
                         findings.append({"agent": "DevOps", "severity": "info",
-                            "text": f"Stale {sym} ({age_h:.0f}h) but price moved {change_pct:.1f}% — monitoring"})
+                            "text": f"Stale {sym} ({age_h:.0f}h) Δ{change_pct:.1f}% — monitoring"})
             except Exception:
                 pass
 
