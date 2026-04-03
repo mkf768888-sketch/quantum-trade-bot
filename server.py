@@ -4385,7 +4385,7 @@ async def _safe_background_enrich(fg_data: dict):
 
 
 async def auto_trade_cycle():
-    global last_q_score, MIN_Q_SCORE, COOLDOWN, AUTOPILOT
+    global last_q_score, MIN_Q_SCORE, COOLDOWN, AUTOPILOT, _last_sell_ts
     log_activity(f"[cycle start] {datetime.utcnow().strftime('%H:%M:%S')}")
 
     # ── Все внешние данные параллельно ───────────────────────────────────────
@@ -5395,6 +5395,7 @@ async def position_monitor_loop():
 async def spot_monitor_loop():
     """v8.3: Monitors spot trades — checks TP/SL, sells when conditions met.
     Unlike futures, spot trades need to be actively closed by selling the coin."""
+    global _last_sell_ts  # v10.7: capital protection rest timer
     await asyncio.sleep(60)  # initial delay
     while True:
         try:
@@ -5531,7 +5532,6 @@ async def spot_monitor_loop():
                             )
                             log_activity(f"[spot_mon] {symbol} ({_exch_label}) {reason} SOLD PnL=${pnl_usdt:+.4f}")
                             # v10.7: Capital protection — set rest timer so bot doesn't re-buy immediately
-                            global _last_sell_ts
                             _last_sell_ts = time.time()
                             log_activity(f"[capital] post-sell rest started ({POST_SELL_REST_SEC}s before next BUY)")
                             # v10.3: Smart Money Router — route freed USDT after SELL

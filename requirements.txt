@@ -7,3 +7,5 @@ Pillow
 asyncpg
 pandas
 pandas-ta-classic
+pyqpanda3
+amazon-braket-sdk
