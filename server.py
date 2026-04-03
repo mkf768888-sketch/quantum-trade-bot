@@ -47,7 +47,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.4.1")
+app = FastAPI(title="QuantumTrade AI", version="10.4.2")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -2071,14 +2071,19 @@ async def get_recent_futures_fills(symbol: str, since_ts: float, trade_side: str
         print(f"[fills] {symbol}: ошибка получения fills — {e}", flush=True)
     return None
 
-async def get_all_futures_fills(symbol: str = "", pages: int = 5) -> list:
-    """v10.4.1: Pull ALL historical futures fills from KuCoin for real PnL audit.
-    KuCoin returns up to 100 fills per page. We paginate to get full history."""
+async def get_all_futures_fills(symbol: str = "", pages: int = 10, days_back: int = 90) -> list:
+    """v10.4.2: Pull ALL historical futures fills from KuCoin for real PnL audit.
+    KuCoin returns up to 100 fills per page. Default lookback = 90 days.
+    IMPORTANT: Without startAt, KuCoin only returns last 24h fills!"""
     all_fills = []
     current_page = 1
+    # KuCoin needs timestamps in milliseconds
+    end_at = int(time.time() * 1000)
+    start_at = end_at - (days_back * 86400 * 1000)
+
     for _ in range(pages):
         sym_filter = f"&symbol={symbol}" if symbol else ""
-        endpoint = f"/api/v1/fills?type=trade&pageSize=100&currentPage={current_page}{sym_filter}"
+        endpoint = f"/api/v1/fills?type=trade&pageSize=100&currentPage={current_page}&startAt={start_at}&endAt={end_at}{sym_filter}"
         try:
             async with aiohttp.ClientSession() as s:
                 r = await s.get(
@@ -2087,44 +2092,106 @@ async def get_all_futures_fills(symbol: str = "", pages: int = 5) -> list:
                     timeout=aiohttp.ClientTimeout(total=10)
                 )
                 data = await r.json()
+                print(f"[fills_hist] page {current_page}: code={data.get('code','?')}, items={len(data.get('data',{}).get('items',[]))}", flush=True)
                 if data.get("code") == "200000":
                     items = data["data"].get("items", [])
                     if not items:
                         break
                     all_fills.extend(items)
                     total_pages = data["data"].get("totalPage", 1)
+                    total_items = data["data"].get("totalNum", 0)
+                    print(f"[fills_hist] page {current_page}/{total_pages}, got {len(items)}, total={total_items}", flush=True)
                     if current_page >= total_pages:
                         break
                     current_page += 1
                 else:
+                    err_msg = data.get("msg", "?")
+                    print(f"[fills_hist] API error: {data.get('code')} {err_msg}", flush=True)
                     break
         except Exception as e:
             print(f"[fills_hist] page {current_page} error: {e}", flush=True)
             break
+    print(f"[fills_hist] total fills loaded: {len(all_fills)} (days_back={days_back})", flush=True)
     return all_fills
 
 
+async def get_futures_done_orders(pages: int = 10) -> list:
+    """v10.4.2: Pull completed futures orders from KuCoin.
+    Uses /api/v1/orders?status=done endpoint which has longer history than fills."""
+    all_orders = []
+    current_page = 1
+    for _ in range(pages):
+        endpoint = f"/api/v1/orders?status=done&pageSize=100&currentPage={current_page}"
+        try:
+            async with aiohttp.ClientSession() as s:
+                r = await s.get(
+                    KUCOIN_FUT_URL + endpoint,
+                    headers=kucoin_headers("GET", endpoint),
+                    timeout=aiohttp.ClientTimeout(total=10)
+                )
+                data = await r.json()
+                print(f"[orders_hist] page {current_page}: code={data.get('code','?')}", flush=True)
+                if data.get("code") == "200000":
+                    items = data["data"].get("items", [])
+                    if not items:
+                        break
+                    all_orders.extend(items)
+                    total_pages = data["data"].get("totalPage", 1)
+                    total_num = data["data"].get("totalNum", 0)
+                    print(f"[orders_hist] page {current_page}/{total_pages}, got {len(items)}, totalNum={total_num}", flush=True)
+                    if current_page >= total_pages:
+                        break
+                    current_page += 1
+                else:
+                    print(f"[orders_hist] API error: {data.get('code')} {data.get('msg','?')}", flush=True)
+                    break
+        except Exception as e:
+            print(f"[orders_hist] page {current_page} error: {e}", flush=True)
+            break
+    return all_orders
+
+
 async def compute_real_futures_pnl() -> dict:
-    """v10.4.1: Compute REAL futures PnL from KuCoin fill history.
-    Groups fills by open/close pairs and calculates actual realized PnL including fees."""
+    """v10.4.2: Compute REAL futures PnL from KuCoin exchange data.
+    Tries fills API first, then falls back to done orders API.
+    Groups fills by open/close pairs and calculates actual realized PnL."""
     CONTRACT_SIZES = {"XBTUSDTM": 0.001, "ETHUSDTM": 0.01, "SOLUSDTM": 1.0,
                       "AVAXUSDTM": 1.0, "XRPUSDTM": 10.0}
 
-    fills = await get_all_futures_fills(pages=10)
+    # Try fills first (most detailed), then orders (longer history)
+    fills = await get_all_futures_fills(pages=10, days_back=90)
+    data_source = "fills"
+
     if not fills:
-        return {"success": False, "reason": "no fills from KuCoin API"}
+        # Fallback: try done orders (KuCoin keeps these longer)
+        orders = await get_futures_done_orders(pages=10)
+        if orders:
+            # Convert orders to fills-like format
+            fills = []
+            for o in orders:
+                if float(o.get("dealSize", 0)) > 0:
+                    fills.append({
+                        "symbol": o.get("symbol", ""),
+                        "side": o.get("side", ""),
+                        "price": o.get("dealFunds", 0) and str(float(o["dealFunds"]) / max(float(o.get("dealSize", 1)), 0.0001)) or o.get("price", "0"),
+                        "size": o.get("dealSize", "0"),
+                        "fee": o.get("fee", "0"),
+                    })
+            data_source = "orders"
+            print(f"[pnl_calc] using {len(fills)} done orders as fallback", flush=True)
+
+    if not fills:
+        return {"success": False, "reason": "no fills/orders from KuCoin API (90 days lookback)"}
 
     total_realized = 0.0
     total_fees = 0.0
     by_symbol = {}
-    trade_count = 0
 
-    # KuCoin fills have: symbol, side, price, size (lots), fee, feeRate, createdAt
     for f in fills:
         sym = f.get("symbol", "")
         side = f.get("side", "")
         price = float(f.get("price", 0))
-        size = float(f.get("size", 0))  # in lots
+        size = float(f.get("size", 0))
         fee = float(f.get("fee", 0))
         contract_size = CONTRACT_SIZES.get(sym, 0.01)
         notional = price * size * contract_size
@@ -2141,26 +2208,22 @@ async def compute_real_futures_pnl() -> dict:
         else:
             by_symbol[sym]["sells"].append({"price": price, "size": size, "notional": notional})
 
-    # Simple PnL: sum(sell_notional) - sum(buy_notional) per symbol
-    # This works because every position that was opened and closed will have matching buys/sells
     for sym, data in by_symbol.items():
         buy_total = sum(b["notional"] for b in data["buys"])
         sell_total = sum(s["notional"] for s in data["sells"])
-        # Net PnL = sell proceeds - buy cost (for net-long strategy: buy to open, sell to close)
         data["realized_pnl"] = round(sell_total - buy_total, 4)
         data["count"] = len(data["buys"]) + len(data["sells"])
         total_realized += data["realized_pnl"]
-        trade_count += data["count"]
 
     return {
         "success": True,
+        "data_source": data_source,
         "total_fills": len(fills),
         "total_realized_pnl": round(total_realized, 4),
         "total_fees": round(total_fees, 4),
         "net_pnl": round(total_realized - total_fees, 4),
         "by_symbol": {sym: {"pnl": d["realized_pnl"], "fees": round(d["fees"], 4), "fills": d["count"]}
                       for sym, d in by_symbol.items()},
-        "trade_count": trade_count,
     }
 
 
@@ -6351,18 +6414,36 @@ async def _tg_audit(chat_id: int):
 
 
 async def _tg_fills(chat_id: int):
-    """v10.4.1: Show real futures PnL from KuCoin exchange fills."""
-    await _tg_send(chat_id, "📊 <i>Загружаю историю fills с KuCoin Futures...</i>")
+    """v10.4.2: Show real futures PnL from KuCoin exchange fills."""
+    await _tg_send(chat_id, "📊 <i>Загружаю историю fills с KuCoin Futures (90 дней)...</i>")
     try:
         result = await compute_real_futures_pnl()
         if not result.get("success"):
-            await _tg_send(chat_id, f"❌ {result.get('reason', 'unknown error')}")
+            # Try to get raw API response for debugging
+            diag = ""
+            try:
+                end_at = int(time.time() * 1000)
+                start_at = end_at - (90 * 86400 * 1000)
+                endpoint = f"/api/v1/fills?type=trade&pageSize=10&startAt={start_at}&endAt={end_at}"
+                async with aiohttp.ClientSession() as s:
+                    r = await s.get(KUCOIN_FUT_URL + endpoint,
+                                    headers=kucoin_headers("GET", endpoint),
+                                    timeout=aiohttp.ClientTimeout(total=10))
+                    raw = await r.json()
+                    diag = f"\nAPI: code={raw.get('code','?')}, msg={raw.get('msg','?')}"
+                    if raw.get("code") == "200000":
+                        diag += f", items={len(raw.get('data',{}).get('items',[]))}, totalNum={raw.get('data',{}).get('totalNum',0)}"
+            except Exception:
+                pass
+            await _tg_send(chat_id, f"❌ {result.get('reason', 'unknown error')}{diag}")
             return
 
+        src = result.get("data_source", "fills")
         text = (
-            f"📊 <b>KuCoin Futures — Реальные Fills</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"<b>Всего fills:</b> <code>{result['total_fills']}</code>\n"
+            f"📊 <b>KuCoin Futures — Реальный PnL</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>Источник: {src} (90 дней)</i>\n\n"
+            f"<b>Всего записей:</b> <code>{result['total_fills']}</code>\n"
             f"<b>Realized PnL:</b> <code>${result['total_realized_pnl']:+.4f}</code>\n"
             f"<b>Комиссии:</b> <code>${result['total_fees']:.4f}</code>\n"
             f"<b>Чистый PnL:</b> <code>${result['net_pnl']:+.4f}</code>\n\n"
