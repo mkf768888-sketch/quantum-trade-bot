@@ -47,7 +47,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.5.1")
+app = FastAPI(title="QuantumTrade AI", version="10.5.2")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -8448,7 +8448,7 @@ async def _agent_security() -> list:
                 "text": "WebSocket price feed empty — possible disconnect"})
 
         # 4f. Error rate from activity log
-        recent_errors = sum(1 for entry in _activity_log[-50:]
+        recent_errors = sum(1 for entry in activity_log[-50:]
                            if "error" in str(entry).lower() or "fail" in str(entry).lower())
         if recent_errors > 10:
             findings.append({"agent": "Security", "severity": "warning",
