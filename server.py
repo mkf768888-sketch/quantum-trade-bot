@@ -47,7 +47,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.3.2")
+app = FastAPI(title="QuantumTrade AI", version="10.4.0")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -274,6 +274,112 @@ def _update_perf_on_trade(trade: dict):
         _perf_stats["max_drawdown"] = round(_perf_stats["total_pnl"], 4)
 
     _save_perf_stats()
+
+async def _recalc_perf_from_db():
+    """v10.4: Recalculate _perf_stats from PostgreSQL trades — the REAL source of truth.
+    Fixes the +$3918 fake PnL bug by computing everything from actual closed trades."""
+    global _perf_stats
+    if not db.is_ready():
+        print("[perf] DB not ready — using JSON stats (may be inaccurate)")
+        return
+
+    try:
+        import asyncpg
+        async with db._pool.acquire() as conn:
+            # Get ALL closed trades
+            rows = await conn.fetch("""
+                SELECT symbol, strategy, pnl_usdt, pnl_pct, q_score, account,
+                       close_reason, duration_sec, ts
+                FROM trades WHERE status = 'closed'
+                ORDER BY ts ASC
+            """)
+
+            if not rows:
+                print("[perf] no closed trades in DB — _perf_stats reset to zero")
+                return
+
+            # Recalculate everything from scratch
+            total = len(rows)
+            wins = sum(1 for r in rows if (r["pnl_usdt"] or 0) > 0)
+            losses = total - wins
+            total_pnl = round(sum(r["pnl_usdt"] or 0 for r in rows), 4)
+
+            # By strategy
+            by_strategy = {}
+            for r in rows:
+                strat = r["strategy"] or "B"
+                if strat not in by_strategy:
+                    by_strategy[strat] = {"trades": 0, "wins": 0, "pnl": 0.0}
+                by_strategy[strat]["trades"] += 1
+                if (r["pnl_usdt"] or 0) > 0:
+                    by_strategy[strat]["wins"] += 1
+                by_strategy[strat]["pnl"] = round(by_strategy[strat]["pnl"] + (r["pnl_usdt"] or 0), 4)
+
+            # By symbol
+            by_symbol = {}
+            for r in rows:
+                sym = r["symbol"] or "?"
+                if sym not in by_symbol:
+                    by_symbol[sym] = {"trades": 0, "wins": 0, "pnl": 0.0}
+                by_symbol[sym]["trades"] += 1
+                if (r["pnl_usdt"] or 0) > 0:
+                    by_symbol[sym]["wins"] += 1
+                by_symbol[sym]["pnl"] = round(by_symbol[sym]["pnl"] + (r["pnl_usdt"] or 0), 4)
+
+            # Q-Score averages
+            win_q = [r["q_score"] for r in rows if (r["pnl_usdt"] or 0) > 0 and r["q_score"]]
+            loss_q = [r["q_score"] for r in rows if (r["pnl_usdt"] or 0) <= 0 and r["q_score"]]
+            avg_q_win = round(sum(win_q) / len(win_q), 1) if win_q else 0.0
+            avg_q_loss = round(sum(loss_q) / len(loss_q), 1) if loss_q else 0.0
+
+            # Streak (from latest trades)
+            streak = 0
+            for r in reversed(rows):
+                pnl = r["pnl_usdt"] or 0
+                if pnl > 0:
+                    if streak < 0:
+                        break
+                    streak += 1
+                else:
+                    if streak > 0:
+                        break
+                    streak -= 1
+
+            # Max drawdown (running PnL minimum)
+            running_pnl = 0.0
+            max_dd = 0.0
+            for r in rows:
+                running_pnl += (r["pnl_usdt"] or 0)
+                if running_pnl < max_dd:
+                    max_dd = running_pnl
+
+            old_pnl = _perf_stats.get("total_pnl", 0)
+            _perf_stats.update({
+                "total_trades": total,
+                "wins": wins,
+                "losses": losses,
+                "total_pnl": total_pnl,
+                "by_strategy": by_strategy,
+                "by_symbol": by_symbol,
+                "avg_q_score_win": avg_q_win,
+                "avg_q_score_loss": avg_q_loss,
+                "streak": streak,
+                "max_streak": max(abs(streak), _perf_stats.get("max_streak", 0)),
+                "max_drawdown": round(max_dd, 4),
+            })
+            _save_perf_stats()
+
+            # Also save corrected stats to PostgreSQL
+            await db.save_perf_stats(_perf_stats)
+
+            wr = wins / max(1, total) * 100
+            if abs(old_pnl - total_pnl) > 0.1:
+                print(f"[perf] ⚠️ CORRECTED: was ${old_pnl:.2f} → now ${total_pnl:.2f} (from {total} DB trades)", flush=True)
+            print(f"[perf] ✅ recalculated from DB: {total} trades, {wins}W/{losses}L, WR {wr:.1f}%, PnL ${total_pnl:.2f}, DD ${max_dd:.2f}", flush=True)
+
+    except Exception as e:
+        print(f"[perf] _recalc_perf_from_db error: {e}", flush=True)
+
 
 # ── QAOA State ─────────────────────────────────────────────────────────────────
 _quantum_bias: Dict[str, float] = {}   # symbol → bias [-15..+15]
@@ -979,10 +1085,11 @@ async def kucoin_earn_get_savings_products(coin: str = "USDT") -> list:
     return []
 
 
-async def kucoin_earn_subscribe(product_id: str, amount: float) -> dict:
-    """KuCoin: POST /api/v1/earn/orders — Subscribe to Flexible Savings."""
+async def kucoin_earn_subscribe(product_id: str, amount: float, account_type: str = "MAIN") -> dict:
+    """KuCoin: POST /api/v1/earn/orders — Subscribe to Flexible Savings.
+    v10.4: accountType param for multi-asset (MAIN for spot coins)."""
     endpoint = "/api/v1/earn/orders"
-    body = json.dumps({"productId": product_id, "amount": str(amount), "accountType": "MAIN"})
+    body = json.dumps({"productId": product_id, "amount": str(amount), "accountType": account_type})
     try:
         headers = kucoin_headers("POST", endpoint, body)
         async with aiohttp.ClientSession() as s:
@@ -991,11 +1098,11 @@ async def kucoin_earn_subscribe(product_id: str, amount: float) -> dict:
                              timeout=aiohttp.ClientTimeout(total=10))
             data = await r.json()
             if data.get("code") == "200000":
-                log_activity(f"[earn/kc] subscribed ${amount:.2f} USDT to product {product_id}")
+                log_activity(f"[earn/kc] subscribed {amount} to product {product_id}")
                 return {"success": True, "order_id": data.get("data", {}).get("orderId", ""),
                         "exchange": "kucoin"}
             else:
-                log_activity(f"[earn/kc] subscribe error: {data.get('msg', '?')}")
+                log_activity(f"[earn/kc] subscribe error: {data.get('msg', '?')} (product={product_id}, amount={amount})")
                 return {"success": False, "error": data.get("msg", "unknown")}
     except Exception as e:
         log_activity(f"[earn/kc] subscribe exception: {e}")
@@ -1300,6 +1407,85 @@ async def earn_auto_place_idle(exchange: str = "auto") -> dict:
     return result
 
 
+async def earn_multi_asset_place() -> dict:
+    """v10.4: Place non-USDT spot assets (ETH, BTC, DOT, etc.) into Flexible Savings.
+    Scans KuCoin spot balances, finds Earn products for each coin, subscribes.
+    Only places coins worth >$5 to avoid dust-level subscriptions."""
+    if not EARN_ENABLED:
+        return {"success": False, "reason": "earn disabled"}
+
+    MULTI_EARN_MIN_USD = 5.0  # don't place dust
+    MULTI_EARN_COINS = ["ETH", "BTC", "DOT", "SOL", "XRP", "ADA", "LINK", "AVAX", "LTC"]
+
+    result = {"placed": [], "skipped": [], "errors": []}
+
+    # Step 1: Get all spot balances on KuCoin
+    try:
+        spot = await get_spot_balances()  # returns {pair: {currency, balance, available, price, usdt_value}}
+    except Exception as e:
+        return {"success": False, "reason": f"balance error: {e}"}
+
+    if not spot:
+        return {"success": False, "reason": "no spot positions found"}
+
+    # Step 2: For each coin, check Earn products and subscribe
+    for pair, info in spot.items():
+        coin = info["currency"]
+        if coin not in MULTI_EARN_COINS:
+            result["skipped"].append(f"{coin}: not in supported list")
+            continue
+        if info["usdt_value"] < MULTI_EARN_MIN_USD:
+            result["skipped"].append(f"{coin}: ${info['usdt_value']:.2f} < ${MULTI_EARN_MIN_USD} min")
+            continue
+
+        available = info["available"]
+        if available <= 0:
+            result["skipped"].append(f"{coin}: 0 available (all in orders?)")
+            continue
+
+        # Try KuCoin Earn first
+        try:
+            products = await kucoin_earn_get_savings_products(coin)
+            if products:
+                p = products[0]
+                pid = str(p.get("id", p.get("productId", "")))
+                min_amt = float(p.get("userLowerLimit", p.get("minInvestAmount", p.get("minPurchaseAmount", 0.0001))))
+                # KuCoin earn precision — round to 8 decimals
+                place_amount = round(available, 8)
+                apr_raw = p.get("recentAnnualInterestRate", p.get("returnRate", p.get("estimateApr", 0)))
+                apr_pct = round(float(apr_raw) * 100, 2) if float(apr_raw or 0) < 1 else round(float(apr_raw), 2)
+
+                if place_amount >= min_amt and pid:
+                    sub = await kucoin_earn_subscribe(pid, place_amount)
+                    if sub["success"]:
+                        _earn_stats["subscriptions"] += 1
+                        _earn_stats["last_action"] = time.time()
+                        _earn_positions.append({
+                            "exchange": "kucoin", "product_id": pid,
+                            "coin": coin, "amount": place_amount,
+                            "apr": apr_pct, "subscribed_at": time.time(),
+                            "order_id": sub.get("order_id", ""),
+                        })
+                        result["placed"].append({
+                            "coin": coin, "amount": place_amount,
+                            "usdt_value": round(info["usdt_value"], 2),
+                            "apr": apr_pct, "exchange": "kucoin",
+                        })
+                        log_activity(f"[earn_multi] ✅ {coin} → KC Earn: {place_amount} (~${info['usdt_value']:.2f}) APR={apr_pct}%")
+                        continue
+                    else:
+                        result["errors"].append(f"{coin} KC: {sub.get('error','?')}")
+                else:
+                    result["skipped"].append(f"{coin} KC: amount {place_amount} < min {min_amt}")
+            else:
+                result["skipped"].append(f"{coin} KC: no Earn products found")
+        except Exception as e:
+            result["errors"].append(f"{coin} KC: {e}")
+
+    result["success"] = len(result["placed"]) > 0
+    return result
+
+
 async def earn_redeem_for_trading(exchange: str, amount: float) -> dict:
     """Redeem USDT from Earn before a BUY trade. Returns dict with success status."""
     if not EARN_ENABLED or not _earn_positions:
@@ -1346,6 +1532,17 @@ async def earn_monitor_loop():
                 if result.get("placed"):
                     placed_str = ", ".join(f"{p['exchange']}=${p['amount']:.2f}" for p in result["placed"])
                     log_activity(f"[earn_mon] auto-placed: {placed_str}")
+
+                # v10.4: Try multi-asset Earn every 4th cycle (~1 hour)
+                if _earn_stats.get("_multi_cycle", 0) % 4 == 0:
+                    try:
+                        multi_result = await earn_multi_asset_place()
+                        if multi_result.get("placed"):
+                            placed_str = ", ".join(f"{p['coin']}({p['amount']})" for p in multi_result["placed"])
+                            log_activity(f"[earn_mon] multi-asset placed: {placed_str}")
+                    except Exception as me:
+                        log_activity(f"[earn_mon] multi-asset error: {me}")
+                _earn_stats["_multi_cycle"] = _earn_stats.get("_multi_cycle", 0) + 1
 
                 # Sync positions with actual exchange data
                 try:
@@ -5863,6 +6060,7 @@ async def _tg_earn(chat_id: int):
         f"💡 <i>Auto-Earn: USDT после продажи → Flexible Savings\n"
         f"Auto-Redeem: перед покупкой → погашение из Savings</i>\n\n"
         f"📌 /earnplace — принудительно разместить idle USDT\n"
+        f"📌 /earnall — разместить ВСЕ монеты (ETH/BTC/DOT) в Earn\n"
         f"🔄 /router — Smart Money Router (авто-распределение)"
     )
     await _tg_send(chat_id, text)
@@ -5886,6 +6084,126 @@ async def _tg_earn_place(chat_id: int):
             f"ℹ️ <b>Нечего размещать</b>\n"
             f"Свободный USDT ниже порога <code>${EARN_MIN_IDLE_USDT}</code>\n"
             f"(резерв: <code>${EARN_RESERVE_USDT}</code>)")
+
+
+async def _tg_audit(chat_id: int):
+    """v10.4: Full PnL audit from PostgreSQL. Shows REAL numbers, not cached _perf_stats."""
+    await _tg_send(chat_id, "🔍 <i>Запускаю полный аудит из PostgreSQL...</i>")
+
+    if not db.is_ready():
+        await _tg_send(chat_id, "❌ PostgreSQL не подключен — аудит невозможен")
+        return
+
+    try:
+        # Recalculate stats from DB
+        await _recalc_perf_from_db()
+
+        # Get deep analytics
+        analytics = await db.get_deep_analytics()
+
+        # Summary
+        total = _perf_stats["total_trades"]
+        wins = _perf_stats["wins"]
+        losses = _perf_stats["losses"]
+        wr = wins / max(1, total) * 100
+        pnl = _perf_stats["total_pnl"]
+        dd = _perf_stats["max_drawdown"]
+
+        text = (
+            f"🔍 <b>ПОЛНЫЙ АУДИТ v10.4</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"<b>Из PostgreSQL ({total} сделок):</b>\n"
+            f"  📊 Win Rate: <code>{wr:.1f}%</code> ({wins}W / {losses}L)\n"
+            f"  💰 Реальный PnL: <code>${pnl:.2f}</code>\n"
+            f"  📉 Max Drawdown: <code>${dd:.2f}</code>\n"
+            f"  🔥 Streak: <code>{_perf_stats['streak']}</code>\n"
+            f"  📈 Avg Q-Win: <code>{_perf_stats['avg_q_score_win']}</code> vs Q-Loss: <code>{_perf_stats['avg_q_score_loss']}</code>\n"
+        )
+
+        # By account (spot vs futures)
+        if analytics.get("by_account"):
+            text += "\n<b>По аккаунтам:</b>\n"
+            for acc in analytics["by_account"]:
+                acc_wr = acc["wins"] / max(1, acc["total"]) * 100
+                text += f"  {acc['account'] or '?'}: {acc['total']} сделок, WR {acc_wr:.0f}%, PnL <code>${float(acc['pnl'] or 0):.2f}</code>\n"
+
+        # By strategy
+        if analytics.get("by_strategy"):
+            text += "\n<b>По стратегиям:</b>\n"
+            for s in analytics["by_strategy"]:
+                s_wr = s["wins"] / max(1, s["total"]) * 100
+                text += f"  {s['strategy'] or '?'}: {s['total']} сделок, WR {s_wr:.0f}%, PnL <code>${float(s['pnl'] or 0):.2f}</code>\n"
+
+        # Worst symbols
+        if analytics.get("by_symbol"):
+            worst = sorted(analytics["by_symbol"], key=lambda x: float(x.get("total_pnl", 0)))[:5]
+            text += "\n<b>Худшие монеты:</b>\n"
+            for sym in worst:
+                s_wr = sym["wins"] / max(1, sym["total"]) * 100
+                text += f"  {sym['symbol']}: {sym['total']} сделок, WR {s_wr:.0f}%, PnL <code>${float(sym['total_pnl'] or 0):.2f}</code>\n"
+
+        # Best symbols
+        if analytics.get("by_symbol"):
+            best = sorted(analytics["by_symbol"], key=lambda x: float(x.get("total_pnl", 0)), reverse=True)[:3]
+            text += "\n<b>Лучшие монеты:</b>\n"
+            for sym in best:
+                s_wr = sym["wins"] / max(1, sym["total"]) * 100
+                text += f"  {sym['symbol']}: {sym['total']} сделок, WR {s_wr:.0f}%, PnL <code>${float(sym['total_pnl'] or 0):.2f}</code>\n"
+
+        # Daily PnL
+        if analytics.get("by_reason"):
+            text += "\n<b>По причинам закрытия:</b>\n"
+            for r in analytics["by_reason"][:5]:
+                text += f"  {r['close_reason'] or '?'}: {r['total']} сделок, PnL <code>${float(r['pnl'] or 0):.2f}</code>\n"
+
+        text += (
+            f"\n💡 <i>Данные напрямую из PostgreSQL.\n"
+            f"_perf_stats пересчитан — /stats теперь показывает реальные цифры.</i>"
+        )
+        await _tg_send(chat_id, text)
+
+    except Exception as e:
+        await _tg_send(chat_id, f"❌ Ошибка аудита: {e}")
+
+
+async def _tg_earn_all(chat_id: int):
+    """v10.4: Place ALL spot assets (ETH/BTC/DOT) into Earn, not just USDT."""
+    if not EARN_ENABLED:
+        await _tg_send(chat_id, "❌ Earn Engine выключен")
+        return
+
+    await _tg_send(chat_id, "🏦 <i>Размещаю все монеты в Earn (ETH, BTC, DOT...)...</i>")
+
+    result = await earn_multi_asset_place()
+
+    if result.get("placed"):
+        lines = []
+        total_usd = 0
+        for p in result["placed"]:
+            lines.append(f"  ✅ {p['coin']}: <code>{p['amount']}</code> (~${p['usdt_value']:.2f}) → {p['exchange']} ({p['apr']}% APR)")
+            total_usd += p["usdt_value"]
+        text = f"🏦 <b>Multi-Asset Earn v10.4</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        text += "<b>Размещено:</b>\n" + "\n".join(lines)
+        text += f"\n\n<b>Итого:</b> ~<code>${total_usd:.2f}</code> в Earn"
+        if result.get("skipped"):
+            text += f"\n\n<b>Пропущено:</b> {len(result['skipped'])} монет"
+        if result.get("errors"):
+            text += f"\n⚠️ <b>Ошибок:</b> {len(result['errors'])}"
+            for e in result["errors"][:3]:
+                text += f"\n  ❌ {e}"
+        await _tg_send(chat_id, text)
+    else:
+        reason = result.get("reason", "нет подходящих монет")
+        text = f"ℹ️ <b>Нечего размещать</b>\n{reason}"
+        if result.get("skipped"):
+            text += "\n\n<b>Детали:</b>"
+            for s in result["skipped"][:5]:
+                text += f"\n  • {s}"
+        if result.get("errors"):
+            text += "\n\n<b>Ошибки:</b>"
+            for e in result["errors"][:3]:
+                text += f"\n  ❌ {e}"
+        await _tg_send(chat_id, text)
 
 
 async def _tg_router(chat_id: int):
@@ -6538,6 +6856,8 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/xarb":                await _tg_xarb(chat_id)
         elif cmd == "/earn":                await _tg_earn(chat_id)
         elif cmd == "/earnplace":           await _tg_earn_place(chat_id)
+        elif cmd == "/earnall":             await _tg_earn_all(chat_id)
+        elif cmd == "/audit":               await _tg_audit(chat_id)
         elif cmd == "/router":              await _tg_router(chat_id)
         elif cmd == "/autopilot":
             AUTOPILOT = not AUTOPILOT
@@ -6745,11 +7065,9 @@ async def startup():
             if db_trades:
                 trade_log.extend(reversed(db_trades))  # oldest first
                 print(f"[startup] loaded {len(db_trades)} trades from PostgreSQL")
-        # Load perf stats from DB
-        db_stats = await db.load_perf_stats()
-        if db_stats:
-            _perf_stats.update(db_stats)
-            print(f"[startup] perf stats loaded from PostgreSQL")
+        # v10.4: ALWAYS recalculate _perf_stats from PostgreSQL trades (source of truth)
+        # Old approach loaded corrupted stats from JSON/DB — this recalculates from raw trades
+        await _recalc_perf_from_db()
 
         # v9.2: Restore MiroFish memory from PostgreSQL
         global _mirofish_memory
