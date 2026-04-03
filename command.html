@@ -392,7 +392,7 @@ function renderAll(d) {
   document.getElementById('usdtFloor').textContent = `${(d.trading.usdt_floor_pct * 100).toFixed(0)}%`;
   document.getElementById('riskTrade').textContent = `${(d.trading.risk_per_trade * 100).toFixed(0)}%`;
   document.getElementById('minQ').textContent = d.trading.min_q_score;
-  document.getElementById('cooldown').textContent = `${d.trading.cooldown}s`;
+  document.getElementById('cooldown').textContent = `${d.modules.trading.cooldown}s`;
 
   // Quantum
   const braketOn = d.modules.quantum.braket;
