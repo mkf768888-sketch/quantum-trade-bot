@@ -1,7 +1,36 @@
 # QuantumTrade AI — ROADMAP
-> Волновая дорожная карта · GSD v2 Architecture · Обновлено: 2026-04-02
+> Волновая дорожная карта · GSD v2 Architecture · Обновлено: 2026-04-03
 > Философия: Персональная финансовая экосистема с бешеной маржинальностью
-> Новое: Telegram→Claude Code автономия + Design System plugins
+> Версия: v10.3.2 · Smart Money Router · Деньги НИКОГДА не простаивают
+
+---
+
+## 📍 ГДЕ МЫ СЕЙЧАС (v10.3.2)
+
+**Работает:**
+- Dual-exchange торговля (KuCoin + ByBit) — 15 AI-агентов MiroFish
+- Smart Money Router — авто-распределение: Arb → Trade → Earn
+- Earn Engine — Flexible Savings (KuCoin 0.79% APR, ByBit ✅ работает)
+- Auto-Redeem перед BUY, auto-route в Earn после SELL
+- Trade cycle уважает Router резервы (max $2 за сделку)
+- Cross-exchange арбитраж (KuCoin ↔ ByBit спреды)
+- Q-Score торговля + Opus Gate + Self-Learning v2
+- PostgreSQL persistent storage (128 trades)
+
+**Портфель ~$310:**
+- KuCoin спот: ETH($130) + BTC($124) + DOT($12) + USDT($16)
+- ByBit: $3 USDT + $4.47 в позиции + $2 в Earn
+- Фьючерсы: $26.64 equity
+
+**Проблемы решённые за сессию (6 коммитов):**
+- [x] LunarCrush 429 death spiral → fail cache + exponential backoff
+- [x] Earn 0% APR → правильные field names (returnRate, estimateApr)
+- [x] ByBit "Empty order link ID" → orderLinkId fix
+- [x] Smart Money Router v10.3.0 → авто-распределение средств
+- [x] Пороги для малого счёта v10.3.1 → $1 reserves вместо $3-5
+- [x] Бот тратил ВСЕ USDT v10.3.2 → max $2 за сделку, резервы Router
+
+---
 
 ## 🏁 v10.0 — Dual-Exchange Foundation ✅ COMPLETE
 - [x] ByBit Spot интеграция (BUY/SELL/Monitor)
@@ -11,222 +40,166 @@
 - [x] MiroFish v3 (15 AI-агентов)
 - [x] Self-Learning v2
 - [x] PostgreSQL persistent storage
-- [x] /reset_stats, /autopilot fix
 - [x] GSD архитектура: CLAUDE.md, STATE.md, REQUIREMENTS.md
-- [x] Claude Code субагенты (4 агента)
 
 ---
 
-## 🌊 Wave 1 — v10.1: Earn Engine (Пассивный доход)
-> Приоритет: ВЫСОКИЙ · Сложность: M · Агент: earn-strategist
+## 🌊 Wave 1 — Earn Engine (Пассивный доход)
 
-### Phase A: KuCoin + ByBit Earn (текущие API ключи) ✅ DEPLOYED
-- [x] `earn_get_products(exchange)` — получить список Flexible products
-- [x] `earn_get_best_rate(asset)` — сравнить APR KuCoin vs ByBit
-- [x] `earn_subscribe_flexible(exchange, asset, amount)` — подписка
-- [x] `earn_redeem(exchange, asset, amount)` — погашение
+### Phase A: KuCoin + ByBit Earn ✅ DEPLOYED (v10.2.3 + v10.3.x)
+- [x] Earn API интеграция (KuCoin + ByBit Flexible Savings)
 - [x] Auto-Earn: после SELL → свободные USDT → Flexible Savings
 - [x] Auto-Redeem: перед BUY → redeem из Savings
-- [x] Telegram: /earn — статус, APR, total earned
-- [x] API endpoint: /api/earn/status
+- [x] Smart Money Router: Arb $1 → Trade $2 → Earn (всё остальное)
+- [x] Trade cycle уважает Router резервы (не тратит Earn-деньги)
+- [x] Telegram: /earn, /earnplace, /router
+- [x] ByBit orderLinkId fix
+- [x] APR field names fix (returnRate, estimateApr)
 
 ### Phase B: Lending + Advanced
 - [ ] KuCoin Lending Pro: автоматическое размещение при rate > 10% APR
 - [ ] Lending Spike Catcher: мониторинг hourly rates
 - [ ] Staking Combo: stale позиции → stake вместо auto-sell
 - [ ] Earn dashboard в Mini App (новый таб)
+- [ ] Multi-asset Earn: не только USDT, но и ETH/BTC Flexible Savings
 
 ---
 
-## 🌊 Wave 2 — v11.0: Multi-Exchange via CCXT
-> Приоритет: ВЫСОКИЙ · Сложность: L · Агент: wave-orchestrator
+## 🌊 Wave 2 — Smart Trading v2 (Качество сделок)
+> Приоритет: КРИТИЧЕСКИЙ · Бот покупает слишком часто и теряет деньги
+
+### Phase A: Улучшение входов
+- [ ] Минимум 2 подтверждающих индикатора для BUY (сейчас хватает одного)
+- [ ] Volume filter: не покупать на низких объёмах
+- [ ] Multi-timeframe: 15m + 1h + 4h согласованность тренда
+- [ ] Cooldown per-symbol: 4 часа между покупками одного актива
+- [ ] Max portfolio allocation: не более 30% в одну монету
+
+### Phase B: Улучшение выходов
+- [ ] Trailing stop v2: динамический trail по ATR (не фиксированный 1%)
+- [ ] Partial exit: продавать 50% при +3%, остальное на trail
+- [ ] Stale position analyzer: позиции без движения 24h+ → уведомление
+- [ ] Time-based exit: позиция не в прибыли 48h → auto-sell
+
+### Phase C: Analytics & Backtesting
+- [ ] Win rate по символам (в Telegram: /winrate)
+- [ ] PnL breakdown: какие монеты зарабатывают, какие теряют
+- [ ] Backtesting engine: проверка стратегий на истории
+- [ ] A/B testing: параллельное тестирование двух стратегий
+
+---
+
+## 🌊 Wave 3 — Multi-Exchange via CCXT
+> Приоритет: ВЫСОКИЙ · Сложность: L
 
 ### Phase A: CCXT Foundation
 - [ ] Установить ccxt в requirements.txt
 - [ ] Абстракция: `exchange_factory(name)` → unified API
 - [ ] Binance подключение (API ключи через Railway)
 - [ ] OKX подключение
-- [ ] Gate.io подключение (опционально)
 
 ### Phase B: Cross-Exchange Yield Arbitrage
 - [ ] `earn_compare_all_exchanges(asset)` — APR на всех биржах
 - [ ] Автоматическая ротация USDT к лучшей ставке
 - [ ] Promotional Rate Hunter — мониторинг промо-ставок
-- [ ] Cross-exchange triangle: Earn + Spot + Arb
 
 ### Phase C: Enhanced Trading
 - [ ] BUY routing: 3+ бирж (лучшая цена + баланс)
 - [ ] SELL routing: лучший bid
-- [ ] Cross-exchange spot arbitrage (3+ пар)
 - [ ] Portfolio rebalancing: auto-распределение по биржам
 
 ---
 
-## 🌊 Wave 3 — v11.1: Telegram→Claude Code Autonomy
-> Приоритет: ВЫСОКИЙ · Сложность: M · Агент: wave-orchestrator
-> Зависимости: нет (можно начинать сейчас, бесплатно)
+## 🌊 Wave 4 — Telegram→Claude Code Autonomy
+> Приоритет: ВЫСОКИЙ · Сложность: M
 
-### Phase A: Instar Setup + Knowledge Vault
-- [x] Obsidian Knowledge Vault — 17 заметок, wiki-ссылки, CLAUDE.md обновлён
-- [ ] `npx instar` — установка и настройка
-- [ ] Подключение Telegram бота к Claude Code через instar
-- [ ] Persistent memory: контекст сохраняется между сессиями (vault + instar memory)
+### Phase A: Инфраструктура
+- [x] Obsidian Knowledge Vault — 20 заметок, wiki-ссылки
+- [ ] Claude Code CLI установка на MacBook (чеклист готов ✅)
+- [ ] instar setup → Telegram→Claude Code мост
 - [ ] Job scheduling: автозапуск задач по расписанию
-- [ ] Telegram команды: /status, /deploy, /fix, /logs → Claude Code
 
-### Phase B: Remote Control & Monitoring
+### Phase B: Remote Control
 - [ ] Telegram→Claude Code: отправка произвольных задач
-- [ ] Auto-diagnostics: scheduled job каждые 6ч → отчёт в Telegram
-- [ ] Crash recovery: автоматическое обнаружение и fix через Telegram
-- [ ] Deploy pipeline: Telegram → Claude Code → git push → Railway auto-deploy
-- [ ] Context survival: memory.md + STATE.md синхронизация
-
-### Phase C: Full Autonomy Loop
-- [ ] Self-improvement: Claude Code анализирует trade results → предлагает улучшения
-- [ ] Auto-update: scheduled weekly code review + optimization
-- [ ] Alert escalation: critical issues → Telegram notification → auto-fix attempt
-- [ ] Multi-session: параллельные задачи (trading + research + monitoring)
+- [ ] Auto-diagnostics: каждые 6ч → отчёт в Telegram
+- [ ] Deploy pipeline: Telegram → Claude Code → git push → Railway
+- [ ] Self-improvement: анализ trade results → предложения
 
 ---
 
-## 🌊 Wave 4 — v11.2: Polymarket Integration
-> Приоритет: СРЕДНИЙ · Сложность: M · Агент: polymarket-trader
-> Зависимости: Polygon wallet
-
-### Phase A: Data Layer
-- [ ] Polymarket API клиент (REST + WebSocket)
-- [ ] Кэш активных рынков (обновление каждые 5 мин)
-- [ ] Фильтр: только крипто-связанные markets
-- [ ] Odds history tracking в PostgreSQL
-
-### Phase B: Signal Integration
-- [ ] `polymarket_get_signal(symbol)` → Q-Score фактор
-- [ ] Корреляция: BTC price prediction markets → BUY/SELL weight
-- [ ] Event hedging: хедж спот позиций через event markets
-- [ ] Telegram: /poly — текущие рынки и odds
-
-### Phase C: Active Trading
-- [ ] Polygon wallet setup (secure key management)
-- [ ] Limit order placement
-- [ ] Position monitoring
-- [ ] Auto-exit при settlement
-- [ ] P&L tracking в общем dashboard
-
----
-
-## 🌊 Wave 5 — v12.0: AI & Design Evolution
-> Приоритет: СРЕДНИЙ · Сложность: L · Агент: design-system + wave-orchestrator
-> Инструменты: wilwaldon/Frontend-Design-Toolkit, anthropics/design plugin, OhMySkills
+## 🌊 Wave 5 — AI & Design Evolution
+> Приоритет: СРЕДНИЙ · Сложность: L
 
 ### Phase 0: Настройка Claude Code Супер-Дизайнер (MacBook)
-> Подготовка инфраструктуры — установка всех инструментов на MacBook
-> 📄 Полный чеклист: QuantumTrade_SuperDesigner_Checklist.docx
+> 📄 Чеклист: QuantumTrade_SuperDesigner_Checklist.docx
 
-#### Шаг 0.1: Установка Claude Code CLI
-- [ ] Установить Node.js v18+ (brew install node)
-- [ ] Установить Claude Code CLI (npm install -g @anthropic-ai/claude-code)
-- [ ] Авторизация (claude auth)
-- [ ] Проверить: claude --version
+- [ ] Claude Code CLI (npm install -g @anthropic-ai/claude-code)
+- [ ] Design plugins (Anthropic, Wilwaldon, OhMySkills)
+- [ ] MCP servers (Playwright, GitHub)
+- [ ] Telegram control (instar / @gonzih/cc-tg)
 
-#### Шаг 0.2: Дизайн-плагины и скиллы
-- [ ] Frontend Design Skill от Anthropic (claude plugin add anthropic/frontend-design)
-- [ ] Claude-Code-Frontend-Design-Toolkit (github.com/wilwaldon) — клонировать → .claude/skills/
-- [ ] OhMySkills/design-style (github.com/NakanoSanku) — 30+ стилей → .claude/skills/design-style/
-- [ ] Design Tokens Skill (OKLCH математика) — уже в design-system.md агенте ✅
-- [ ] UI/UX Pro Max — 240+ стилей, 127 шрифтовых пар
-
-#### Шаг 0.3: MCP-серверы
-- [ ] Playwright MCP (claude mcp add playwright npx @anthropic-ai/mcp-playwright)
-- [ ] GitHub MCP (claude mcp add github npx @anthropic-ai/mcp-github)
-
-#### Шаг 0.4: Telegram-управление Claude Code (выбрать один)
-- [ ] Вариант A: Claude Channels (простой) — claude plugin install telegram@claude-plugins-official
-- [ ] Вариант B: @gonzih/cc-tg (продвинутый) — голос, файлы, cron
-- [ ] Вариант C: instar (максимум) — память, планировщик, кросс-сессии
-- [ ] Проверить: отправить тестовую команду из Telegram → Claude Code
-
-### Phase A: Design System Overhaul (применение к проекту)
-- [ ] CSS Design Tokens (OKLCH color system, анимации) в index.html
-- [ ] Glassmorphism + Cyberpunk стиль карточек (из OhMySkills/design-style)
-- [ ] Микро-анимации: hover, press, update pulse
-- [ ] Skeleton loading states
-- [ ] Tab slide transitions
-- [ ] Number animations (PnL, баланс, sparklines)
-- [ ] Новый таб: Earn Dashboard
-- [ ] Новый таб: Polymarket Monitor
-- [ ] Mobile-first responsive (Telegram Mini App viewport)
+### Phase A: Design System Overhaul
+- [ ] CSS Design Tokens (OKLCH) + Glassmorphism + Cyberpunk
+- [ ] Микро-анимации, skeleton loading, number animations
+- [ ] Earn Dashboard + Router Dashboard в Mini App
 
 ### Phase B: AI Upgrades
-- [ ] DeepSeek V3.2 reasoning integration (когда оплата пройдёт)
-- [ ] LSTM/Transformer: price prediction model
-- [ ] ML feature engineering: TA indicators → prediction
-- [ ] Backtesting engine: историческая проверка стратегий
-
-### Phase C: Advanced Features
-- [ ] Social copy-trading (лидерборд ByBit → авто-повтор)
-- [ ] Telegram Mini App WebSocket (real-time updates)
-- [ ] Push-уведомления о Earn events (промо, спайки)
-- [ ] Auto portfolio rebalancing across all exchanges
+- [ ] DeepSeek V3.2 reasoning (когда оплата пройдёт)
+- [ ] ML price prediction (LSTM/Transformer)
+- [ ] Backtesting engine
 
 ---
 
-## 🌊 Wave 6 — v13.0: Financial Ecosystem
+## 🌊 Wave 6 — Polymarket + DeFi
 > Приоритет: НА БУДУЩЕЕ · Сложность: XL
 
-- [ ] DeFi integration (Uniswap, AAVE) через Web3
-- [ ] NFT мониторинг и trading
-- [ ] Налоговый калькулятор (trade history → tax report)
-- [ ] Multi-user: несколько портфелей
-- [ ] Mobile App (React Native wrapper)
-- [ ] Публичный бот: подписочная модель
+- [ ] Polymarket API → signal integration → active trading
+- [ ] DeFi integration (Uniswap, AAVE)
+- [ ] Налоговый калькулятор
+- [ ] Multi-user подписочная модель
+- [ ] Mobile App (React Native)
 
 ---
 
 ## 📊 Метрики успеха
-| Метрика | Текущее | Цель v11.0 | Цель v13.0 |
-|---------|---------|-----------|-----------|
-| Биржи | 2 | 4-5 | 5+ DeFi |
-| Пассивный доход | 0% | 3-8% APR | 10-15% APR |
+| Метрика | Сейчас (v10.3) | Цель v11.0 | Цель v13.0 |
+|---------|---------------|-----------|-----------|
+| Биржи | 2 (KC+BB) | 4-5 | 5+ DeFi |
+| Пассивный доход | 0.79% APR | 3-8% APR | 10-15% APR |
 | API cost/day | $0/day | $0.10-0.50 | $1-2 (с ML) |
-| Портфель | ~$45 | $200+ | $1000+ |
-| Направления | Spot + Arb | +Earn +Poly | +DeFi +NFT |
-| Win rate | TBD | 55%+ | 65%+ |
-| Автономия | Manual | Telegram→CC | Full Auto |
-| UI качество | Basic | Cyberpunk v1 | Glassmorphism |
+| Портфель | ~$310 | $500+ | $1000+ |
+| Направления | Spot+Arb+Earn | +Lending+Poly | +DeFi+NFT |
+| Win rate | TBD (аудит!) | 55%+ | 65%+ |
+| Max на сделку | $2 (Router) | $5-10 | Dynamic |
+| Автономия | Router v10.3 | Telegram→CC | Full Auto |
 
 ---
 
-## 🎯 Приоритизированный план (что делать и за что платить)
+## 🎯 Что делать дальше (по приоритету)
 
-### 🟢 БЕСПЛАТНО — можно делать прямо сейчас:
-1. **Wave 1B: Earn Advanced** — Lending, Staking Combo (код, нет оплаты)
-2. **Wave 3: Telegram→Claude Code** — instar setup (бесплатный, npx instar)
-3. **Wave 5A: Design System** — Frontend Design Toolkit (бесплатный)
-4. **Earn API fix** — проверить permissions на биржах для Earn endpoints
+### 🔴 СРОЧНО (сегодня-завтра):
+1. **Аудит торговли** — проверить win rate, PnL всех 128 сделок → понять где теряем
+2. **Проверить Router** — после деплоя v10.3.2 убедиться что USDT не утекает
+3. **ETH+BTC HOLD** — не продавать, мониторить через /positions
 
-### 💰 ТРЕБУЕТ ВЛОЖЕНИЙ:
-| Что | Стоимость | ROI | Приоритет |
-|-----|-----------|-----|-----------|
-| DeepSeek V3.2 API | ~$5-10/мес | Качество AI торговли x3-5 | ВЫСОКИЙ |
-| Binance API ключ | $0 (регистрация) | Доступ к крупнейшей бирже | ВЫСОКИЙ |
-| OKX API ключ | $0 (регистрация) | Ещё больше ликвидности | СРЕДНИЙ |
-| Polygon wallet | $5-10 MATIC | Polymarket trading | НИЗКИЙ |
+### 🟡 СКОРО (неделя):
+4. **Wave 2A: Smart Trading v2** — фильтры входов, multi-timeframe, volume
+5. **Wave 1B: Multi-asset Earn** — ETH/BTC в Flexible Savings (не только USDT)
+6. **Claude Code CLI** — установка на MacBook (Phase 0 чеклист готов)
 
-### 📋 Рекомендуемый порядок:
-```
-Сейчас:  Earn $35 → ночной доход ✅ → Wave 5-Phase0 (Claude Code CLI на MacBook)
-Скоро:   Wave 3A (instar/TG) → Wave 1B (Lending Spike) → DeepSeek PayPal
-Потом:   Wave 5A (Design) → Wave 2A (CCXT) → Wave 4 (Poly) → Wave 6 (DeFi)
-```
+### 🟢 ПОТОМ (месяц):
+7. **Wave 3: CCXT + Binance** — больше бирж = больше ликвидности
+8. **Wave 4: Telegram→Claude Code** — instar + автономия
+9. **Wave 5: Design + AI upgrades** — красивый UI + ML модели
 
 ---
 
 ## 🔄 Wave Status
 ```
-Current Wave: 1A fix (Earn APR v10.2.3) + 5-Phase0 (Супер-Дизайнер чеклист готов)
-Completed: Wave 0 (v10.0), Wave 1A (Earn Engine — APR fix v10.2.3)
-Next Wave: 1B (Earn Advanced) + 3A (Telegram→CC)
-Blocked: Binance/OKX API keys (Wave 2), DeepSeek PayPal (AI quality)
-Ready: Wave 5 Phase 0 (чеклист создан, ожидает установки Claude Code CLI на MacBook)
-Last Updated: 2026-04-03
+Current: v10.3.2 — Smart Money Router + Trade Size Fix
+Active:  Wave 1A ✅ (Earn Engine), Wave 2A (Smart Trading — в планах)
+Next:    Аудит торговли → Wave 2A (качество сделок)
+Blocked: Binance/OKX API keys (Wave 3), DeepSeek PayPal (AI quality)
+Ready:   Wave 5 Phase 0 (чеклист готов, ждёт Claude Code CLI)
+Last Updated: 2026-04-03 · 6 commits this session
 ```
