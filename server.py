@@ -6711,6 +6711,34 @@ async def _tg_agency(chat_id: int):
         await _tg_send(chat_id, f"❌ Agency error: {html_mod.escape(str(e)[:200])}")
 
 
+async def _tg_command_center(chat_id: int):
+    """v10.9.4: Send Command Center link as Telegram Mini App button or URL."""
+    base = WEBAPP_URL or (f"https://{RAILWAY_PUBLIC_DOMAIN}" if RAILWAY_PUBLIC_DOMAIN else "")
+    cmd_url = f"{base}/command" if base else ""
+
+    paused_txt = "⏸ ПАУЗА" if SYSTEM_PAUSED else ("🟢 ONLINE" if AUTOPILOT else "⏸ STANDBY")
+    pnl = round(_perf_stats.get("total_pnl", 0), 2)
+    wr  = round(_perf_stats.get("wins", 0) / max(1, _perf_stats.get("total_trades", 1)) * 100, 1)
+    text = (
+        f"🖥️ <b>Command Center v10.9.4</b>\n\n"
+        f"Статус: <b>{paused_txt}</b>\n"
+        f"P&L: <code>${pnl:+.2f}</code> · WR: <code>{wr}%</code> · "
+        f"Сделок: <code>{_perf_stats.get('total_trades', 0)}</code>\n\n"
+        f"Интерактивная панель с графиками, картой системы,\n"
+        f"управлением модулями и настройками в реальном времени."
+    )
+    if cmd_url:
+        kb = {"inline_keyboard": [
+            [{"text": "🚀 Открыть Command Center", "web_app": {"url": cmd_url}}],
+            [{"text": "🔗 Ссылка (браузер)", "url": cmd_url}],
+        ]}
+    else:
+        kb = {"inline_keyboard": [
+            [{"text": "⚠️ URL не настроен — задай WEBAPP_URL в Railway", "callback_data": "noop"}]
+        ]}
+    await _tg_send(chat_id, text, keyboard=kb)
+
+
 async def _tg_router(chat_id: int):
     """v10.3: Smart Money Router status."""
     if not ROUTER_ENABLED:
@@ -7366,6 +7394,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/fills":               await _tg_fills(chat_id)
         elif cmd == "/agency":              await _tg_agency(chat_id)
         elif cmd == "/router":              await _tg_router(chat_id)
+        elif cmd == "/command":             await _tg_command_center(chat_id)
         elif cmd == "/autopilot":
             AUTOPILOT = not AUTOPILOT
             state_emoji = "✅ ВКЛ" if AUTOPILOT else "❌ ВЫКЛ"
