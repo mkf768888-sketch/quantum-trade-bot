@@ -47,7 +47,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.3.1")
+app = FastAPI(title="QuantumTrade AI", version="10.3.2")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -3957,23 +3957,25 @@ async def auto_trade_cycle():
     # v10.0: Combined available capital across exchanges
     total_usdt = spot_usdt + bb_usdt
 
-    # v10.0: Smart exchange selection — trade on whichever has more USDT
-    # _trade_exchange: "kucoin", "bybit", or "both"
-    _kc_tradeable = max(0, spot_usdt - ARB_RESERVE_USDT)
-    _bb_tradeable = max(0, bb_usdt - ARB_RESERVE_USDT)
+    # v10.3.1: Smart Money Router — reserve funds for arb + earn, only trade with remainder
+    # Total reserved per exchange: arb_reserve + trade_reserve (Router keeps rest for Earn)
+    _total_reserve = ROUTER_ARB_RESERVE_USDT + ROUTER_TRADE_RESERVE_USDT if ROUTER_ENABLED else ARB_RESERVE_USDT
+    _kc_tradeable = max(0, spot_usdt - _total_reserve)
+    _bb_tradeable = max(0, bb_usdt - _total_reserve)
 
     def _calc_trade_size(available: float) -> float:
-        """Calculate trade size for small accounts."""
+        """v10.3.1: Calculate trade size — respects Router reserves.
+        Max 8% of available (RISK_PER_TRADE), capped at ROUTER_TRADE_RESERVE."""
         if available < SPOT_BUY_MIN_USDT:
             return 0.0
-        risk = RISK_PER_TRADE
-        if available < 50:
-            risk = min(0.35, max(RISK_PER_TRADE, 5.0 / max(available, 1)))
+        risk = RISK_PER_TRADE  # 8%
         size = round(available * risk, 2)
+        # v10.3.1: Cap trade size to trade reserve ($2) — never drain all USDT
+        max_trade = ROUTER_TRADE_RESERVE_USDT if ROUTER_ENABLED else available * 0.35
+        if size > max_trade:
+            size = round(max_trade, 2)
         if 0 < size < 2.0:
-            size = min(2.0, available * 0.35)
-        if size > available * 0.35:
-            size = round(available * 0.35, 2)
+            size = min(2.0, max_trade)
         return size
 
     spot_trade_usdt = _calc_trade_size(_kc_tradeable)
