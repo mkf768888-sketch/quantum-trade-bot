@@ -47,7 +47,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.3.0")
+app = FastAPI(title="QuantumTrade AI", version="10.3.1")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -903,8 +903,8 @@ async def bybit_get_spot_balances() -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 EARN_ENABLED = os.getenv("EARN_ENABLED", "true").lower() == "true"
-EARN_MIN_IDLE_USDT = float(os.getenv("EARN_MIN_IDLE_USDT", "5.0"))   # don't earn below $5
-EARN_RESERVE_USDT = float(os.getenv("EARN_RESERVE_USDT", "3.0"))     # always keep $3 liquid
+EARN_MIN_IDLE_USDT = float(os.getenv("EARN_MIN_IDLE_USDT", "1.0"))   # v10.3.1: $1 (was $5) — small account
+EARN_RESERVE_USDT = float(os.getenv("EARN_RESERVE_USDT", "1.0"))     # v10.3.1: $1 (was $3) — small account
 _earn_stats = {
     "total_subscribed": 0.0, "total_redeemed": 0.0,
     "total_earned_interest": 0.0, "subscriptions": 0, "redemptions": 0,
@@ -1377,9 +1377,9 @@ async def earn_monitor_loop():
 
 ROUTER_ENABLED = os.getenv("ROUTER_ENABLED", "true").lower() == "true"
 ROUTER_INTERVAL = int(os.getenv("ROUTER_INTERVAL", "120"))  # seconds between routing checks
-ROUTER_TRADE_RESERVE_USDT = float(os.getenv("ROUTER_TRADE_RESERVE", "5.0"))  # keep $5 for trading
-ROUTER_ARB_RESERVE_USDT = ARB_RESERVE_USDT  # use same arb reserve ($3)
-ROUTER_EARN_THRESHOLD = float(os.getenv("ROUTER_EARN_THRESHOLD", "2.0"))  # min $2 for earn placement
+ROUTER_TRADE_RESERVE_USDT = float(os.getenv("ROUTER_TRADE_RESERVE", "2.0"))  # v10.3.1: $2 (was $5) — small account
+ROUTER_ARB_RESERVE_USDT = float(os.getenv("ROUTER_ARB_RESERVE", "1.0"))     # v10.3.1: $1 (was $3) — small account
+ROUTER_EARN_THRESHOLD = float(os.getenv("ROUTER_EARN_THRESHOLD", "1.0"))     # v10.3.1: $1 (was $2) — small account
 
 _router_stats = {
     "runs": 0, "last_run": 0, "last_action": "",
@@ -1454,9 +1454,13 @@ async def smart_money_route() -> dict:
         }
         total_idle += earnable
 
-    log_activity(f"[router] KC=${kc_usdt:.2f} BB=${bb_usdt:.2f} | "
-                 f"KC earnable=${allocations.get('kucoin',{}).get('earnable',0):.2f} "
-                 f"BB earnable=${allocations.get('bybit',{}).get('earnable',0):.2f}")
+    # v10.3.1: always log router state for debugging
+    kc_earnable = allocations.get('kucoin',{}).get('earnable',0)
+    bb_earnable = allocations.get('bybit',{}).get('earnable',0)
+    print(f"[router] run#{_router_stats['runs']} KC=${kc_usdt:.2f}(earn={kc_earnable:.2f}) "
+          f"BB=${bb_usdt:.2f}(earn={bb_earnable:.2f}) "
+          f"reserves: arb=${ROUTER_ARB_RESERVE_USDT} trade=${ROUTER_TRADE_RESERVE_USDT} "
+          f"earn_min=${ROUTER_EARN_THRESHOLD}", flush=True)
 
     # ── Step 3: Place idle funds into Earn ────────────────────────────────────
     if EARN_ENABLED:
