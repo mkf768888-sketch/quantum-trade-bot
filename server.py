@@ -47,7 +47,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.5.0")
+app = FastAPI(title="QuantumTrade AI", version="10.5.1")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -8241,6 +8241,11 @@ async def _agent_auditor() -> list:
                 db_count = row["cnt"]
                 db_pnl = float(row["total_pnl"])
 
+                # 1b. Check for corrupted trades (abs PnL > $50 on single trade)
+                corrupted = await conn.fetchval(
+                    "SELECT COUNT(*) FROM trades WHERE status='closed' AND ABS(pnl_usdt) > 50"
+                )
+
             mem_count = _perf_stats["total_trades"]
             mem_pnl = _perf_stats["total_pnl"]
 
@@ -8251,11 +8256,6 @@ async def _agent_auditor() -> list:
             if abs(db_pnl - mem_pnl) > 5:
                 findings.append({"agent": "Auditor", "severity": "warning",
                     "text": f"PnL drift: DB=${db_pnl:.2f}, memory=${mem_pnl:.2f} (Δ${abs(db_pnl-mem_pnl):.2f})"})
-
-            # 1b. Check for corrupted trades (abs PnL > $50 on single trade)
-            corrupted = await conn.fetchval(
-                "SELECT COUNT(*) FROM trades WHERE status='closed' AND ABS(pnl_usdt) > 50"
-            ) if db._pool else 0
             if corrupted and corrupted > 0:
                 findings.append({"agent": "Auditor", "severity": "critical",
                     "text": f"Found {corrupted} trades with suspicious PnL >$50. Run _sanitize_db_trades()"})
@@ -8557,12 +8557,14 @@ _AGENCY_AGENTS = [
 
 async def agency_run_cycle() -> dict:
     """Run all 5 Agency Agents, collect findings, return report."""
+    print("[agency] run_cycle starting...", flush=True)
     all_findings = []
     agent_reports = {}
     t0 = time.time()
 
     for name, agent_fn in _AGENCY_AGENTS:
         try:
+            print(f"[agency] running {name}...", flush=True)
             result = await asyncio.wait_for(agent_fn(), timeout=30)
             all_findings.extend(result)
             criticals = sum(1 for f in result if f["severity"] == "critical")
@@ -8601,7 +8603,9 @@ async def agency_run_cycle() -> dict:
 
 async def agency_agent_loop():
     """v10.5.0: Background loop — runs Agency Agents every 30 min."""
+    print("[agency] loop started, waiting 120s before first cycle...", flush=True)
     await asyncio.sleep(120)  # let other systems initialize first
+    print("[agency] starting first cycle", flush=True)
     while True:
         try:
             result = await agency_run_cycle()
