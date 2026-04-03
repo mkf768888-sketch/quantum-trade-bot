@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v10.7.2
+QuantumTrade AI - FastAPI Backend v10.8.0
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
@@ -131,7 +131,8 @@ MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
 MIN_Q_SCORE    = int(os.getenv("MIN_Q_SCORE", "77"))  # v8.3.2: 77 (was 55) — per trading.md
 # v7.2.2: per-pair Q thresholds = MIN_Q_SCORE - 1
 PAIR_Q_THRESHOLDS: dict = {"BTC-USDT": 76, "ETH-USDT": 76, "SOL-USDT": 76,
-                            "BNB-USDT": 76, "XRP-USDT": 76, "AVAX-USDT": 76}
+                            "BNB-USDT": 76, "XRP-USDT": 76, "AVAX-USDT": 76,
+                            "DOGE-USDT": 78, "LINK-USDT": 76, "ARB-USDT": 77, "PEPE-USDT": 80}  # v10.8: new pairs (PEPE/DOGE выше — мемкоины рискованнее)
 COOLDOWN       = int(os.getenv("COOLDOWN_STD", os.getenv("COOLDOWN", "600")))  # v8.3.2: 600s (was 450)
 MAX_LEVERAGE   = min(int(os.getenv("MAX_LEVERAGE", "3")), 5)  # v8.3.3: cap at 5x even if env says higher
 # v10.0: Lowered thresholds for small accounts ($30-50 range)
@@ -154,7 +155,8 @@ if TEST_MODE:
     RISK_PER_TRADE = min(RISK_PER_TRADE, 0.05)  # v8.3.2: test mode even more conservative
 
 AUTOPILOT  = True
-SPOT_PAIRS = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT", "AVAX-USDT"]
+SPOT_PAIRS = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT", "AVAX-USDT",
+              "DOGE-USDT", "LINK-USDT", "ARB-USDT", "PEPE-USDT"]  # v10.8: 6→10 pairs
 FUT_PAIRS  = ["XBTUSDTM", "ETHUSDTM", "SOLUSDTM"]
 
 last_signals  = {}
@@ -502,20 +504,28 @@ def _init_qcloud() -> bool:
     return False
 
 
-# ── QAOA Module (Phase 3 + Phase 6: Origin QC) ─────────────────────────────────
+# ── QAOA Module (Phase 3 + v10.8: 10 pairs) ──────────────────────────────────
 # CPU-симулятор активен по умолчанию.
-# При наличии ORIGIN_QC_TOKEN и pyqpanda3 — авто-переключение на Wukong 180.
+# AWS Braket IonQ Harmony (11 кубитов) — основной QPU для 10 пар.
+# Wukong 180 отключён (¥20/сек дорого) — только тестовый эндпоинт.
 #
-# Корреляционная матрица (BTC ETH SOL BNB XRP AVAX)
-PAIR_NAMES = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT", "AVAX-USDT"]
+# v10.8: Расширенная корреляционная матрица 10x10
+# Новые пары (DOGE, LINK, ARB, PEPE) имеют НИЗКУЮ корреляцию с BTC (0.25-0.50)
+# → лучшая диверсификация, больше независимых сигналов
+PAIR_NAMES = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT", "AVAX-USDT",
+              "DOGE-USDT", "LINK-USDT", "ARB-USDT", "PEPE-USDT"]
 CORR_MATRIX = [
-    # BTC    ETH    SOL    BNB    XRP    AVAX
-    [1.00,  0.85,  0.78,  0.72,  0.60,  0.75],  # BTC
-    [0.85,  1.00,  0.80,  0.70,  0.58,  0.77],  # ETH
-    [0.78,  0.80,  1.00,  0.65,  0.55,  0.80],  # SOL
-    [0.72,  0.70,  0.65,  1.00,  0.62,  0.68],  # BNB
-    [0.60,  0.58,  0.55,  0.62,  1.00,  0.60],  # XRP
-    [0.75,  0.77,  0.80,  0.68,  0.60,  1.00],  # AVAX
+    # BTC    ETH    SOL    BNB    XRP    AVAX   DOGE   LINK   ARB    PEPE
+    [1.00,  0.85,  0.78,  0.72,  0.60,  0.75,  0.45,  0.40,  0.50,  0.30],  # BTC
+    [0.85,  1.00,  0.80,  0.70,  0.58,  0.77,  0.42,  0.45,  0.55,  0.28],  # ETH
+    [0.78,  0.80,  1.00,  0.65,  0.55,  0.80,  0.40,  0.38,  0.52,  0.32],  # SOL
+    [0.72,  0.70,  0.65,  1.00,  0.62,  0.68,  0.38,  0.35,  0.42,  0.25],  # BNB
+    [0.60,  0.58,  0.55,  0.62,  1.00,  0.60,  0.35,  0.30,  0.38,  0.22],  # XRP
+    [0.75,  0.77,  0.80,  0.68,  0.60,  1.00,  0.40,  0.42,  0.48,  0.30],  # AVAX
+    [0.45,  0.42,  0.40,  0.38,  0.35,  0.40,  1.00,  0.28,  0.35,  0.55],  # DOGE — мем-фактор
+    [0.40,  0.45,  0.38,  0.35,  0.30,  0.42,  0.28,  1.00,  0.40,  0.20],  # LINK — оракулы
+    [0.50,  0.55,  0.52,  0.42,  0.38,  0.48,  0.35,  0.40,  1.00,  0.30],  # ARB — L2
+    [0.30,  0.28,  0.32,  0.25,  0.22,  0.30,  0.55,  0.20,  0.30,  1.00],  # PEPE — мем, макс независимость
 ]
 N_PAIRS = len(PAIR_NAMES)
 
@@ -7956,6 +7966,79 @@ async def quantum_status():
         "pairs":            PAIR_NAMES,
         "note":             note,
     }
+
+@app.post("/api/quantum/test-wukong")
+async def test_wukong(_auth=Depends(verify_api_key)):
+    """v10.8: One-shot Wukong test. Запуск по запросу, НЕ автоматически.
+    Сравнивает CPU sim vs Wukong (если доступен) vs Braket (если есть кеш).
+    Стоимость: ~$8-14 за один тест (¥20/сек × 3-5 сек)."""
+    results = {"cpu": None, "wukong": None, "braket_cached": None, "cost_warning": "¥20/sec (~$2.75/sec)"}
+
+    # 1. Получаем текущие цены для bias
+    try:
+        prices = await get_all_prices()
+        changes = [prices["prices"].get(p, {}).get("change", 0) for p in PAIR_NAMES[:6]]  # Wukong only 6 qubits test
+    except Exception:
+        changes = [0.0] * 6
+
+    # 2. CPU simulator (бесплатно)
+    try:
+        cpu_bias = await asyncio.get_event_loop().run_in_executor(
+            None, _qaoa_cpu_simulate, changes, 2, CORR_MATRIX[:6]  # only 6x6 for comparison
+        )
+        results["cpu"] = {PAIR_NAMES[i]: cpu_bias[i] for i in range(min(6, len(cpu_bias)))}
+    except Exception as e:
+        results["cpu"] = f"error: {e}"
+
+    # 3. Wukong (только если pyqpanda3 установлен И ключ задан)
+    wukong_token = os.getenv("ORIGIN_QC_TOKEN", "") or os.getenv("ORIGIN_QC_KEY", "")
+    if wukong_token:
+        try:
+            from pyqpanda3 import QCloud, QMachineType  # type: ignore
+            qvm = QCloud()
+            qvm.init_qvm(wukong_token, QMachineType.Wukong)
+            qvm.set_chip_id("72")
+            wukong_bias = _qaoa_wukong_run.__wrapped__(changes, 1) if hasattr(_qaoa_wukong_run, '__wrapped__') else None
+            if wukong_bias is None:
+                # Прямой вызов — _qvm_instance временно подменяем
+                global _qvm_instance, _qcloud_ready
+                old_qvm, old_ready = _qvm_instance, _qcloud_ready
+                _qvm_instance, _qcloud_ready = qvm, True
+                wukong_bias = _qaoa_wukong_run(changes, 1)
+                _qvm_instance, _qcloud_ready = old_qvm, old_ready
+            results["wukong"] = {PAIR_NAMES[i]: wukong_bias[i] for i in range(min(6, len(wukong_bias)))}
+            results["wukong_note"] = "Real Wukong 180 QPU (chip_id=72)"
+        except ImportError:
+            results["wukong"] = "pyqpanda3 not installed — add to requirements.txt for testing"
+        except Exception as e:
+            results["wukong"] = f"error: {e}"
+    else:
+        results["wukong"] = "ORIGIN_QC_KEY not set in Railway env vars"
+
+    # 4. Braket cached (если есть предыдущий результат)
+    if _braket_bias:
+        results["braket_cached"] = {k: v for k, v in _braket_bias.items() if k in PAIR_NAMES[:6]}
+        results["braket_age_sec"] = int(time.time() - _braket_ts) if _braket_ts else None
+    else:
+        results["braket_cached"] = "No Braket results yet (first run pending)"
+
+    log_activity(f"[wukong_test] manual test completed: cpu={results['cpu'] is not None} wukong={results['wukong'] is not None}")
+    return results
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DEVELOPMENT ROADMAP NOTES (v10.8)
+# ══════════════════════════════════════════════════════════════════════════════
+# TODO [Фаза 3]: Акции через отдельного брокера (Alpaca API / Interactive Brokers)
+#   - Некоррелированный актив класс (акции, золото XAUUSDT, нефть)
+#   - Только после налаживания всех остальных процессов (крипто + Polymarket + DeFi)
+#   - Telegram Wallet Futures НЕ имеет API → не подходит для автоматизации
+# TODO [Фаза 2]: Grid Trading (passivbot pattern) для пассивного дохода от спреда
+# TODO [Фаза 2]: Freqtrade backtesting — доказать прибыльность на истории
+# TODO [Фаза 3]: Polymarket AI trading (dylanpersonguy pattern)
+# TODO [Фаза 3]: DEX-CEX flash loan арбитраж (mev-templates pattern)
+# ══════════════════════════════════════════════════════════════════════════════
+
 
 @app.post("/api/settings")
 async def update_settings(body: dict, _auth=Depends(verify_api_key)):  # v7.3.3: auth required
