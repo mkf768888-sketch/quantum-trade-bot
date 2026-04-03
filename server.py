@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v10.8.0
+QuantumTrade AI - FastAPI Backend v10.9.0
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
@@ -47,7 +47,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.6.2")
+app = FastAPI(title="QuantumTrade AI", version="10.9.0")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -145,6 +145,11 @@ USDT_FLOOR_PCT     = float(os.getenv("USDT_FLOOR_PCT", "0.30"))      # v10.7: ke
 MAX_DAILY_BUYS     = int(os.getenv("MAX_DAILY_BUYS", "4"))           # v10.7: max 4 BUY trades per 24h
 POST_SELL_REST_SEC = int(os.getenv("POST_SELL_REST_SEC", "1800"))    # v10.7: 30 min rest after sell before re-buy
 _last_sell_ts: float = 0.0  # v10.7: timestamp of last sell (for rest period)
+# v10.9: System-wide PAUSE — stops ALL automated processes (trading, earn, router, arb, monitor)
+# Use /pause in Telegram or POST /api/pause to activate. Allows safe deposit/rebalance.
+SYSTEM_PAUSED: bool = False
+_pause_reason: str = ""       # optional reason shown in status
+_pause_ts: float = 0.0        # when paused
 # v7.2.3: TP/SL ratio улучшен до 3:1 (было 2:1) — исправляет асимметрию убытков
 TP_PCT         = 0.04   # v10.0: 4% (was 6%) — faster profit taking for small account
 SL_PCT         = 0.02   # v7.2.3: 2% (было 2.5%) → ratio 2:1
@@ -1641,6 +1646,10 @@ async def earn_monitor_loop():
     Runs every 15 minutes. Also syncs positions with exchange data."""
     await asyncio.sleep(120)  # wait 2 min after startup
     while True:
+        # v10.9: System Pause — don't move USDT to Earn while user is depositing
+        if SYSTEM_PAUSED:
+            await asyncio.sleep(60)
+            continue
         try:
             if EARN_ENABLED:
                 # Auto-place idle USDT
@@ -1900,6 +1909,10 @@ async def smart_money_router_loop():
     Ensures idle USDT is always working in Earn."""
     await asyncio.sleep(180)  # wait 3 min after startup (let other systems init)
     while True:
+        # v10.9: System Pause — don't route money while user is depositing
+        if SYSTEM_PAUSED:
+            await asyncio.sleep(60)
+            continue
         try:
             if ROUTER_ENABLED:
                 result = await smart_money_route()
@@ -3533,6 +3546,9 @@ async def _arb_fast_scanner():
     Scans every 5 seconds instead of 60, catches fleeting opportunities."""
     await asyncio.sleep(45)  # let WS connect first
     while True:
+        if SYSTEM_PAUSED:  # v10.9
+            await asyncio.sleep(10)
+            continue
         try:
             if not _ws_connected or len(_ws_prices) < 5:
                 await asyncio.sleep(10)
@@ -4402,6 +4418,10 @@ async def _safe_background_enrich(fg_data: dict):
 
 async def auto_trade_cycle():
     global last_q_score, MIN_Q_SCORE, COOLDOWN, AUTOPILOT, _last_sell_ts
+    # v10.9: System Pause — skip entire cycle
+    if SYSTEM_PAUSED:
+        log_activity("[cycle] ⏸ PAUSED — skipping (use /resume to continue)")
+        return
     log_activity(f"[cycle start] {datetime.utcnow().strftime('%H:%M:%S')}")
 
     # ── Все внешние данные параллельно ───────────────────────────────────────
@@ -5414,6 +5434,10 @@ async def spot_monitor_loop():
     global _last_sell_ts  # v10.7: capital protection rest timer
     await asyncio.sleep(60)  # initial delay
     while True:
+        # v10.9: System Pause — skip monitoring (but still check TP/SL for safety)
+        if SYSTEM_PAUSED:
+            await asyncio.sleep(30)
+            continue
         try:
             open_spot = [t for t in trade_log
                          if t.get("status") == "open"
@@ -5609,6 +5633,8 @@ async def _tg_main_menu(chat_id: int):
     """Главное меню бота."""
     ap  = "🟢 ВКЛ" if AUTOPILOT       else "🔴 ВЫКЛ"
     arb = "🟢"     if ARB_EXEC_ENABLED else "🔴"
+    pause_btn_text = "▶️ Возобновить" if SYSTEM_PAUSED else "⏸ Пауза"
+    pause_btn_data = "system_resume" if SYSTEM_PAUSED else "system_pause"
     _webapp = WEBAPP_URL or RAILWAY_PUBLIC_DOMAIN and f"https://{RAILWAY_PUBLIC_DOMAIN}" or ""
     _dash_btn = [{"text": "🖥️ Открыть дашборд", "web_app": {"url": _webapp}}] if _webapp else [{"text": "🖥️ Дашборд (URL не задан)", "callback_data": "noop"}]
     kb = {"inline_keyboard": [
@@ -5619,11 +5645,13 @@ async def _tg_main_menu(chat_id: int):
          {"text": f"🤖 Автопилот: {ap}", "callback_data": "menu_autopilot"}],
         [{"text": "💰 Баланс",     "callback_data": "menu_balance"},
          {"text": "📈 Позиции",    "callback_data": "menu_positions"}],
-        [{"text": f"⚡ Арбитраж {arb}", "callback_data": "menu_arb"}],
+        [{"text": f"⚡ Арбитраж {arb}", "callback_data": "menu_arb"},
+         {"text": pause_btn_text, "callback_data": pause_btn_data}],
     ]}
     await _tg_send(chat_id,
-        "⚛ <b>QuantumTrade AI v10.1.0</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚛ <b>QuantumTrade AI v{app.version}</b>\n"
+        + ("⏸ <b>ПАУЗА АКТИВНА</b> — все процессы остановлены\n" if SYSTEM_PAUSED else "")
+        + "━━━━━━━━━━━━━━━━━━━━━━\n"
         "Выбери раздел:", kb)
 
 async def _tg_stats(chat_id: int):
@@ -7270,7 +7298,7 @@ async def _tg_ai_ask(chat_id: int, question: str):
 
 @app.post("/api/telegram/callback")
 async def telegram_callback(req: TelegramUpdate):
-    global MIN_Q_SCORE, COOLDOWN, AUTOPILOT
+    global MIN_Q_SCORE, COOLDOWN, AUTOPILOT, SYSTEM_PAUSED, _pause_ts, _pause_reason
     try:
      return await _telegram_callback_inner(req)
     except Exception as _tg_err:
@@ -7278,7 +7306,7 @@ async def telegram_callback(req: TelegramUpdate):
         return {"ok": True}
 
 async def _telegram_callback_inner(req: TelegramUpdate):
-    global MIN_Q_SCORE, COOLDOWN, AUTOPILOT, ARB_EXEC_ENABLED
+    global MIN_Q_SCORE, COOLDOWN, AUTOPILOT, ARB_EXEC_ENABLED, SYSTEM_PAUSED, _pause_ts, _pause_reason
 
     # ── Обработка текстовых команд ─────────────────────────────────────────
     if req.message:
@@ -7328,6 +7356,36 @@ async def _telegram_callback_inner(req: TelegramUpdate):
                 f"🤖 <b>Автопилот: {state_emoji}</b>\n"
                 f"{'Бот торгует автоматически. Ultra-Sniper режим активен.' if AUTOPILOT else 'Торговля приостановлена.'}")
             log_activity(f"[autopilot] toggled to {'ON' if AUTOPILOT else 'OFF'} by /autopilot command")
+        # v10.9: System-wide PAUSE/RESUME
+        elif cmd == "/pause":
+            SYSTEM_PAUSED = True
+            _pause_ts = time.time()
+            _pause_reason = raw.replace("/pause", "").strip() or "manual pause"
+            await _tg_send(chat_id,
+                "⏸ <b>СИСТЕМА ПРИОСТАНОВЛЕНА</b>\n\n"
+                "Все автоматические процессы остановлены:\n"
+                "• Торговля (auto_trade_cycle)\n"
+                "• Мониторинг позиций\n"
+                "• Smart Money Router\n"
+                "• Earn размещение\n"
+                "• Арбитраж сканер\n\n"
+                "Можешь спокойно пополнять счета.\n"
+                "Когда готов — отправь /resume")
+            log_activity(f"[pause] SYSTEM PAUSED by Telegram ({_pause_reason})")
+        elif cmd == "/resume":
+            if not SYSTEM_PAUSED:
+                await _tg_send(chat_id, "ℹ️ Система уже работает, пауза не активна.")
+            else:
+                _paused_for = int(time.time() - _pause_ts) if _pause_ts > 0 else 0
+                SYSTEM_PAUSED = False
+                _pause_reason = ""
+                _pause_ts = 0.0
+                await _tg_send(chat_id,
+                    f"▶️ <b>СИСТЕМА ВОЗОБНОВЛЕНА</b>\n\n"
+                    f"Пауза длилась: {_paused_for // 60} мин {_paused_for % 60} сек\n"
+                    f"Все процессы перезапущены.\n"
+                    f"Бот начнёт торговать на следующем цикле (≤15 сек).")
+                log_activity(f"[resume] SYSTEM RESUMED after {_paused_for}s pause")
         elif cmd.startswith("/sell"):       await _tg_universal_sell(chat_id, raw)
         elif cmd.startswith("/buy"):
             if not cmd.startswith("/buy ") and cmd == "/buy":
@@ -7430,6 +7488,24 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         state = "ВКЛ 🟢" if AUTOPILOT else "ВЫКЛ 🔴"
         await _tg_answer(cb_id, f"Торговля {state}")
         log_activity(f"[settings] Автопилот → {state} (via main menu)")
+        if chat_id: await _tg_main_menu(chat_id)
+
+    # v10.9: System Pause/Resume buttons
+    elif data == "system_pause":
+        SYSTEM_PAUSED = True
+        _pause_ts = time.time()
+        _pause_reason = "menu button"
+        await _tg_answer(cb_id, "⏸ Пауза активирована")
+        log_activity("[pause] SYSTEM PAUSED via menu button")
+        if chat_id: await _tg_main_menu(chat_id)
+
+    elif data == "system_resume":
+        _paused_for = int(time.time() - _pause_ts) if _pause_ts > 0 else 0
+        SYSTEM_PAUSED = False
+        _pause_reason = ""
+        _pause_ts = 0.0
+        await _tg_answer(cb_id, f"▶️ Возобновлено ({_paused_for}s)")
+        log_activity(f"[resume] SYSTEM RESUMED via menu button after {_paused_for}s")
         if chat_id: await _tg_main_menu(chat_id)
 
     elif data == "toggle_autopilot":
@@ -8043,7 +8119,7 @@ async def test_wukong(_auth=Depends(verify_api_key)):
 @app.post("/api/settings")
 async def update_settings(body: dict, _auth=Depends(verify_api_key)):  # v7.3.3: auth required
     """v6.7: runtime settings update without restart."""
-    global MIN_Q_SCORE, COOLDOWN, AUTOPILOT, TEST_MODE, RISK_PER_TRADE, MAX_LEVERAGE
+    global MIN_Q_SCORE, COOLDOWN, AUTOPILOT, TEST_MODE, RISK_PER_TRADE, MAX_LEVERAGE, SYSTEM_PAUSED, _pause_ts, _pause_reason
     changed = {}
     # v10.0: Input validation per trading.md rules
     if "min_q_score" in body:
@@ -8077,6 +8153,42 @@ async def update_settings(body: dict, _auth=Depends(verify_api_key)):  # v7.3.3:
             "current": {"min_q_score": MIN_Q_SCORE, "cooldown": COOLDOWN,
                         "autopilot": AUTOPILOT, "test_mode": TEST_MODE,
                         "risk_per_trade": RISK_PER_TRADE, "max_leverage": MAX_LEVERAGE}}
+
+# ── v10.9: System Pause API ────────────────────────────────────────────────
+@app.post("/api/pause")
+async def api_pause(body: dict = {}, _auth=Depends(verify_api_key)):
+    """v10.9: Pause ALL automated processes. Safe for depositing funds."""
+    global SYSTEM_PAUSED, _pause_ts, _pause_reason
+    SYSTEM_PAUSED = True
+    _pause_ts = time.time()
+    _pause_reason = body.get("reason", "API pause")
+    log_activity(f"[pause/api] SYSTEM PAUSED ({_pause_reason})")
+    await notify("⏸ <b>СИСТЕМА ПРИОСТАНОВЛЕНА</b> (через API)\nВсе автоматические процессы остановлены.")
+    return {"ok": True, "paused": True, "reason": _pause_reason, "ts": _pause_ts}
+
+@app.post("/api/resume")
+async def api_resume(_auth=Depends(verify_api_key)):
+    """v10.9: Resume all automated processes after pause."""
+    global SYSTEM_PAUSED, _pause_ts, _pause_reason
+    if not SYSTEM_PAUSED:
+        return {"ok": True, "paused": False, "message": "System was not paused"}
+    paused_for = int(time.time() - _pause_ts) if _pause_ts > 0 else 0
+    SYSTEM_PAUSED = False
+    _pause_reason = ""
+    _pause_ts = 0.0
+    log_activity(f"[resume/api] SYSTEM RESUMED after {paused_for}s")
+    await notify(f"▶️ <b>СИСТЕМА ВОЗОБНОВЛЕНА</b> (через API)\nПауза: {paused_for // 60} мин {paused_for % 60} сек")
+    return {"ok": True, "paused": False, "paused_for_seconds": paused_for}
+
+@app.get("/api/pause/status")
+async def api_pause_status():
+    """v10.9: Check if system is paused (no auth needed for dashboard)."""
+    result = {"paused": SYSTEM_PAUSED}
+    if SYSTEM_PAUSED:
+        result["reason"] = _pause_reason
+        result["paused_since"] = _pause_ts
+        result["paused_for_seconds"] = int(time.time() - _pause_ts) if _pause_ts > 0 else 0
+    return result
 
 @app.head("/health")  # v10.2: Railway sends HEAD for health checks
 @app.get("/health")
