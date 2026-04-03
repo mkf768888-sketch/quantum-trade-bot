@@ -727,11 +727,18 @@ function updateMap(d){
     'mn-arb':d.modules.arb.enabled&&!paused,
     'mn-ws':d.modules.ws.connected
   };
+  // Critical modules only (arb is optional — intentionally disabled on small balance)
+  const critical={
+    'mn-kucoin':states['mn-kucoin'],
+    'mn-trading':states['mn-trading'],
+    'mn-ws':states['mn-ws'],
+  };
   const mapStatus=document.getElementById('mapStatus');
+  const allCriticalOn=Object.values(critical).every(Boolean);
   const allOn=Object.values(states).every(Boolean);
-  const anyOff=Object.values(states).some(v=>!v);
-  mapStatus.textContent=paused?'⏸ PAUSED':allOn?'ALL SYSTEMS GO':anyOff?'DEGRADED':'OK';
-  mapStatus.className=`badge ${paused?'badge-warn':allOn?'badge-on':'badge-off'}`;
+  const status=paused?'⏸ PAUSED':allOn?'ALL SYSTEMS GO':allCriticalOn?'OPERATIONAL':'DEGRADED';
+  mapStatus.textContent=status;
+  mapStatus.className=`badge ${paused?'badge-warn':allOn||allCriticalOn?'badge-on':'badge-off'}`;
 
   Object.entries(states).forEach(([id,on])=>{
     const el=document.getElementById(id);if(!el)return;
