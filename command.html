@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QuantumTrade AI — Command Center</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0e1a;--bg2:#111827;--bg3:#1a2235;
+  --neon:#00f0ff;--neon2:#7c3aed;--green:#10b981;--red:#ef4444;--yellow:#f59e0b;--orange:#f97316;
+  --text:#e2e8f0;--text2:#94a3b8;--text3:#64748b;
+  --glow:0 0 20px rgba(0,240,255,.3);
+  --glow-green:0 0 15px rgba(16,185,129,.4);
+  --glow-red:0 0 15px rgba(239,68,68,.4);
+  --glow-purple:0 0 15px rgba(124,58,237,.4);
+}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,-apple-system,sans-serif;overflow-x:hidden;min-height:100vh}
+/* Background grid */
+body::before{content:'';position:fixed;inset:0;background:
+  linear-gradient(rgba(0,240,255,.03) 1px,transparent 1px),
+  linear-gradient(90deg,rgba(0,240,255,.03) 1px,transparent 1px);
+  background-size:50px 50px;pointer-events:none;z-index:0}
+body::after{content:'';position:fixed;inset:0;background:radial-gradient(ellipse at 50% 0%,rgba(124,58,237,.1),transparent 70%);pointer-events:none;z-index:0}
+
+/* Header */
+.header{position:sticky;top:0;z-index:100;background:linear-gradient(180deg,rgba(10,14,26,.98),rgba(10,14,26,.9));
+  border-bottom:1px solid rgba(0,240,255,.15);padding:12px 24px;display:flex;align-items:center;justify-content:space-between;backdrop-filter:blur(20px)}
+.header h1{font-size:1.3rem;font-weight:700;background:linear-gradient(135deg,var(--neon),var(--neon2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.header .ver{font-size:.75rem;color:var(--text3);margin-left:10px}
+.header .status-pill{padding:4px 14px;border-radius:20px;font-size:.75rem;font-weight:600;letter-spacing:.5px;animation:pulse-glow 2s ease-in-out infinite}
+.status-pill.online{background:rgba(16,185,129,.15);color:var(--green);border:1px solid rgba(16,185,129,.3)}
+.status-pill.paused{background:rgba(245,158,11,.15);color:var(--yellow);border:1px solid rgba(245,158,11,.3)}
+@keyframes pulse-glow{0%,100%{opacity:1}50%{opacity:.7}}
+
+/* Controls */
+.controls{display:flex;gap:8px;align-items:center}
+.btn{padding:6px 16px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);color:var(--text);font-size:.8rem;cursor:pointer;transition:all .2s}
+.btn:hover{background:rgba(255,255,255,.1);transform:translateY(-1px)}
+.btn.pause{border-color:rgba(245,158,11,.4);color:var(--yellow)}
+.btn.resume{border-color:rgba(16,185,129,.4);color:var(--green)}
+.btn.active{background:rgba(0,240,255,.15);border-color:var(--neon)}
+
+/* Main grid */
+.main{position:relative;z-index:1;padding:16px;max-width:1400px;margin:0 auto}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-bottom:14px}
+.grid-wide{display:grid;grid-template-columns:2fr 1fr;gap:14px;margin-bottom:14px}
+@media(max-width:768px){.grid-wide{grid-template-columns:1fr}}
+
+/* Node cards */
+.node{background:var(--bg2);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:16px;position:relative;overflow:hidden;transition:all .3s}
+.node:hover{border-color:rgba(0,240,255,.2);transform:translateY(-2px);box-shadow:var(--glow)}
+.node::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--neon),transparent);opacity:0;transition:opacity .3s}
+.node:hover::before{opacity:1}
+.node-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.node-title{font-size:.85rem;font-weight:600;color:var(--text);display:flex;align-items:center;gap:8px}
+.node-title .icon{width:32px;height:32px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.1rem}
+.node-badge{padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:600;letter-spacing:.3px}
+.badge-on{background:rgba(16,185,129,.15);color:var(--green);border:1px solid rgba(16,185,129,.2)}
+.badge-off{background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.2)}
+.badge-wait{background:rgba(245,158,11,.15);color:var(--yellow);border:1px solid rgba(245,158,11,.2)}
+
+/* Metrics */
+.metrics{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.metric{background:rgba(255,255,255,.03);border-radius:8px;padding:8px 10px}
+.metric-label{font-size:.65rem;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px}
+.metric-value{font-size:1.1rem;font-weight:700;font-variant-numeric:tabular-nums}
+.metric-value.positive{color:var(--green)}
+.metric-value.negative{color:var(--red)}
+.metric-value.neutral{color:var(--neon)}
+.metric-sm{font-size:.85rem}
+.metrics-row{display:flex;gap:8px;flex-wrap:wrap}
+
+/* Connection lines (SVG overlay) */
+.connections{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0}
+
+/* Activity feed */
+.feed{max-height:320px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--bg3) transparent}
+.feed::-webkit-scrollbar{width:4px}
+.feed::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:4px}
+.feed-item{padding:6px 10px;border-left:2px solid var(--bg3);margin-bottom:4px;font-size:.75rem;color:var(--text2);font-family:'Fira Code',monospace;word-break:break-all;transition:border-color .2s}
+.feed-item:hover{border-color:var(--neon);background:rgba(0,240,255,.03)}
+.feed-item .ts{color:var(--text3);margin-right:6px}
+.feed-item.cycle{border-color:var(--green)}
+.feed-item.error{border-color:var(--red)}
+.feed-item.pause{border-color:var(--yellow)}
+.feed-item.trade{border-color:var(--neon)}
+
+/* Pairs grid */
+.pairs-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px}
+.pair-card{background:rgba(255,255,255,.03);border-radius:8px;padding:8px;text-align:center;border:1px solid transparent;transition:all .2s}
+.pair-card:hover{border-color:rgba(0,240,255,.2)}
+.pair-name{font-size:.7rem;color:var(--text3);margin-bottom:2px}
+.pair-price{font-size:.85rem;font-weight:600;font-variant-numeric:tabular-nums}
+.pair-bias{font-size:.65rem;margin-top:2px}
+
+/* Positions */
+.pos-item{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,.03);border-radius:8px;margin-bottom:6px;border-left:3px solid var(--green)}
+.pos-item.sell{border-left-color:var(--red)}
+.pos-symbol{font-weight:600;font-size:.85rem}
+.pos-detail{font-size:.7rem;color:var(--text2)}
+.pos-size{font-size:.85rem;font-weight:600;color:var(--neon)}
+
+/* System map (visual node graph) */
+.system-map{position:relative;min-height:200px;display:flex;align-items:center;justify-content:center;gap:0;flex-wrap:wrap}
+.map-node{width:100px;height:70px;border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:.7rem;font-weight:600;border:1px solid rgba(255,255,255,.1);position:relative;cursor:default;transition:all .3s;margin:6px}
+.map-node:hover{transform:scale(1.05)}
+.map-node .map-icon{font-size:1.3rem;margin-bottom:2px}
+.map-node .map-status{width:6px;height:6px;border-radius:50%;position:absolute;top:6px;right:6px}
+.map-node .map-status.on{background:var(--green);box-shadow:var(--glow-green)}
+.map-node .map-status.off{background:var(--red);box-shadow:var(--glow-red)}
+
+/* Pulse animation for active nodes */
+@keyframes node-pulse{0%{box-shadow:0 0 0 0 rgba(0,240,255,.2)}70%{box-shadow:0 0 0 8px rgba(0,240,255,0)}100%{box-shadow:0 0 0 0 rgba(0,240,255,0)}}
+.map-node.active{animation:node-pulse 2s infinite;border-color:rgba(0,240,255,.3)}
+.map-node.paused{opacity:.4;border-color:rgba(245,158,11,.3)}
+
+/* Big number display */
+.big-num{font-size:2rem;font-weight:800;font-variant-numeric:tabular-nums;line-height:1}
+.big-label{font-size:.7rem;color:var(--text3);margin-top:2px}
+
+/* Quantum visualizer */
+.qubit-viz{display:flex;gap:4px;align-items:flex-end;height:40px;margin-top:8px}
+.qubit-bar{width:8px;border-radius:3px 3px 0 0;background:linear-gradient(to top,var(--neon2),var(--neon));transition:height .5s ease;min-height:4px}
+
+/* Loading skeleton */
+.skeleton{background:linear-gradient(90deg,var(--bg3) 25%,rgba(255,255,255,.05) 50%,var(--bg3) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:4px;height:20px}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+/* Toast notification */
+.toast{position:fixed;bottom:20px;right:20px;background:var(--bg2);border:1px solid rgba(0,240,255,.3);border-radius:12px;padding:12px 20px;font-size:.8rem;box-shadow:var(--glow);z-index:1000;transform:translateY(100px);opacity:0;transition:all .3s}
+.toast.show{transform:translateY(0);opacity:1}
+
+/* Responsive */
+@media(max-width:600px){
+  .header{padding:10px 14px;flex-wrap:wrap;gap:8px}
+  .header h1{font-size:1rem}
+  .main{padding:10px}
+  .grid{grid-template-columns:1fr}
+  .pairs-grid{grid-template-columns:repeat(2,1fr)}
+}
+</style>
+</head>
+<body>
+<!-- Header -->
+<div class="header">
+  <div style="display:flex;align-items:center">
+    <h1>QUANTUMTRADE AI</h1>
+    <span class="ver" id="version">v...</span>
+  </div>
+  <div id="systemStatus" class="status-pill online">ONLINE</div>
+  <div class="controls">
+    <button class="btn pause" id="btnPause" onclick="togglePause()">PAUSE</button>
+    <span style="font-size:.7rem;color:var(--text3)" id="updateTimer">--</span>
+  </div>
+</div>
+
+<!-- Main Content -->
+<div class="main">
+
+<!-- Row 1: System Map + Performance -->
+<div class="grid-wide">
+  <!-- System Map -->
+  <div class="node">
+    <div class="node-header">
+      <div class="node-title"><span class="icon" style="background:rgba(0,240,255,.1)">🗺️</span> System Map</div>
+    </div>
+    <div class="system-map" id="systemMap">
+      <div class="map-node active" id="mn-kucoin" style="background:rgba(0,240,255,.05)">
+        <div class="map-status on"></div><div class="map-icon">🟢</div><div>KuCoin</div>
+      </div>
+      <div class="map-node active" id="mn-bybit" style="background:rgba(124,58,237,.05)">
+        <div class="map-status on"></div><div class="map-icon">🟡</div><div>ByBit</div>
+      </div>
+      <div class="map-node active" id="mn-trading" style="background:rgba(16,185,129,.05)">
+        <div class="map-status on"></div><div class="map-icon">📈</div><div>Trading</div>
+      </div>
+      <div class="map-node active" id="mn-quantum" style="background:rgba(0,240,255,.05)">
+        <div class="map-status on"></div><div class="map-icon">⚛️</div><div>Quantum</div>
+      </div>
+      <div class="map-node active" id="mn-mirofish" style="background:rgba(59,130,246,.05)">
+        <div class="map-status on"></div><div class="map-icon">🐟</div><div>MiroFish</div>
+      </div>
+      <div class="map-node active" id="mn-earn" style="background:rgba(245,158,11,.05)">
+        <div class="map-status on"></div><div class="map-icon">💰</div><div>Earn</div>
+      </div>
+      <div class="map-node active" id="mn-router" style="background:rgba(16,185,129,.05)">
+        <div class="map-status on"></div><div class="map-icon">🔄</div><div>Router</div>
+      </div>
+      <div class="map-node active" id="mn-arb" style="background:rgba(239,68,68,.05)">
+        <div class="map-status on"></div><div class="map-icon">⚡</div><div>Arb</div>
+      </div>
+      <div class="map-node active" id="mn-ws" style="background:rgba(99,102,241,.05)">
+        <div class="map-status on"></div><div class="map-icon">📡</div><div>WebSocket</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Performance Card -->
+  <div class="node">
+    <div class="node-header">
+      <div class="node-title"><span class="icon" style="background:rgba(16,185,129,.1)">📊</span> Performance</div>
+    </div>
+    <div style="text-align:center;padding:10px 0">
+      <div class="big-num" id="pnlTotal">$0.00</div>
+      <div class="big-label">Total P&L</div>
+    </div>
+    <div class="metrics">
+      <div class="metric"><div class="metric-label">Win Rate</div><div class="metric-value neutral" id="winRate">0%</div></div>
+      <div class="metric"><div class="metric-label">Trades</div><div class="metric-value" id="totalTrades">0</div></div>
+      <div class="metric"><div class="metric-label">Wins</div><div class="metric-value positive" id="wins">0</div></div>
+      <div class="metric"><div class="metric-label">Losses</div><div class="metric-value negative" id="losses">0</div></div>
+      <div class="metric"><div class="metric-label">Streak</div><div class="metric-value" id="streak">0</div></div>
+      <div class="metric"><div class="metric-label">Q-Score</div><div class="metric-value neutral" id="qScore">--</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- Row 2: Trading + Quantum + Positions -->
+<div class="grid">
+  <!-- Trading Engine -->
+  <div class="node">
+    <div class="node-header">
+      <div class="node-title"><span class="icon" style="background:rgba(16,185,129,.1)">📈</span> Trading Engine</div>
+      <span class="node-badge badge-on" id="tradingBadge">ACTIVE</span>
+    </div>
+    <div class="metrics">
+      <div class="metric"><div class="metric-label">Pairs</div><div class="metric-value" id="pairsCount">10</div></div>
+      <div class="metric"><div class="metric-label">Open Pos</div><div class="metric-value" id="openPos">0/2</div></div>
+      <div class="metric"><div class="metric-label">USDT Floor</div><div class="metric-value" id="usdtFloor">30%</div></div>
+      <div class="metric"><div class="metric-label">Risk/Trade</div><div class="metric-value" id="riskTrade">8%</div></div>
+      <div class="metric"><div class="metric-label">Min Q</div><div class="metric-value" id="minQ">77</div></div>
+      <div class="metric"><div class="metric-label">Cooldown</div><div class="metric-value metric-sm" id="cooldown">600s</div></div>
+    </div>
+  </div>
+
+  <!-- Quantum Engine -->
+  <div class="node">
+    <div class="node-header">
+      <div class="node-title"><span class="icon" style="background:rgba(124,58,237,.1)">⚛️</span> Quantum Engine</div>
+      <span class="node-badge badge-on" id="quantumBadge">ACTIVE</span>
+    </div>
+    <div class="metrics">
+      <div class="metric"><div class="metric-label">CPU Sim</div><div class="metric-value positive">ON</div></div>
+      <div class="metric"><div class="metric-label">Braket</div><div class="metric-value" id="braketStatus">--</div></div>
+      <div class="metric"><div class="metric-label">Device</div><div class="metric-value metric-sm" id="braketDevice">--</div></div>
+      <div class="metric"><div class="metric-label">Ensemble</div><div class="metric-value metric-sm neutral">CPU 30% + QPU 70%</div></div>
+    </div>
+    <div class="qubit-viz" id="qubitViz"></div>
+  </div>
+
+  <!-- Open Positions -->
+  <div class="node">
+    <div class="node-header">
+      <div class="node-title"><span class="icon" style="background:rgba(0,240,255,.1)">💼</span> Open Positions</div>
+    </div>
+    <div id="positionsList">
+      <div style="text-align:center;color:var(--text3);font-size:.8rem;padding:20px">No open positions</div>
+    </div>
+  </div>
+</div>
+
+<!-- Row 3: AI Agents + Exchanges -->
+<div class="grid">
+  <!-- MiroFish AI -->
+  <div class="node">
+    <div class="node-header">
+      <div class="node-title"><span class="icon" style="background:rgba(59,130,246,.1)">🐟</span> MiroFish v3</div>
+      <span class="node-badge badge-on" id="mirofishBadge">15 AGENTS</span>
+    </div>
+    <div class="metrics">
+      <div class="metric"><div class="metric-label">Calls</div><div class="metric-value" id="mfCalls">0</div></div>
+      <div class="metric"><div class="metric-label">Avg Score</div><div class="metric-value neutral" id="mfAvg">0.0</div></div>
+    </div>
+  </div>
+
+  <!-- Earn Engine -->
+  <div class="node">
+    <div class="node-header">
+      <div class="node-title"><span class="icon" style="background:rgba(245,158,11,.1)">💰</span> Earn Engine</div>
+      <span class="node-badge badge-on" id="earnBadge">ON</span>
+    </div>
+    <div class="metrics">
+      <div class="metric"><div class="metric-label">KuCoin Earn</div><div class="metric-value" id="earnKC">$0.00</div></div>
+      <div class="metric"><div class="metric-label">ByBit Earn</div><div class="metric-value" id="earnBB">$0.00</div></div>
+    </div>
+  </div>
+
+  <!-- Arbitrage -->
+  <div class="node">
+    <div class="node-header">
+      <div class="node-title"><span class="icon" style="background:rgba(239,68,68,.1)">⚡</span> Arbitrage</div>
+      <span class="node-badge badge-on" id="arbBadge">SCANNING</span>
+    </div>
+    <div class="metrics">
+      <div class="metric"><div class="metric-label">Checks</div><div class="metric-value" id="arbChecks">0</div></div>
+      <div class="metric"><div class="metric-label">Found</div><div class="metric-value" id="arbFound">0</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- Row 4: Live Prices -->
+<div class="node" style="margin-bottom:14px">
+  <div class="node-header">
+    <div class="node-title"><span class="icon" style="background:rgba(0,240,255,.1)">💹</span> Live Prices</div>
+    <span style="font-size:.65rem;color:var(--text3)" id="priceCount">0 pairs</span>
+  </div>
+  <div class="pairs-grid" id="pairsGrid"></div>
+</div>
+
+<!-- Row 5: Activity Feed -->
+<div class="node">
+  <div class="node-header">
+    <div class="node-title"><span class="icon" style="background:rgba(99,102,241,.1)">📋</span> Activity Feed</div>
+    <span style="font-size:.65rem;color:var(--text3)" id="feedCount">Live</span>
+  </div>
+  <div class="feed" id="activityFeed">
+    <div class="feed-item">Connecting to system...</div>
+  </div>
+</div>
+
+</div><!-- /main -->
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+const API_BASE = window.location.origin;
+let refreshInterval = null;
+let lastData = null;
+let updateCount = 0;
+
+// ── Fetch dashboard data ──────────────────────────────────────────────
+async function fetchDashboard() {
+  try {
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), 8000);
+    const res = await fetch(`${API_BASE}/api/dashboard/live`, {signal: ctrl.signal});
+    clearTimeout(tid);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    lastData = data;
+    updateCount++;
+    renderAll(data);
+    document.getElementById('updateTimer').textContent = `#${updateCount}`;
+  } catch (e) {
+    console.error('Dashboard fetch error:', e);
+    document.getElementById('updateTimer').textContent = 'ERR';
+  }
+}
+
+// ── Render all sections ───────────────────────────────────────────────
+function renderAll(d) {
+  // Version
+  document.getElementById('version').textContent = `v${d.version}`;
+
+  // System status
+  const statusEl = document.getElementById('systemStatus');
+  const btnPause = document.getElementById('btnPause');
+  if (d.system.paused) {
+    statusEl.textContent = 'PAUSED';
+    statusEl.className = 'status-pill paused';
+    btnPause.textContent = 'RESUME';
+    btnPause.className = 'btn resume';
+  } else {
+    statusEl.textContent = d.system.autopilot ? 'ONLINE' : 'STANDBY';
+    statusEl.className = 'status-pill online';
+    btnPause.textContent = 'PAUSE';
+    btnPause.className = 'btn pause';
+  }
+
+  // Performance
+  const pnl = d.performance.total_pnl;
+  const pnlEl = document.getElementById('pnlTotal');
+  pnlEl.textContent = `$${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}`;
+  pnlEl.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+  document.getElementById('winRate').textContent = `${d.performance.winrate}%`;
+  document.getElementById('totalTrades').textContent = d.performance.total_trades;
+  document.getElementById('wins').textContent = d.performance.wins;
+  document.getElementById('losses').textContent = d.performance.losses;
+  const streak = d.performance.streak;
+  const streakEl = document.getElementById('streak');
+  streakEl.textContent = `${streak > 0 ? '+' : ''}${streak}`;
+  streakEl.className = `metric-value ${streak > 0 ? 'positive' : streak < 0 ? 'negative' : ''}`;
+  document.getElementById('qScore').textContent = d.trading.last_q_score || '--';
+
+  // Trading
+  const isPaused = d.system.paused;
+  setBadge('tradingBadge', d.system.autopilot && !isPaused, d.system.autopilot ? 'ACTIVE' : 'OFF');
+  document.getElementById('pairsCount').textContent = d.trading.spot_pairs.length;
+  document.getElementById('openPos').textContent = `${d.trading.open_positions}/${d.trading.max_positions}`;
+  document.getElementById('usdtFloor').textContent = `${(d.trading.usdt_floor_pct * 100).toFixed(0)}%`;
+  document.getElementById('riskTrade').textContent = `${(d.trading.risk_per_trade * 100).toFixed(0)}%`;
+  document.getElementById('minQ').textContent = d.trading.min_q_score;
+  document.getElementById('cooldown').textContent = `${d.trading.cooldown}s`;
+
+  // Quantum
+  const braketOn = d.modules.quantum.braket;
+  setBadge('quantumBadge', true, braketOn ? 'CPU + QPU' : 'CPU ONLY');
+  document.getElementById('braketStatus').textContent = braketOn ? 'READY' : 'OFF';
+  document.getElementById('braketStatus').className = `metric-value ${braketOn ? 'positive' : 'negative'}`;
+  document.getElementById('braketDevice').textContent = d.modules.quantum.braket_arn || 'N/A';
+  renderQubitViz(d.trading.spot_pairs.length);
+
+  // MiroFish
+  setBadge('mirofishBadge', d.modules.mirofish.enabled, d.modules.mirofish.enabled ? '15 AGENTS' : 'OFF');
+  document.getElementById('mfCalls').textContent = d.modules.mirofish.calls;
+  document.getElementById('mfAvg').textContent = d.modules.mirofish.avg_score.toFixed(1);
+
+  // Earn
+  setBadge('earnBadge', d.modules.earn.enabled && !isPaused, d.modules.earn.enabled ? 'ON' : 'OFF');
+  document.getElementById('earnKC').textContent = `$${d.modules.earn.kc.toFixed(2)}`;
+  document.getElementById('earnBB').textContent = `$${d.modules.earn.bb.toFixed(2)}`;
+
+  // Arb
+  setBadge('arbBadge', d.modules.arb.enabled && !isPaused, d.modules.arb.enabled ? 'SCANNING' : 'OFF');
+  document.getElementById('arbChecks').textContent = d.modules.arb.checks;
+  document.getElementById('arbFound').textContent = d.modules.arb.opportunities;
+
+  // System map nodes
+  updateMapNode('mn-trading', d.system.autopilot && !isPaused);
+  updateMapNode('mn-quantum', true);
+  updateMapNode('mn-mirofish', d.modules.mirofish.enabled && !isPaused);
+  updateMapNode('mn-earn', d.modules.earn.enabled && !isPaused);
+  updateMapNode('mn-router', d.modules.router.enabled && !isPaused);
+  updateMapNode('mn-arb', d.modules.arb.enabled && !isPaused);
+  updateMapNode('mn-kucoin', true);
+  updateMapNode('mn-bybit', d.modules.bybit.enabled);
+  updateMapNode('mn-ws', d.modules.ws.connected);
+
+  // Prices
+  renderPrices(d.prices, d.trading.spot_pairs);
+
+  // Positions
+  renderPositions(d.positions);
+
+  // Activity feed
+  renderFeed(d.activity);
+}
+
+function setBadge(id, on, text) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = `node-badge ${on ? 'badge-on' : 'badge-off'}`;
+}
+
+function updateMapNode(id, active) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const statusDot = el.querySelector('.map-status');
+  if (lastData && lastData.system.paused) {
+    el.className = 'map-node paused';
+    if (statusDot) statusDot.className = 'map-status off';
+  } else {
+    el.className = `map-node ${active ? 'active' : ''}`;
+    if (statusDot) statusDot.className = `map-status ${active ? 'on' : 'off'}`;
+  }
+}
+
+function renderQubitViz(numPairs) {
+  const container = document.getElementById('qubitViz');
+  container.innerHTML = '';
+  for (let i = 0; i < numPairs; i++) {
+    const bar = document.createElement('div');
+    bar.className = 'qubit-bar';
+    const h = 10 + Math.random() * 30;
+    bar.style.height = `${h}px`;
+    bar.style.animationDelay = `${i * 0.1}s`;
+    bar.title = `Qubit ${i}`;
+    container.appendChild(bar);
+  }
+}
+
+function renderPrices(prices, pairs) {
+  const grid = document.getElementById('pairsGrid');
+  const count = Object.keys(prices).length;
+  document.getElementById('priceCount').textContent = `${count} pairs live`;
+
+  // Build cards for all trading pairs
+  let html = '';
+  for (const pair of pairs) {
+    const key = pair.replace('-', '');
+    const price = prices[key] || prices[pair] || null;
+    const displayName = pair.replace('-USDT', '');
+    html += `<div class="pair-card">
+      <div class="pair-name">${displayName}</div>
+      <div class="pair-price">${price ? formatPrice(price) : '--'}</div>
+    </div>`;
+  }
+  grid.innerHTML = html;
+}
+
+function formatPrice(p) {
+  if (p >= 1000) return `$${p.toLocaleString('en', {maximumFractionDigits: 0})}`;
+  if (p >= 1) return `$${p.toFixed(2)}`;
+  if (p >= 0.001) return `$${p.toFixed(4)}`;
+  return `$${p.toFixed(8)}`;
+}
+
+function renderPositions(positions) {
+  const el = document.getElementById('positionsList');
+  if (!positions || positions.length === 0) {
+    el.innerHTML = '<div style="text-align:center;color:var(--text3);font-size:.8rem;padding:20px">No open positions</div>';
+    return;
+  }
+  el.innerHTML = positions.map(p => `
+    <div class="pos-item ${p.side === 'SELL' ? 'sell' : ''}">
+      <div>
+        <div class="pos-symbol">${p.symbol.replace('-USDT','')}</div>
+        <div class="pos-detail">${p.side} @ ${formatPrice(p.entry)} · ${p.exchange}</div>
+      </div>
+      <div class="pos-size">$${p.size_usdt.toFixed(2)}</div>
+    </div>
+  `).join('');
+}
+
+function renderFeed(activity) {
+  const el = document.getElementById('activityFeed');
+  if (!activity || activity.length === 0) return;
+  el.innerHTML = activity.map(a => {
+    const msg = a.msg || '';
+    let cls = 'feed-item';
+    if (msg.includes('[cycle')) cls += ' cycle';
+    if (msg.includes('error') || msg.includes('ERROR')) cls += ' error';
+    if (msg.includes('PAUSE') || msg.includes('pause')) cls += ' pause';
+    if (msg.includes('BUY') || msg.includes('SELL')) cls += ' trade';
+    const ts = a.ts ? a.ts.split('T')[1]?.substring(0, 8) || '' : '';
+    return `<div class="${cls}"><span class="ts">${ts}</span>${escHtml(msg)}</div>`;
+  }).join('');
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ── Pause/Resume ──────────────────────────────────────────────────────
+async function togglePause() {
+  const isPaused = lastData && lastData.system.paused;
+  const endpoint = isPaused ? '/api/resume' : '/api/pause';
+
+  // Need API key from URL param or prompt
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    showToast('Set API key: add ?key=YOUR_KEY to URL');
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}${endpoint}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-API-Key': apiKey},
+      body: JSON.stringify({reason: 'Command Center'})
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(isPaused ? 'System RESUMED' : 'System PAUSED');
+      setTimeout(fetchDashboard, 500);
+    } else {
+      showToast(`Error: ${data.detail || 'Unknown'}`);
+    }
+  } catch (e) {
+    showToast(`Connection error: ${e.message}`);
+  }
+}
+
+function getApiKey() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('key') || localStorage.getItem('qt_api_key') || '';
+}
+
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+// ── Qubit animation ───────────────────────────────────────────────────
+function animateQubits() {
+  const bars = document.querySelectorAll('.qubit-bar');
+  bars.forEach(bar => {
+    const h = 10 + Math.random() * 30;
+    bar.style.height = `${h}px`;
+  });
+}
+
+// ── Init ──────────────────────────────────────────────────────────────
+async function init() {
+  await fetchDashboard();
+  // Refresh every 5 seconds
+  refreshInterval = setInterval(fetchDashboard, 5000);
+  // Animate qubits every 2 seconds
+  setInterval(animateQubits, 2000);
+}
+
+init();
+</script>
+</body>
+</html>

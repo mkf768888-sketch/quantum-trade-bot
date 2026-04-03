@@ -8190,6 +8190,97 @@ async def api_pause_status():
         result["paused_for_seconds"] = int(time.time() - _pause_ts) if _pause_ts > 0 else 0
     return result
 
+# ── v10.9: Command Center — Live Dashboard ─────────────────────────────────
+@app.get("/command", response_class=HTMLResponse)
+async def serve_command_center():
+    """v10.9: Serve the Command Center dashboard — real-time system monitoring."""
+    try:
+        with open("command.html", "r", encoding="utf-8") as f:
+            content = f.read()
+        return HTMLResponse(content=content, headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache", "Expires": "0"})
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>Command Center not found</h1>", status_code=404)
+
+@app.get("/api/dashboard/live")
+async def dashboard_live():
+    """v10.9: All system data in one call for Command Center. No auth (read-only overview)."""
+    open_trades = [t for t in trade_log if t.get("status") == "open"]
+    closed_trades = [t for t in trade_log if t.get("status") == "closed"]
+
+    # WS prices snapshot
+    prices_snap = {}
+    for sym, data in _ws_prices.items():
+        if time.time() - data.get("ts", 0) < 120:
+            prices_snap[sym] = round(data["price"], 6)
+
+    # Recent activity (last 20)
+    recent_log = list(reversed(activity_log[-20:]))
+
+    return {
+        "ts": time.time(),
+        "version": app.version,
+        # System state
+        "system": {
+            "paused": SYSTEM_PAUSED,
+            "pause_reason": _pause_reason if SYSTEM_PAUSED else "",
+            "pause_since": _pause_ts if SYSTEM_PAUSED else 0,
+            "autopilot": AUTOPILOT,
+            "test_mode": TEST_MODE,
+        },
+        # Modules status
+        "modules": {
+            "trading":  {"enabled": AUTOPILOT, "pairs": len(SPOT_PAIRS), "cooldown": COOLDOWN},
+            "quantum":  {"cpu_sim": True, "braket": _braket_ready, "wukong": _qcloud_ready,
+                         "braket_arn": BRAKET_DEVICE_ARN.split("/")[-1] if _braket_ready else ""},
+            "mirofish": {"enabled": MIROFISH_ENABLED, "calls": _mirofish_stats.get("calls", 0),
+                         "avg_score": round(_mirofish_stats.get("avg_score", 0), 1)},
+            "earn":     {"enabled": EARN_ENABLED,
+                         "kc": round(_earn_stats.get("kucoin_subscribed", 0), 2),
+                         "bb": round(_earn_stats.get("bybit_subscribed", 0), 2)},
+            "router":   {"enabled": ROUTER_ENABLED,
+                         "arb_reserve": ROUTER_ARB_RESERVE_USDT,
+                         "trade_reserve": ROUTER_TRADE_RESERVE_USDT},
+            "arb":      {"enabled": ARB_EXEC_ENABLED, "xarb": XARB_ENABLED,
+                         "checks": _xarb_stats.get("checks", 0),
+                         "opportunities": _xarb_stats.get("opportunities", 0)},
+            "bybit":    {"enabled": BYBIT_ENABLED, "calls": _bybit_stats.get("calls", 0)},
+            "ws":       {"connected": _ws_connected, "pairs_tracked": len(_ws_prices)},
+        },
+        # Performance
+        "performance": {
+            "total_trades": _perf_stats.get("total_trades", 0),
+            "wins": _perf_stats.get("wins", 0),
+            "losses": _perf_stats.get("losses", 0),
+            "total_pnl": round(_perf_stats.get("total_pnl", 0), 4),
+            "streak": _perf_stats.get("streak", 0),
+            "winrate": round(_perf_stats.get("wins", 0) / max(1, _perf_stats.get("total_trades", 1)) * 100, 1),
+        },
+        # Trading
+        "trading": {
+            "last_q_score": round(last_q_score, 1),
+            "min_q_score": MIN_Q_SCORE,
+            "spot_pairs": SPOT_PAIRS,
+            "open_positions": len(open_trades),
+            "max_positions": MAX_OPEN_POSITIONS,
+            "daily_buys_limit": MAX_DAILY_BUYS,
+            "usdt_floor_pct": USDT_FLOOR_PCT,
+            "risk_per_trade": RISK_PER_TRADE,
+        },
+        # Positions
+        "positions": [
+            {"symbol": t.get("symbol", "?"), "side": t.get("side", "?"),
+             "entry": t.get("entry_price", 0), "size_usdt": round(t.get("usdt_size", 0), 2),
+             "exchange": t.get("account", "spot"), "open_ts": t.get("open_ts", 0)}
+            for t in open_trades
+        ],
+        # Prices
+        "prices": prices_snap,
+        # Activity
+        "activity": recent_log,
+    }
+
 @app.head("/health")  # v10.2: Railway sends HEAD for health checks
 @app.get("/health")
 async def health():
