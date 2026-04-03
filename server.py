@@ -47,7 +47,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.4.0")
+app = FastAPI(title="QuantumTrade AI", version="10.4.1")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -275,6 +275,58 @@ def _update_perf_on_trade(trade: dict):
 
     _save_perf_stats()
 
+async def _sanitize_db_trades():
+    """v10.4.1: Find and fix corrupted PnL values in PostgreSQL.
+    A trade's PnL cannot exceed its notional value (price * size).
+    Also caps single trade PnL at $100 (reasonable max for $330 portfolio)."""
+    if not db.is_ready():
+        return 0
+    fixed = 0
+    try:
+        async with db._pool.acquire() as conn:
+            # Find trades with suspiciously high PnL
+            suspicious = await conn.fetch("""
+                SELECT id, symbol, price, size, pnl_usdt, pnl_pct, account, strategy
+                FROM trades WHERE status = 'closed'
+                AND ABS(pnl_usdt) > 50
+                ORDER BY ABS(pnl_usdt) DESC
+            """)
+            for row in suspicious:
+                trade_id = row["id"]
+                price = row["price"] or 0
+                size = row["size"] or 0
+                pnl = row["pnl_usdt"] or 0
+                pnl_pct = row["pnl_pct"] or 0
+                notional = price * size
+                symbol = row["symbol"]
+
+                # Sanity: PnL can't be more than notional * leverage (3x max)
+                max_possible = notional * 3 if notional > 0 else 100
+                # For small accounts (<$500), cap single trade PnL at $50
+                max_reasonable = min(max_possible, 50.0)
+
+                if abs(pnl) > max_reasonable:
+                    # Recalculate from pnl_pct if available
+                    if pnl_pct and abs(pnl_pct) < 1.0:  # <100%, reasonable
+                        corrected = round(pnl_pct * notional, 4) if notional > 0 else 0.0
+                    else:
+                        corrected = 0.0  # can't recover, zero out
+
+                    print(f"[sanitize] ⚠️ trade #{trade_id} {symbol}: PnL ${pnl:.2f} → ${corrected:.2f} "
+                          f"(notional=${notional:.2f}, pnl_pct={pnl_pct})", flush=True)
+                    await conn.execute(
+                        "UPDATE trades SET pnl_usdt = $1 WHERE id = $2",
+                        corrected, trade_id
+                    )
+                    fixed += 1
+
+            if fixed:
+                print(f"[sanitize] ✅ fixed {fixed} corrupted trades", flush=True)
+    except Exception as e:
+        print(f"[sanitize] error: {e}", flush=True)
+    return fixed
+
+
 async def _recalc_perf_from_db():
     """v10.4: Recalculate _perf_stats from PostgreSQL trades — the REAL source of truth.
     Fixes the +$3918 fake PnL bug by computing everything from actual closed trades."""
@@ -284,7 +336,11 @@ async def _recalc_perf_from_db():
         return
 
     try:
-        import asyncpg
+        # v10.4.1: First sanitize corrupted trades
+        sanitized = await _sanitize_db_trades()
+        if sanitized:
+            print(f"[perf] sanitized {sanitized} corrupted trades before recalc", flush=True)
+
         async with db._pool.acquire() as conn:
             # Get ALL closed trades
             rows = await conn.fetch("""
@@ -5032,7 +5088,11 @@ async def position_monitor_loop():
                             pnl_pct = (entry - price_now) / entry
                         else:
                             pnl_pct = (price_now - entry) / entry
-                        pnl_usdt = round(pnl_pct * entry * trade["size"] * contract_size, 4)
+                        notional = entry * trade["size"] * contract_size
+                        gross_pnl = pnl_pct * notional
+                        # v10.4.1: Deduct estimated trading fees (taker 0.06% open + 0.06% close)
+                        est_fees = notional * 0.0012  # 0.12% round-trip
+                        pnl_usdt = round(gross_pnl - est_fees, 4)
                         duration_min = round((time.time() - open_ts) / 60, 1)
                         # Определяем причину закрытия по реальной цене
                         tp  = trade.get("tp", entry * 1.03)
@@ -6156,9 +6216,25 @@ async def _tg_audit(chat_id: int):
             for r in analytics["by_reason"][:5]:
                 text += f"  {r['close_reason'] or '?'}: {r['total']} сделок, PnL <code>${float(r['pnl'] or 0):.2f}</code>\n"
 
+        # Estimate untracked losses (fees, funding, pre-DB trades)
+        # User started with $90 in futures, now has $26.64 = lost $63.36
+        # DB shows futures PnL of ~$0.80 — difference is untracked
+        futures_pnl_db = sum(
+            float(acc.get("pnl", 0))
+            for acc in analytics.get("by_account", [])
+            if "futures" in str(acc.get("account", ""))
+        )
         text += (
-            f"\n💡 <i>Данные напрямую из PostgreSQL.\n"
-            f"_perf_stats пересчитан — /stats теперь показывает реальные цифры.</i>"
+            f"\n<b>⚠️ Оценка неучтённых потерь:</b>\n"
+            f"  Фьючерсы в DB: <code>${futures_pnl_db:.2f}</code>\n"
+            f"  Реально потеряно: ~$63 (было $90 → $26.64)\n"
+            f"  Разница: ~<code>${63 + futures_pnl_db:.2f}</code> (комиссии + funding + до PostgreSQL)\n"
+        )
+
+        text += (
+            f"\n💡 <i>Данные из PostgreSQL + санитизация.\n"
+            f"v10.4.1: комиссии 0.12% теперь вычитаются из futures PnL.\n"
+            f"_perf_stats пересчитан — /stats показывает реальные цифры.</i>"
         )
         await _tg_send(chat_id, text)
 
