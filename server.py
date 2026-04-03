@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v10.1.0
+QuantumTrade AI - FastAPI Backend v10.5.0
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
@@ -47,7 +47,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.4.3")
+app = FastAPI(title="QuantumTrade AI", version="10.5.0")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -6550,6 +6550,57 @@ async def _tg_earn_all(chat_id: int):
         await _tg_send(chat_id, text)
 
 
+async def _tg_agency(chat_id: int):
+    """v10.5.0: Agency Agent — run full analysis or show last report."""
+    await _tg_send(chat_id, "🤖 <i>Agency Agents запущены... (5 агентов)</i>")
+    try:
+        result = await agency_run_cycle()
+        _agency_state["last_run"] = datetime.utcnow().isoformat()
+        _agency_state["cycle"] += 1
+        _agency_state["findings"] = result["findings"]
+        _agency_state["summary"] = result["summary"]
+        _agency_state["agent_reports"] = result["agent_reports"]
+
+        # Build Telegram message
+        text = f"🤖 <b>Agency Agents Report #{_agency_state['cycle']}</b>\n"
+        text += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+        # Agent status grid
+        for name, report in result["agent_reports"].items():
+            text += f"{report['status']} <b>{html_mod.escape(name)}</b>"
+            if report.get("criticals"):
+                text += f" · 🔴×{report['criticals']}"
+            if report.get("warnings"):
+                text += f" · 🟡×{report['warnings']}"
+            text += "\n"
+
+        # Critical findings
+        criticals = [f for f in result["findings"] if f["severity"] == "critical"]
+        if criticals:
+            text += f"\n🔴 <b>Critical ({len(criticals)}):</b>\n"
+            for f in criticals[:5]:
+                text += f"  • {html_mod.escape(f['text'][:150])}\n"
+
+        # Warnings
+        warnings_list = [f for f in result["findings"] if f["severity"] == "warning"]
+        if warnings_list:
+            text += f"\n🟡 <b>Warnings ({len(warnings_list)}):</b>\n"
+            for f in warnings_list[:4]:
+                text += f"  • {html_mod.escape(f['text'][:150])}\n"
+
+        # Suggestions
+        suggestions = [f for f in result["findings"] if f["severity"] == "suggestion"]
+        if suggestions:
+            text += f"\n💡 <b>Suggestions ({len(suggestions)}):</b>\n"
+            for f in suggestions[:4]:
+                text += f"  • {html_mod.escape(f['text'][:150])}\n"
+
+        text += f"\n⏱ {result['elapsed']:.1f}s · {datetime.utcnow().strftime('%H:%M UTC')}"
+        await _tg_send(chat_id, text)
+    except Exception as e:
+        await _tg_send(chat_id, f"❌ Agency error: {html_mod.escape(str(e)[:200])}")
+
+
 async def _tg_router(chat_id: int):
     """v10.3: Smart Money Router status."""
     if not ROUTER_ENABLED:
@@ -7203,6 +7254,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/earnall":             await _tg_earn_all(chat_id)
         elif cmd == "/audit":               await _tg_audit(chat_id)
         elif cmd == "/fills":               await _tg_fills(chat_id)
+        elif cmd == "/agency":              await _tg_agency(chat_id)
         elif cmd == "/router":              await _tg_router(chat_id)
         elif cmd == "/autopilot":
             AUTOPILOT = not AUTOPILOT
@@ -7434,6 +7486,7 @@ async def startup():
     asyncio.create_task(_arb_fast_scanner())       # v8.3.3: fast arb scanner (every 5s)
     asyncio.create_task(airdrop_digest_loop())
     asyncio.create_task(auto_scanner_loop())  # v7.4.4: health scanner
+    asyncio.create_task(agency_agent_loop())  # v10.5.0: Agency Agents — 5 AI agents
     await get_airdrops()  # прогреваем кеш при старте
 
     # v7.4.0: авто-регистрация Telegram webhook при старте (если задан Railway домен)
@@ -8158,6 +8211,454 @@ async def auto_scanner_loop():
 async def api_scanner_status():
     """v7.5.0: Статус автосканера + производительность + рекомендации."""
     return _scanner_state
+
+# ── Agency Agent System v10.5.0 ───────────────────────────────────────────────
+# 5 specialised AI agents: Auditor, Risk, Strategy, Security, Optimizer
+# Each agent runs analysis → produces findings (critical/warning/info/suggestion)
+# Critical findings trigger Telegram alerts; full report via /agency command.
+# ──────────────────────────────────────────────────────────────────────────────
+
+_agency_state: dict = {
+    "last_run": None,
+    "cycle": 0,
+    "findings": [],          # list of {agent, severity, text}
+    "summary": "",
+    "agent_reports": {},     # agent_name → {status, findings_count, key_metric}
+    "actions_taken": [],     # auto-fix actions performed
+}
+
+# ── Agent 1: Auditor — PnL integrity, DB vs exchange verification ─────────
+async def _agent_auditor() -> list:
+    findings = []
+    try:
+        # 1a. Check _perf_stats vs DB consistency
+        if db._pool:
+            async with db._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT COUNT(*) as cnt, COALESCE(SUM(pnl_usdt),0) as total_pnl "
+                    "FROM trades WHERE status='closed'"
+                )
+                db_count = row["cnt"]
+                db_pnl = float(row["total_pnl"])
+
+            mem_count = _perf_stats["total_trades"]
+            mem_pnl = _perf_stats["total_pnl"]
+
+            if abs(db_count - mem_count) > 2:
+                findings.append({"agent": "Auditor", "severity": "critical",
+                    "text": f"Trade count mismatch: DB={db_count}, memory={mem_count}. "
+                            f"Рекомендация: перезапуск для _recalc_perf_from_db()"})
+            if abs(db_pnl - mem_pnl) > 5:
+                findings.append({"agent": "Auditor", "severity": "warning",
+                    "text": f"PnL drift: DB=${db_pnl:.2f}, memory=${mem_pnl:.2f} (Δ${abs(db_pnl-mem_pnl):.2f})"})
+
+            # 1b. Check for corrupted trades (abs PnL > $50 on single trade)
+            corrupted = await conn.fetchval(
+                "SELECT COUNT(*) FROM trades WHERE status='closed' AND ABS(pnl_usdt) > 50"
+            ) if db._pool else 0
+            if corrupted and corrupted > 0:
+                findings.append({"agent": "Auditor", "severity": "critical",
+                    "text": f"Found {corrupted} trades with suspicious PnL >$50. Run _sanitize_db_trades()"})
+
+        # 1c. trade_log sanity
+        open_trades = [t for t in trade_log if t.get("status") == "open"]
+        stale = [t for t in open_trades if time.time() - t.get("open_ts", time.time()) > 86400]
+        if stale:
+            findings.append({"agent": "Auditor", "severity": "warning",
+                "text": f"{len(stale)} open trades older than 24h — possible orphan positions"})
+
+        if not findings:
+            findings.append({"agent": "Auditor", "severity": "info",
+                "text": "PnL integrity OK. DB and memory in sync."})
+    except Exception as e:
+        findings.append({"agent": "Auditor", "severity": "warning",
+            "text": f"Auditor error: {str(e)[:100]}"})
+    return findings
+
+# ── Agent 2: Risk — position sizing, drawdown, exposure limits ────────────
+async def _agent_risk() -> list:
+    findings = []
+    try:
+        # 2a. Check current exposure
+        open_trades = [t for t in trade_log if t.get("status") == "open"]
+        if len(open_trades) > MAX_OPEN_POSITIONS:
+            findings.append({"agent": "Risk", "severity": "critical",
+                "text": f"Open positions ({len(open_trades)}) exceed MAX_OPEN_POSITIONS ({MAX_OPEN_POSITIONS})"})
+
+        # 2b. Futures exposure
+        try:
+            fpos = await get_futures_positions()
+            if fpos.get("positions"):
+                total_exposure = sum(abs(p.get("currentQty", 0) * p.get("markPrice", 0))
+                                     for p in fpos["positions"])
+                fb = await get_futures_balance()
+                equity = fb.get("account_equity", 0)
+                if equity > 0 and total_exposure / equity > MAX_LEVERAGE * 1.2:
+                    findings.append({"agent": "Risk", "severity": "critical",
+                        "text": f"Effective leverage {total_exposure/equity:.1f}x exceeds MAX_LEVERAGE*1.2 ({MAX_LEVERAGE*1.2:.1f}x)"})
+        except Exception:
+            pass
+
+        # 2c. Drawdown check
+        if _perf_stats["max_drawdown"] < -30:
+            findings.append({"agent": "Risk", "severity": "warning",
+                "text": f"Max drawdown ${_perf_stats['max_drawdown']:.2f} — approaching risk limit"})
+
+        # 2d. Losing streak
+        if _perf_stats["streak"] <= -3:
+            findings.append({"agent": "Risk", "severity": "warning",
+                "text": f"Losing streak: {abs(_perf_stats['streak'])} trades. "
+                        f"Self-learning должен был повысить порог."})
+
+        # 2e. Balance adequacy
+        try:
+            bal = await get_balance()
+            usdt = bal.get("available_usdt", 0) if bal.get("success") else 0
+            if usdt < 5 and AUTOPILOT:
+                findings.append({"agent": "Risk", "severity": "warning",
+                    "text": f"Available USDT: ${usdt:.2f} — недостаточно для спот торговли при активном автопилоте"})
+        except Exception:
+            pass
+
+        if not findings:
+            findings.append({"agent": "Risk", "severity": "info",
+                "text": f"Risk within limits. Open: {len(open_trades)}/{MAX_OPEN_POSITIONS}, "
+                        f"Leverage cap: {MAX_LEVERAGE}x"})
+    except Exception as e:
+        findings.append({"agent": "Risk", "severity": "warning",
+            "text": f"Risk agent error: {str(e)[:100]}"})
+    return findings
+
+# ── Agent 3: Strategy — profitability by strategy/symbol/timeframe ────────
+async def _agent_strategy() -> list:
+    findings = []
+    try:
+        total = _perf_stats["total_trades"]
+        if total < 5:
+            findings.append({"agent": "Strategy", "severity": "info",
+                "text": f"Insufficient data ({total} trades). Need 5+ for analysis."})
+            return findings
+
+        wr = _perf_stats["wins"] / max(1, total) * 100
+
+        # 3a. Overall performance
+        if wr < 40:
+            findings.append({"agent": "Strategy", "severity": "warning",
+                "text": f"Overall win rate {wr:.0f}% below 40% threshold. PnL: ${_perf_stats['total_pnl']:.2f}"})
+        elif wr > 55:
+            findings.append({"agent": "Strategy", "severity": "info",
+                "text": f"Win rate {wr:.0f}% — above target. Keep current parameters."})
+
+        # 3b. Strategy breakdown
+        losing_strats = []
+        winning_strats = []
+        for strat, data in _perf_stats["by_strategy"].items():
+            if data["trades"] >= 3:
+                swr = data["wins"] / data["trades"] * 100
+                if swr < 30 and data["pnl"] < -5:
+                    losing_strats.append(f"{strat}(WR:{swr:.0f}%, PnL:${data['pnl']:.2f})")
+                elif swr > 60 and data["pnl"] > 0:
+                    winning_strats.append(f"{strat}(WR:{swr:.0f}%, PnL:${data['pnl']:.2f})")
+
+        if losing_strats:
+            findings.append({"agent": "Strategy", "severity": "warning",
+                "text": f"Underperforming strategies: {', '.join(losing_strats)}"})
+        if winning_strats:
+            findings.append({"agent": "Strategy", "severity": "suggestion",
+                "text": f"Top strategies: {', '.join(winning_strats)} — consider increasing allocation"})
+
+        # 3c. Symbol analysis — toxic symbols
+        toxic = []
+        for sym, data in _perf_stats["by_symbol"].items():
+            if data["trades"] >= 3 and data["pnl"] < -10:
+                toxic.append(f"{sym}(${data['pnl']:.2f}/{data['trades']}tr)")
+        if toxic:
+            findings.append({"agent": "Strategy", "severity": "warning",
+                "text": f"Toxic symbols (consider blocking): {', '.join(toxic[:5])}"})
+
+        # 3d. Q-Score effectiveness
+        q_win = _perf_stats.get("avg_q_score_win", 0)
+        q_loss = _perf_stats.get("avg_q_score_loss", 0)
+        if q_win and q_loss and q_win > q_loss + 3:
+            optimal_q = int((q_win + q_loss) / 2) + 2
+            if optimal_q != MIN_Q_SCORE and abs(optimal_q - MIN_Q_SCORE) > 3:
+                findings.append({"agent": "Strategy", "severity": "suggestion",
+                    "text": f"Q-Score: wins avg {q_win:.0f}, losses avg {q_loss:.0f}. "
+                            f"Suggested MIN_Q_SCORE: {optimal_q} (current: {MIN_Q_SCORE})"})
+
+        if not findings:
+            findings.append({"agent": "Strategy", "severity": "info",
+                "text": f"Strategy mix healthy. WR: {wr:.0f}%, PnL: ${_perf_stats['total_pnl']:.2f}"})
+    except Exception as e:
+        findings.append({"agent": "Strategy", "severity": "warning",
+            "text": f"Strategy agent error: {str(e)[:100]}"})
+    return findings
+
+# ── Agent 4: Security — API health, connectivity, vulnerabilities ─────────
+async def _agent_security() -> list:
+    findings = []
+    try:
+        # 4a. API keys presence
+        if not KUCOIN_API_KEY:
+            findings.append({"agent": "Security", "severity": "critical",
+                "text": "KUCOIN_API_KEY not configured"})
+        if not BOT_TOKEN:
+            findings.append({"agent": "Security", "severity": "critical",
+                "text": "BOT_TOKEN not configured — Telegram inoperable"})
+        if not API_SECRET:
+            findings.append({"agent": "Security", "severity": "warning",
+                "text": "API_SECRET not set — Mini App auth disabled"})
+
+        # 4b. KuCoin API connectivity
+        try:
+            prices = await get_all_prices()
+            if not prices.get("success"):
+                findings.append({"agent": "Security", "severity": "critical",
+                    "text": "KuCoin price API unreachable"})
+        except Exception as e:
+            findings.append({"agent": "Security", "severity": "critical",
+                "text": f"KuCoin API error: {str(e)[:60]}"})
+
+        # 4c. ByBit connectivity (if enabled)
+        if BYBIT_ENABLED:
+            try:
+                bb = await bybit_get_balance()
+                if not bb.get("success"):
+                    findings.append({"agent": "Security", "severity": "warning",
+                        "text": f"ByBit API issue: {bb.get('error', '?')[:60]}"})
+            except Exception as e:
+                findings.append({"agent": "Security", "severity": "warning",
+                    "text": f"ByBit connectivity error: {str(e)[:60]}"})
+
+        # 4d. Database health
+        if db._pool:
+            try:
+                async with db._pool.acquire() as conn:
+                    await conn.fetchval("SELECT 1")
+            except Exception as e:
+                findings.append({"agent": "Security", "severity": "critical",
+                    "text": f"PostgreSQL unreachable: {str(e)[:60]}"})
+        else:
+            findings.append({"agent": "Security", "severity": "warning",
+                "text": "PostgreSQL pool not initialized"})
+
+        # 4e. WebSocket health
+        if not _ws_prices:
+            findings.append({"agent": "Security", "severity": "warning",
+                "text": "WebSocket price feed empty — possible disconnect"})
+
+        # 4f. Error rate from activity log
+        recent_errors = sum(1 for entry in _activity_log[-50:]
+                           if "error" in str(entry).lower() or "fail" in str(entry).lower())
+        if recent_errors > 10:
+            findings.append({"agent": "Security", "severity": "warning",
+                "text": f"High error rate: {recent_errors}/50 recent log entries contain errors"})
+
+        if not findings:
+            findings.append({"agent": "Security", "severity": "info",
+                "text": "All systems connected. API keys valid. DB healthy."})
+    except Exception as e:
+        findings.append({"agent": "Security", "severity": "warning",
+            "text": f"Security agent error: {str(e)[:100]}"})
+    return findings
+
+# ── Agent 5: Optimizer — parameter tuning suggestions ─────────────────────
+async def _agent_optimizer() -> list:
+    findings = []
+    try:
+        total = _perf_stats["total_trades"]
+        if total < 10:
+            findings.append({"agent": "Optimizer", "severity": "info",
+                "text": f"Need 10+ trades for optimization (current: {total})"})
+            return findings
+
+        wr = _perf_stats["wins"] / max(1, total) * 100
+        avg_pnl = _perf_stats["total_pnl"] / max(1, total)
+
+        # 5a. COOLDOWN optimization
+        # If many trades happen and WR is low → increase cooldown
+        if wr < 40 and COOLDOWN < 900:
+            findings.append({"agent": "Optimizer", "severity": "suggestion",
+                "text": f"Low WR ({wr:.0f}%) + short cooldown ({COOLDOWN}s). "
+                        f"Suggestion: increase COOLDOWN to {min(COOLDOWN + 300, 1800)}s"})
+        elif wr > 60 and COOLDOWN > 600:
+            findings.append({"agent": "Optimizer", "severity": "suggestion",
+                "text": f"High WR ({wr:.0f}%). Cooldown ({COOLDOWN}s) could be reduced to {max(COOLDOWN - 120, 300)}s for more volume"})
+
+        # 5b. RISK_PER_TRADE optimization
+        if wr > 55 and avg_pnl > 0 and RISK_PER_TRADE < 0.12:
+            findings.append({"agent": "Optimizer", "severity": "suggestion",
+                "text": f"Consistent profits (avg ${avg_pnl:.3f}/trade). "
+                        f"RISK_PER_TRADE could increase from {RISK_PER_TRADE} to {min(RISK_PER_TRADE + 0.02, 0.15)}"})
+        elif wr < 40 and RISK_PER_TRADE > 0.08:
+            findings.append({"agent": "Optimizer", "severity": "suggestion",
+                "text": f"Low WR ({wr:.0f}%). Reduce RISK_PER_TRADE from {RISK_PER_TRADE} to {max(RISK_PER_TRADE - 0.02, 0.05)}"})
+
+        # 5c. MIN_Q_SCORE fine-tuning
+        q_win = _perf_stats.get("avg_q_score_win", 0)
+        q_loss = _perf_stats.get("avg_q_score_loss", 0)
+        if q_win and q_loss:
+            sweet_spot = int((q_win + q_loss) / 2) + 2
+            sweet_spot = max(65, min(sweet_spot, 85))
+            if abs(sweet_spot - MIN_Q_SCORE) >= 4:
+                findings.append({"agent": "Optimizer", "severity": "suggestion",
+                    "text": f"Q-Score sweet spot: {sweet_spot} (based on win avg {q_win:.0f} vs loss avg {q_loss:.0f}). "
+                            f"Current: {MIN_Q_SCORE}"})
+
+        # 5d. Earn utilization check
+        try:
+            bal = await get_balance()
+            idle_usdt = bal.get("available_usdt", 0) if bal.get("success") else 0
+            earn_total = sum(p.get("amount", 0) for p in _earn_positions)
+            if idle_usdt > 10 and earn_total < idle_usdt * 0.5:
+                findings.append({"agent": "Optimizer", "severity": "suggestion",
+                    "text": f"${idle_usdt:.2f} idle USDT available. Only ${earn_total:.2f} in Earn. "
+                            f"Consider /earnplace for APR income"})
+        except Exception:
+            pass
+
+        # 5e. Trading hours analysis
+        if db._pool:
+            try:
+                async with db._pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        "SELECT EXTRACT(HOUR FROM created_at) as hr, "
+                        "COUNT(*) as cnt, SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END) as wins "
+                        "FROM trades WHERE status='closed' GROUP BY hr ORDER BY cnt DESC LIMIT 5"
+                    )
+                    if rows:
+                        best_hr = max(rows, key=lambda r: r["wins"] / max(1, r["cnt"]))
+                        worst_hr = min(rows, key=lambda r: r["wins"] / max(1, r["cnt"]))
+                        bwr = best_hr["wins"] / max(1, best_hr["cnt"]) * 100
+                        wwr = worst_hr["wins"] / max(1, worst_hr["cnt"]) * 100
+                        if bwr - wwr > 20 and best_hr["cnt"] >= 3:
+                            findings.append({"agent": "Optimizer", "severity": "info",
+                                "text": f"Best hour: {int(best_hr['hr'])}:00 UTC (WR {bwr:.0f}%), "
+                                        f"Worst: {int(worst_hr['hr'])}:00 UTC (WR {wwr:.0f}%)"})
+            except Exception:
+                pass
+
+        if not findings:
+            findings.append({"agent": "Optimizer", "severity": "info",
+                "text": "Parameters look well-tuned for current market conditions"})
+    except Exception as e:
+        findings.append({"agent": "Optimizer", "severity": "warning",
+            "text": f"Optimizer error: {str(e)[:100]}"})
+    return findings
+
+# ── Agency Engine — orchestrator ──────────────────────────────────────────
+_AGENCY_AGENTS = [
+    ("🔍 Auditor",   _agent_auditor),
+    ("⚠️ Risk",      _agent_risk),
+    ("📊 Strategy",  _agent_strategy),
+    ("🛡 Security",  _agent_security),
+    ("⚙️ Optimizer", _agent_optimizer),
+]
+
+async def agency_run_cycle() -> dict:
+    """Run all 5 Agency Agents, collect findings, return report."""
+    all_findings = []
+    agent_reports = {}
+    t0 = time.time()
+
+    for name, agent_fn in _AGENCY_AGENTS:
+        try:
+            result = await asyncio.wait_for(agent_fn(), timeout=30)
+            all_findings.extend(result)
+            criticals = sum(1 for f in result if f["severity"] == "critical")
+            warnings = sum(1 for f in result if f["severity"] == "warning")
+            agent_reports[name] = {
+                "status": "🔴" if criticals else ("🟡" if warnings else "🟢"),
+                "findings": len(result),
+                "criticals": criticals,
+                "warnings": warnings,
+            }
+        except asyncio.TimeoutError:
+            all_findings.append({"agent": name, "severity": "warning",
+                "text": f"{name} timed out (30s)"})
+            agent_reports[name] = {"status": "⏱", "findings": 1, "criticals": 0, "warnings": 1}
+        except Exception as e:
+            all_findings.append({"agent": name, "severity": "warning",
+                "text": f"{name} crashed: {str(e)[:80]}"})
+            agent_reports[name] = {"status": "💥", "findings": 1, "criticals": 0, "warnings": 1}
+
+    elapsed = time.time() - t0
+    criticals = [f for f in all_findings if f["severity"] == "critical"]
+    warnings = [f for f in all_findings if f["severity"] == "warning"]
+    suggestions = [f for f in all_findings if f["severity"] == "suggestion"]
+
+    summary = (f"Agency Agents v10.5 — {len(all_findings)} findings in {elapsed:.1f}s\n"
+               f"🔴 Critical: {len(criticals)} · 🟡 Warning: {len(warnings)} · "
+               f"💡 Suggestions: {len(suggestions)}")
+
+    return {
+        "findings": all_findings,
+        "agent_reports": agent_reports,
+        "summary": summary,
+        "criticals": len(criticals),
+        "elapsed": elapsed,
+    }
+
+async def agency_agent_loop():
+    """v10.5.0: Background loop — runs Agency Agents every 30 min."""
+    await asyncio.sleep(120)  # let other systems initialize first
+    while True:
+        try:
+            result = await agency_run_cycle()
+            _agency_state["last_run"] = datetime.utcnow().isoformat()
+            _agency_state["cycle"] += 1
+            _agency_state["findings"] = result["findings"]
+            _agency_state["summary"] = result["summary"]
+            _agency_state["agent_reports"] = result["agent_reports"]
+
+            # Alert on critical findings
+            if result["criticals"] > 0:
+                criticals = [f for f in result["findings"] if f["severity"] == "critical"]
+                msg = f"🚨 <b>Agency Alert — {result['criticals']} critical issues</b>\n\n"
+                for f in criticals[:5]:
+                    msg += f"• <b>[{html_mod.escape(f['agent'])}]</b> {html_mod.escape(f['text'])}\n"
+                warnings_list = [f for f in result["findings"] if f["severity"] == "warning"]
+                if warnings_list:
+                    msg += f"\n⚠️ + {len(warnings_list)} warnings"
+                suggestions_list = [f for f in result["findings"] if f["severity"] == "suggestion"]
+                if suggestions_list:
+                    msg += f"\n💡 + {len(suggestions_list)} suggestions"
+                msg += f"\n\n🕐 Cycle #{_agency_state['cycle']} · {datetime.utcnow().strftime('%H:%M UTC')}"
+                await notify(msg)
+            # Periodic healthy report every 6 cycles (3 hours)
+            elif _agency_state["cycle"] % 6 == 1:
+                suggestions_list = [f for f in result["findings"] if f["severity"] == "suggestion"]
+                msg = f"🤖 <b>Agency Report #{_agency_state['cycle']}</b>\n\n"
+                for name, report in result["agent_reports"].items():
+                    msg += f"{report['status']} {html_mod.escape(name)}\n"
+                if suggestions_list:
+                    msg += "\n💡 <b>Suggestions:</b>\n"
+                    for s in suggestions_list[:3]:
+                        msg += f"• {html_mod.escape(s['text'][:120])}\n"
+                msg += f"\n✅ All systems nominal · {datetime.utcnow().strftime('%H:%M UTC')}"
+                await notify(msg)
+
+            log_activity(f"[agency] cycle #{_agency_state['cycle']}: "
+                        f"{result['criticals']} critical, {len(result['findings'])} total findings")
+        except Exception as e:
+            print(f"[agency] loop error: {e}", flush=True)
+        await asyncio.sleep(1800)  # every 30 minutes
+
+@app.get("/api/agency/status")
+async def api_agency_status(_auth=Depends(verify_api_key)):
+    """v10.5.0: Agency Agent status and last findings."""
+    return _agency_state
+
+@app.get("/api/agency/run")
+async def api_agency_run(_auth=Depends(verify_api_key)):
+    """v10.5.0: Force immediate Agency Agent cycle."""
+    result = await agency_run_cycle()
+    _agency_state["last_run"] = datetime.utcnow().isoformat()
+    _agency_state["cycle"] += 1
+    _agency_state["findings"] = result["findings"]
+    _agency_state["summary"] = result["summary"]
+    _agency_state["agent_reports"] = result["agent_reports"]
+    return result
 
 @app.get("/api/public/performance")
 async def api_public_performance():
