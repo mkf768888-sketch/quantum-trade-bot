@@ -47,7 +47,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.4.2")
+app = FastAPI(title="QuantumTrade AI", version="10.4.3")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -1464,8 +1464,8 @@ async def earn_auto_place_idle(exchange: str = "auto") -> dict:
 
 
 async def earn_multi_asset_place() -> dict:
-    """v10.4: Place non-USDT spot assets (ETH, BTC, DOT, etc.) into Flexible Savings.
-    Scans KuCoin spot balances, finds Earn products for each coin, subscribes.
+    """v10.4.3: Place non-USDT spot assets (ETH, BTC, DOT, etc.) into Flexible Savings.
+    Scans KuCoin MAIN + TRADE account balances, finds Earn products for each coin, subscribes.
     Only places coins worth >$5 to avoid dust-level subscriptions."""
     if not EARN_ENABLED:
         return {"success": False, "reason": "earn disabled"}
@@ -1475,28 +1475,65 @@ async def earn_multi_asset_place() -> dict:
 
     result = {"placed": [], "skipped": [], "errors": []}
 
-    # Step 1: Get all spot balances on KuCoin
+    # Step 1: Get all spot balances on KuCoin — check BOTH main and trade accounts
+    # KuCoin Earn withdraws from MAIN account, so we need to check main first
     try:
-        spot = await get_spot_balances()  # returns {pair: {currency, balance, available, price, usdt_value}}
+        spot = {}
+        for acct_type in ["main", "trade"]:
+            endpoint = f"/api/v1/accounts?type={acct_type}"
+            try:
+                async with aiohttp.ClientSession() as s:
+                    r = await s.get(KUCOIN_BASE_URL + endpoint,
+                                    headers=kucoin_headers("GET", endpoint),
+                                    timeout=aiohttp.ClientTimeout(total=10))
+                    data = await r.json()
+                    if data.get("code") == "200000":
+                        for acc in data.get("data", []):
+                            bal = float(acc.get("balance", 0))
+                            avail = float(acc.get("available", 0))
+                            cur = acc.get("currency", "")
+                            if bal > 0 and cur in MULTI_EARN_COINS:
+                                pair = f"{cur}-USDT"
+                                price = await get_ticker(pair)
+                                if price > 0:
+                                    key = f"{pair}_{acct_type}"
+                                    spot[key] = {
+                                        "currency": cur,
+                                        "available": avail,
+                                        "balance": bal,
+                                        "price": price,
+                                        "usdt_value": round(bal * price, 4),
+                                        "account_type": acct_type,
+                                    }
+                                    print(f"[earn_multi] {cur} in {acct_type}: bal={bal}, avail={avail}, ~${bal*price:.2f}", flush=True)
+            except Exception as e:
+                result["errors"].append(f"balance_{acct_type}: {e}")
     except Exception as e:
         return {"success": False, "reason": f"balance error: {e}"}
 
     if not spot:
-        return {"success": False, "reason": "no spot positions found"}
+        return {"success": False, "reason": "no spot positions found (checked main + trade accounts)"}
+
+    # Merge same coin from main+trade, prefer main (Earn uses main)
+    merged = {}
+    for key, info in spot.items():
+        coin = info["currency"]
+        if coin not in merged or info["account_type"] == "main":
+            merged[coin] = info
+        elif coin in merged and info["account_type"] == "trade":
+            # Add trade balance if main doesn't have it
+            if merged[coin]["account_type"] != "main":
+                merged[coin] = info
 
     # Step 2: For each coin, check Earn products and subscribe
-    for pair, info in spot.items():
-        coin = info["currency"]
-        if coin not in MULTI_EARN_COINS:
-            result["skipped"].append(f"{coin}: not in supported list")
-            continue
+    for coin, info in merged.items():
         if info["usdt_value"] < MULTI_EARN_MIN_USD:
             result["skipped"].append(f"{coin}: ${info['usdt_value']:.2f} < ${MULTI_EARN_MIN_USD} min")
             continue
 
         available = info["available"]
         if available <= 0:
-            result["skipped"].append(f"{coin}: 0 available (all in orders?)")
+            result["skipped"].append(f"{coin}: 0 available ({info['account_type']} account)")
             continue
 
         # Try KuCoin Earn first
@@ -1512,7 +1549,9 @@ async def earn_multi_asset_place() -> dict:
                 apr_pct = round(float(apr_raw) * 100, 2) if float(apr_raw or 0) < 1 else round(float(apr_raw), 2)
 
                 if place_amount >= min_amt and pid:
-                    sub = await kucoin_earn_subscribe(pid, place_amount)
+                    # v10.4.3: Use MAIN account for Earn (KuCoin Earn withdraws from MAIN)
+                    acct = "MAIN" if info.get("account_type") == "main" else "TRADE"
+                    sub = await kucoin_earn_subscribe(pid, place_amount, account_type=acct)
                     if sub["success"]:
                         _earn_stats["subscriptions"] += 1
                         _earn_stats["last_action"] = time.time()
@@ -2083,7 +2122,9 @@ async def get_all_futures_fills(symbol: str = "", pages: int = 10, days_back: in
 
     for _ in range(pages):
         sym_filter = f"&symbol={symbol}" if symbol else ""
-        endpoint = f"/api/v1/fills?type=trade&pageSize=100&currentPage={current_page}&startAt={start_at}&endAt={end_at}{sym_filter}"
+        # v10.4.3: KuCoin Futures fills — don't pass startAt/endAt (causes typeInvalid)
+        # Without these, API returns recent fills only; orders fallback covers history
+        endpoint = f"/api/v1/fills?pageSize=100&currentPage={current_page}{sym_filter}"
         try:
             async with aiohttp.ClientSession() as s:
                 r = await s.get(
@@ -2166,19 +2207,25 @@ async def compute_real_futures_pnl() -> dict:
         # Fallback: try done orders (KuCoin keeps these longer)
         orders = await get_futures_done_orders(pages=10)
         if orders:
-            # Convert orders to fills-like format
             fills = []
             for o in orders:
-                if float(o.get("dealSize", 0)) > 0:
+                deal_size = float(o.get("dealSize", 0) or 0)
+                deal_funds = float(o.get("dealFunds", 0) or 0)
+                price = float(o.get("price", 0) or 0)
+                fee = float(o.get("fee", 0) or 0)
+                # Use dealSize and dealFunds for filled orders; skip unfilled
+                if deal_size > 0:
+                    avg_price = deal_funds / deal_size if deal_funds > 0 and deal_size > 0 else price
                     fills.append({
                         "symbol": o.get("symbol", ""),
                         "side": o.get("side", ""),
-                        "price": o.get("dealFunds", 0) and str(float(o["dealFunds"]) / max(float(o.get("dealSize", 1)), 0.0001)) or o.get("price", "0"),
-                        "size": o.get("dealSize", "0"),
-                        "fee": o.get("fee", "0"),
+                        "price": str(avg_price),
+                        "size": str(deal_size),
+                        "fee": str(fee),
                     })
+                    print(f"[pnl_calc] order: {o.get('symbol')} {o.get('side')} size={deal_size} price={avg_price:.2f} fee={fee:.6f}", flush=True)
             data_source = "orders"
-            print(f"[pnl_calc] using {len(fills)} done orders as fallback", flush=True)
+            print(f"[pnl_calc] using {len(fills)} done orders as fallback (from {len(orders)} total orders)", flush=True)
 
     if not fills:
         return {"success": False, "reason": "no fills/orders from KuCoin API (90 days lookback)"}
@@ -6487,19 +6534,19 @@ async def _tg_earn_all(chat_id: int):
         if result.get("errors"):
             text += f"\n⚠️ <b>Ошибок:</b> {len(result['errors'])}"
             for e in result["errors"][:3]:
-                text += f"\n  ❌ {e}"
+                text += f"\n  ❌ {html_mod.escape(str(e))}"
         await _tg_send(chat_id, text)
     else:
-        reason = result.get("reason", "нет подходящих монет")
+        reason = html_mod.escape(result.get("reason", "нет подходящих монет"))
         text = f"ℹ️ <b>Нечего размещать</b>\n{reason}"
         if result.get("skipped"):
             text += "\n\n<b>Детали:</b>"
             for s in result["skipped"][:5]:
-                text += f"\n  • {s}"
+                text += f"\n  • {html_mod.escape(str(s))}"
         if result.get("errors"):
             text += "\n\n<b>Ошибки:</b>"
             for e in result["errors"][:3]:
-                text += f"\n  ❌ {e}"
+                text += f"\n  ❌ {html_mod.escape(str(e))}"
         await _tg_send(chat_id, text)
 
 
