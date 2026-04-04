@@ -1,10 +1,16 @@
 """
-QuantumTrade AI - FastAPI Backend v10.9.4
+QuantumTrade AI - FastAPI Backend v10.9.10
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.9.10: CRITICAL FIX — ROUTER_TRADE_RESERVE NameError: router_loop crashed every 2 min
+          with 'name ROUTER_TRADE_RESERVE is not defined'. Fixed 3 occurrences in Step 2.5
+          (Spot Replenishment) to use correct name ROUTER_TRADE_RESERVE_USDT.
+          FIX — startup_sync too conservative: skipped exchange scan when already_open >=
+          MAX_OPEN_POSITIONS, missing positions when count matches but symbols differ.
+          Now always scans exchange and uses per-symbol dedup (not count-based early return).
 v10.9.4: CRITICAL FIX — double-reservation bug: Router reserved $3 in spot, then trade
          cycle subtracted another $3 → $0 tradeable → 0 trades in 97h.
          Fix: trade cycle now only subtracts ARB_RESERVE_USDT (not ROUTER_TRADE_RESERVE).
@@ -209,11 +215,11 @@ async def sync_open_positions_from_exchange() -> int:
     Returns: number of positions restored."""
     global trade_log
 
-    # Only sync if trade_log has no open positions (avoids double-counting if DB already restored them)
+    # v10.9.10: Always scan exchange — use per-symbol check, not count-based early return.
+    # Old behaviour: skip entirely if already_open >= MAX_OPEN_POSITIONS.
+    # Bug: with MAX=2 and 2 from disk but 4 real positions, the extra 2 were never restored.
     already_open = sum(1 for t in trade_log if t.get("status") == "open")
-    if already_open >= MAX_OPEN_POSITIONS:
-        print(f"[startup_sync] {already_open} open positions already in trade_log — skipping exchange sync")
-        return 0
+    print(f"[startup_sync] {already_open} open positions in trade_log — scanning exchange for missing ones")
 
     restored = 0
     try:
@@ -2360,8 +2366,8 @@ async def smart_money_route() -> dict:
     # Without this, ByBit stays stuck at $1 forever because pre_buy is never triggered.
     if EARN_ENABLED and _earn_positions:
         for exch, balance in [("kucoin", kc_usdt), ("bybit", bb_usdt)]:
-            if balance < ROUTER_TRADE_RESERVE:
-                needed = round(ROUTER_TRADE_RESERVE - balance, 2)
+            if balance < ROUTER_TRADE_RESERVE_USDT:
+                needed = round(ROUTER_TRADE_RESERVE_USDT - balance, 2)
                 earn_pos = [p for p in _earn_positions if p["exchange"] == exch and p["coin"] == "USDT"]
                 if earn_pos and needed >= 1.0:
                     result = await earn_redeem_for_trading(exch, needed)
@@ -2369,7 +2375,7 @@ async def smart_money_route() -> dict:
                     if redeemed > 0:
                         actions.append({"exchange": exch, "action": "restore_spot", "amount": redeemed})
                         log_activity(f"[router] 💰 {exch}: восстановлен спот +${redeemed:.2f} "
-                                     f"(было ${balance:.2f} < резерв ${ROUTER_TRADE_RESERVE})")
+                                     f"(было ${balance:.2f} < резерв ${ROUTER_TRADE_RESERVE_USDT})")
 
     # ── Step 3: Place idle funds into Earn ────────────────────────────────────
     if EARN_ENABLED:
