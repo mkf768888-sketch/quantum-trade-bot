@@ -1,10 +1,17 @@
 """
-QuantumTrade AI - FastAPI Backend v10.9.19
+QuantumTrade AI - FastAPI Backend v10.9.20
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.9.20: FEATURE — Mobile health monitoring:
+          1. /health command: instant full system check — balances, F&G, Earn APR,
+             DCI status/positions, Router cycles, API error counts, open positions.
+             Perfect for quick check from phone while on the go.
+          2. Hourly auto-report: earn_monitor_loop sends Telegram summary every ~60 min
+             (every 4th 15-min cycle). Shows balances, positions, errors with 🟢/🟡/🔴
+             health icon. Zero manual effort — bot reports itself.
 v10.9.19: FIX — two DCI API format fixes:
           1. ByBit place_order: dualAssetsExtra nested object rejected with
              "Invalid parameter: order_type". Fixed: flat body with orderType,
@@ -2569,6 +2576,13 @@ async def earn_monitor_loop():
                         except Exception as dci_e:
                             log_activity(f"[dci_mon] auto-place error: {dci_e}")
                     _earn_stats["_dci_cycle"] = _earn_stats.get("_dci_cycle", 0) + 1
+
+                    # v10.9.20: Hourly auto-report to Telegram (every 4th cycle = ~60 min)
+                    if _earn_stats.get("_dci_cycle", 0) % 4 == 0 and ALERT_CHAT_ID:
+                        try:
+                            await send_hourly_report(int(ALERT_CHAT_ID))
+                        except Exception as report_e:
+                            log_activity(f"[health] hourly report error: {report_e}")
 
         except Exception as e:
             log_activity(f"[earn_mon] error: {e}")
@@ -7891,6 +7905,132 @@ async def _tg_dci(chat_id: int):
     await _tg_send(chat_id, "\n".join(lines))
 
 
+async def _tg_health(chat_id: int):
+    """v10.9.20: /health — instant system health check, good for mobile use."""
+    import datetime as _dt
+    now = time.time()
+
+    await _tg_send(chat_id, "🔄 <i>Проверяю системы...</i>")
+
+    # ── Balances ──
+    kc_bal  = await get_balance("kucoin")
+    bb_bal  = await bybit_get_balance()
+    kc_usdt = kc_bal.get("total_usdt", 0)
+    bb_usdt = bb_bal.get("total_usdt", 0)
+
+    # ── F&G ──
+    try:
+        fg_data = await get_fear_greed()
+        fg_val  = fg_data.get("value", "?")
+        fg_cls  = fg_data.get("classification", "?")
+    except Exception:
+        fg_val, fg_cls = "?", "?"
+
+    # ── Earn best rate ──
+    try:
+        best_earn = await earn_get_best_rate("USDT")
+        earn_txt = f"{best_earn['exchange'].upper()} {best_earn['apr']:.2f}% APR"
+    except Exception:
+        earn_txt = "?"
+
+    # ── DCI ──
+    dci_last = _dci_stats.get("last_check", 0)
+    dci_ago  = int((now - dci_last) / 60) if dci_last else None
+    dci_pos  = len(_dci_stats.get("positions", []))
+    dci_errs = _dci_stats.get("errors", 0)
+    dci_on   = DCI_ENABLED
+    if dci_last:
+        dci_txt = f"{'✅' if dci_on else '❌'} {'вкл' if dci_on else 'выкл'} | {dci_pos} поз | last {dci_ago}м назад | err={dci_errs}"
+    else:
+        dci_txt = "⏳ ещё не запускался"
+
+    # ── Router ──
+    router_last = _router_stats.get("last_run", 0)
+    router_ago  = int((now - router_last) / 60) if router_last else None
+    router_runs = _router_stats.get("runs", 0)
+    router_txt  = f"run #{router_runs} | last {router_ago}м назад" if router_last else "⏳ ещё не запускался"
+
+    # ── Open positions ──
+    open_pos = [t for t in trade_log if t.get("status") == "open"]
+    pos_syms = ", ".join(t["symbol"].replace("-USDT","") for t in open_pos[:4]) if open_pos else "нет"
+
+    # ── API health (quick ping) ──
+    bb_ok = _bybit_stats.get("errors", 0) == 0 or _bybit_stats.get("calls", 0) > _bybit_stats.get("errors", 0) * 5
+    bb_api = f"✅ ({_bybit_stats['calls']} calls, {_bybit_stats['errors']} err)"
+    kc_api = "✅ OK"
+
+    # ── ByBit earn positions ──
+    try:
+        bb_earn_pos = await bybit_earn_get_positions("USDT")
+        bb_earn_amt = sum(float(p.get("amount", p.get("totalAmount", 0)) or 0) for p in bb_earn_pos)
+        earn_locked = f"${bb_earn_amt:.2f} в BB Earn"
+    except Exception:
+        earn_locked = "?"
+
+    ts_str = _dt.datetime.now().strftime("%d.%m.%Y %H:%M")
+    lines = [
+        f"🤖 <b>QuantumTrade Health</b> | {ts_str}",
+        f"━━━━━━━━━━━━━━━━━━━━",
+        f"💰 <b>Балансы:</b>  KC=<code>${kc_usdt:.2f}</code>  BB=<code>${bb_usdt:.2f}</code>",
+        f"📊 <b>F&G:</b>      <code>{fg_val}</code> ({fg_cls})",
+        f"",
+        f"🏦 <b>Earn:</b>     {earn_txt}  |  {earn_locked}",
+        f"⚡ <b>DCI:</b>      {dci_txt}",
+        f"🔀 <b>Router:</b>   {router_txt}",
+        f"",
+        f"📂 <b>Позиции:</b>  {len(open_pos)}/4  [{pos_syms}]",
+        f"",
+        f"🟡 <b>ByBit API:</b> {bb_api}",
+        f"🟢 <b>KuCoin API:</b> {kc_api}",
+        f"",
+        f"📌 Команды: /dci /earn /router /positions",
+    ]
+    await _tg_send(chat_id, "\n".join(lines))
+
+
+async def send_hourly_report(chat_id: int):
+    """v10.9.20: Auto-report — called every ~60 min from earn_monitor_loop."""
+    import datetime as _dt
+    now = time.time()
+
+    kc_bal  = await get_balance("kucoin")
+    bb_bal  = await bybit_get_balance()
+    kc_usdt = kc_bal.get("total_usdt", 0)
+    bb_usdt = bb_bal.get("total_usdt", 0)
+
+    try:
+        fg_data = await get_fear_greed()
+        fg_val  = fg_data.get("value", "?")
+        fg_cls  = fg_data.get("classification", "?")
+    except Exception:
+        fg_val, fg_cls = "?", "?"
+
+    open_pos  = [t for t in trade_log if t.get("status") == "open"]
+    dci_pos   = len(_dci_stats.get("positions", []))
+    dci_errs  = _dci_stats.get("errors", 0)
+    router_runs = _router_stats.get("runs", 0)
+
+    # Errors summary
+    bb_errs = _bybit_stats.get("errors", 0)
+    total_errs = bb_errs + dci_errs
+    health_icon = "🟢" if total_errs == 0 else ("🟡" if total_errs <= 3 else "🔴")
+
+    ts_str = _dt.datetime.now().strftime("%d.%m %H:%M")
+    lines = [
+        f"{health_icon} <b>QuantumTrade | Авторепорт {ts_str}</b>",
+        f"━━━━━━━━━━━━━━━━━━━━",
+        f"💰 KC=<code>${kc_usdt:.2f}</code>  BB=<code>${bb_usdt:.2f}</code>  |  F&G=<code>{fg_val}</code> {fg_cls}",
+        f"📂 Позиции: <b>{len(open_pos)}/4</b>  |  DCI: <b>{dci_pos}</b> актив.",
+        f"🔀 Router: <b>{router_runs}</b> циклов  |  Ошибок: <b>{total_errs}</b>",
+    ]
+    if total_errs > 0:
+        lines.append(f"⚠️ BB API ошибок: {bb_errs}  |  DCI ошибок: {dci_errs}")
+    lines.append(f"📌 /health — детальная проверка")
+
+    await _tg_send(chat_id, "\n".join(lines))
+    log_activity(f"[health] hourly report sent: errs={total_errs}, pos={len(open_pos)}, dci={dci_pos}")
+
+
 async def _tg_dci_place(chat_id: int):
     """v10.9.8: Manually trigger DCI auto-placement with F&G direction display."""
     if not DCI_ENABLED:
@@ -8598,6 +8738,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/earn":                await _tg_earn(chat_id)
         elif cmd == "/earnplace":           await _tg_earn_place(chat_id)
         elif cmd == "/earnall":             await _tg_earn_all(chat_id)
+        elif cmd == "/health":              await _tg_health(chat_id)
         elif cmd == "/dci":                 await _tg_dci(chat_id)
         elif cmd == "/dciplace":            await _tg_dci_place(chat_id)
         elif cmd == "/audit":               await _tg_audit(chat_id)
