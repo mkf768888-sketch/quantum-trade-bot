@@ -1205,8 +1205,8 @@ async def kucoin_earn_subscribe(product_id: str, amount: float, account_type: st
                 return {"success": True, "order_id": data.get("data", {}).get("orderId", ""),
                         "exchange": "kucoin"}
             else:
-                log_activity(f"[earn/kc] subscribe error: {data.get('msg', '?')} (product={product_id}, amount={amount})")
-                return {"success": False, "error": data.get("msg", "unknown")}
+                log_activity(f"[earn/kc] subscribe error: code={data.get('code','?')} msg={data.get('msg', '?')} (product={product_id}, amount={amount})")
+                return {"success": False, "error": f"code={data.get('code','?')} {data.get('msg', 'unknown')}"}
     except Exception as e:
         log_activity(f"[earn/kc] subscribe exception: {e}")
         return {"success": False, "error": str(e)}
@@ -1461,10 +1461,13 @@ async def earn_auto_place_idle(exchange: str = "auto") -> dict:
         # Prefer the exchange where the money already sits (avoid transfer fees)
         if exch == "kucoin":
             kc_products = await kucoin_earn_get_savings_products("USDT")
+            if not kc_products:
+                log_activity(f"[earn/kc] no USDT products found — skipping subscribe (amount=${amount:.2f})")
             if kc_products:
                 p = kc_products[0]
                 pid = str(p.get("id", p.get("productId", "")))  # v10.2.3: KuCoin uses "id"
                 min_amt = float(p.get("userLowerLimit", p.get("minInvestAmount", p.get("minPurchaseAmount", 1))))
+                log_activity(f"[earn/kc] product found: pid={pid}, min_amt={min_amt:.2f}, our_amount={amount:.2f}")
                 if amount >= min_amt and pid:
                     sub = await kucoin_earn_subscribe(pid, round(amount, 2))
                     if sub["success"]:
@@ -9887,8 +9890,10 @@ class ManualTrade(BaseModel):
 # In-memory activity log
 activity_log = []
 def log_activity(msg: str):
-    activity_log.append({"ts": datetime.utcnow().isoformat(), "msg": msg})
+    ts = datetime.utcnow().isoformat()
+    activity_log.append({"ts": ts, "msg": msg})
     if len(activity_log) > 100: activity_log.pop(0)
+    print(f"[{ts}] {msg}", flush=True)
 
 @app.get("/api/debug/internal")
 async def api_debug_internal(_auth=Depends(verify_api_key)):  # v7.3.3: auth required (renamed to avoid duplicate route)
