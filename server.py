@@ -58,7 +58,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.9.5")
+app = FastAPI(title="QuantumTrade AI", version="10.9.7")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -1360,6 +1360,245 @@ async def bybit_earn_get_positions(coin: str = "USDT") -> list:
     return []
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# v10.9.7: ByBit DualAssets DCI — Options-based Structured Products
+# BuyLow  = cash-secured put  (earn APY while waiting to buy at lower price)
+# SellHigh = covered call     (earn APY while waiting to sell at higher price)
+# APY precision: apyE8 / 10^8  (e.g. 857565000 / 10^8 = 8.58%)
+# CRITICAL: selectPrice + apyE8 MUST exactly match quote or order rejected
+# ══════════════════════════════════════════════════════════════════════════════
+
+_dci_stats: dict = {
+    "subscriptions": 0,
+    "errors": 0,
+    "total_invested": 0.0,
+    "positions": [],
+    "last_check": 0.0,
+}
+DCI_ENABLED = os.getenv("DCI_ENABLED", "false").lower() == "true"
+DCI_MIN_APY_PCT = float(os.getenv("DCI_MIN_APY_PCT", "20.0"))   # min annual APY % to place
+DCI_MAX_INVEST_USDT = float(os.getenv("DCI_MAX_INVEST_USDT", "20.0"))  # max per order
+DCI_DIRECTION = os.getenv("DCI_DIRECTION", "BuyLow")  # BuyLow or SellHigh or Auto
+
+
+async def bybit_dci_get_products(coin: str = None, duration: str = None) -> list:
+    """ByBit Advanced-Earn: GET /v5/earn/advance/product
+    Returns list of available DualAsset products.
+    coin: e.g. 'BTC', 'ETH', 'USDT' (optional filter)
+    duration: e.g. '1D', '3D', '7D', '14D' (optional filter)"""
+    params: dict = {"category": "DualAssets"}
+    if coin:
+        params["coin"] = coin
+    if duration:
+        params["duration"] = duration
+    res = await bybit_request("GET", "/v5/earn/advance/product", params)
+    if not res["success"]:
+        log_activity(f"[dci] get_products error: {res.get('error','?')}")
+        return []
+    items = res["data"].get("list", [])
+    log_activity(f"[dci] get_products: found {len(items)} products")
+    return items
+
+
+async def bybit_dci_get_quote(product_id: str) -> dict:
+    """ByBit Advanced-Earn: GET /v5/earn/advance/product-extra-info
+    Returns buyLowPrice[] and sellHighPrice[] arrays with:
+    {selectPrice, apyE8, minInvestmentAmount, maxInvestmentAmount, settlementTime}
+    CRITICAL: selectPrice+apyE8 must exactly match this response when placing order."""
+    res = await bybit_request("GET", "/v5/earn/advance/product-extra-info", {
+        "productId": str(product_id),
+        "category": "DualAssets",
+    })
+    if not res["success"]:
+        log_activity(f"[dci] get_quote error for {product_id}: {res.get('error','?')}")
+        return {}
+    data = res["data"]
+    buy_low = data.get("buyLowPrice", [])
+    sell_high = data.get("sellHighPrice", [])
+    log_activity(f"[dci] quote {product_id}: {len(buy_low)} BuyLow, {len(sell_high)} SellHigh options")
+    return {"product_id": product_id, "buyLowPrice": buy_low, "sellHighPrice": sell_high}
+
+
+async def bybit_dci_place_order(
+    product_id: str,
+    direction: str,   # "BuyLow" or "SellHigh"
+    amount: float,
+    coin: str,
+    select_price: str,
+    apy_e8: str,
+) -> dict:
+    """ByBit Advanced-Earn: POST /v5/earn/advance/place-order
+    Places a DualAsset (DCI) order.
+    amount: in USDT for BuyLow, in base coin for SellHigh
+    select_price + apy_e8 MUST exactly match quote response."""
+    import uuid
+    order_link_id = f"dci_{uuid.uuid4().hex[:16]}"
+    body = {
+        "category": "DualAssets",
+        "productId": str(product_id),
+        "coin": coin,
+        "amount": str(round(amount, 8)),
+        "orderLinkId": order_link_id,
+        "dualAssetsExtra": {
+            "orderDirection": direction,
+            "selectPrice": str(select_price),
+            "apyE8": str(apy_e8),
+        },
+    }
+    res = await bybit_request("POST", "/v5/earn/advance/place-order", body)
+    if res["success"]:
+        order_id = res["data"].get("orderId", order_link_id)
+        apy_pct = round(int(apy_e8) / 1e8 * 100, 4)
+        log_activity(f"[dci] ✅ placed {direction} ${amount:.2f} {coin} @ strike={select_price} APY={apy_pct:.2f}% orderId={order_id}")
+        _dci_stats["subscriptions"] += 1
+        _dci_stats["total_invested"] += amount
+        _dci_stats["positions"].append({
+            "order_id": order_id,
+            "product_id": product_id,
+            "direction": direction,
+            "coin": coin,
+            "amount": amount,
+            "select_price": select_price,
+            "apy_e8": apy_e8,
+            "apy_pct": apy_pct,
+            "placed_at": time.time(),
+        })
+        return {"success": True, "order_id": order_id, "apy_pct": apy_pct}
+    else:
+        err = res.get("error", "?")
+        log_activity(f"[dci] ❌ place_order error: {err}")
+        _dci_stats["errors"] += 1
+        return {"success": False, "error": err}
+
+
+async def bybit_dci_get_positions() -> list:
+    """ByBit Advanced-Earn: GET /v5/earn/advance/position
+    Returns current DCI positions (open orders and settled)."""
+    res = await bybit_request("GET", "/v5/earn/advance/position", {
+        "category": "DualAssets",
+    })
+    if not res["success"]:
+        log_activity(f"[dci] get_positions error: {res.get('error','?')}")
+        return []
+    items = res["data"].get("list", [])
+    return items
+
+
+async def dci_auto_place_idle() -> dict:
+    """Auto-place idle capital into best DCI product when APY > DCI_MIN_APY_PCT.
+    Flow:
+    1. Get all available DualAsset products
+    2. For each product, get quote (best APY option)
+    3. If APY > threshold AND enough idle capital → place order
+    4. Prefer BuyLow for USDT idle, SellHigh for base coin idle
+    Returns: {placed: [...], skipped: int, reason: str}"""
+    if not DCI_ENABLED:
+        return {"placed": [], "skipped": 0, "reason": "DCI_ENABLED=false"}
+
+    _dci_stats["last_check"] = time.time()
+    placed = []
+
+    try:
+        # Get all available DCI products
+        products = await bybit_dci_get_products()
+        if not products:
+            return {"placed": [], "skipped": 0, "reason": "no_products"}
+
+        # Get ByBit USDT balance (FUND account — where Earn lives)
+        bal_res = await bybit_request("GET", "/v5/account/wallet-balance", {
+            "accountType": "FUND",
+        })
+        usdt_free = 0.0
+        if bal_res["success"]:
+            coins = bal_res["data"].get("list", [{}])[0].get("coin", [])
+            for c in coins:
+                if c.get("coin") == "USDT":
+                    usdt_free = float(c.get("availableToWithdraw", c.get("walletBalance", 0)))
+                    break
+
+        log_activity(f"[dci] auto check: {len(products)} products, USDT free=${usdt_free:.2f}")
+
+        # Need at least $5 idle to consider DCI (leave buffer)
+        if usdt_free < 5.0:
+            return {"placed": [], "skipped": len(products), "reason": f"insufficient_usdt=${usdt_free:.2f}"}
+
+        best_apy = 0.0
+        best_option = None  # {product_id, product, direction, select_price, apy_e8, apy_pct, coin, min_amount}
+
+        for product in products:
+            product_id = str(product.get("productId", product.get("id", "")))
+            if not product_id:
+                continue
+
+            quote = await bybit_dci_get_quote(product_id)
+            if not quote:
+                continue
+
+            # Try BuyLow direction (use USDT idle)
+            if DCI_DIRECTION in ("BuyLow", "Auto"):
+                for opt in quote.get("buyLowPrice", []):
+                    try:
+                        apy_e8 = str(opt.get("apyE8", "0"))
+                        apy_pct = int(apy_e8) / 1e8 * 100
+                        max_invest = float(opt.get("maxInvestmentAmount", 999))
+                        min_invest = float(opt.get("minInvestmentAmount", 1))
+                        select_price = str(opt.get("selectPrice", ""))
+
+                        if apy_pct > best_apy and min_invest <= usdt_free:
+                            best_apy = apy_pct
+                            coin = str(product.get("coin", product.get("baseCoin", "BTC")))
+                            best_option = {
+                                "product_id": product_id,
+                                "direction": "BuyLow",
+                                "coin": coin,
+                                "select_price": select_price,
+                                "apy_e8": apy_e8,
+                                "apy_pct": apy_pct,
+                                "min_amount": min_invest,
+                                "max_amount": max_invest,
+                            }
+                    except Exception:
+                        continue
+
+        if not best_option:
+            return {"placed": [], "skipped": len(products), "reason": "no_viable_options"}
+
+        if best_apy < DCI_MIN_APY_PCT:
+            return {
+                "placed": [], "skipped": len(products),
+                "reason": f"best_apy={best_apy:.2f}%_below_threshold={DCI_MIN_APY_PCT}%"
+            }
+
+        # Place order with best option
+        invest_amount = min(usdt_free * 0.8, DCI_MAX_INVEST_USDT, best_option["max_amount"])
+        invest_amount = max(invest_amount, best_option["min_amount"])
+        invest_amount = round(invest_amount, 2)
+
+        res = await bybit_dci_place_order(
+            product_id=best_option["product_id"],
+            direction=best_option["direction"],
+            amount=invest_amount,
+            coin=best_option["coin"],
+            select_price=best_option["select_price"],
+            apy_e8=best_option["apy_e8"],
+        )
+        if res["success"]:
+            placed.append({
+                "product_id": best_option["product_id"],
+                "direction": best_option["direction"],
+                "coin": best_option["coin"],
+                "amount": invest_amount,
+                "apy_pct": best_apy,
+                "order_id": res["order_id"],
+            })
+
+        return {"placed": placed, "best_apy": best_apy, "skipped": len(products) - 1}
+
+    except Exception as e:
+        log_activity(f"[dci] dci_auto_place_idle error: {e}")
+        return {"placed": [], "skipped": 0, "reason": str(e)}
+
+
 async def earn_get_best_rate(coin: str = "USDT") -> dict:
     """Compare APR across all exchanges, return the best option.
     Returns: {exchange, product_id, apr, min_amount, product_name}"""
@@ -1748,6 +1987,20 @@ async def earn_monitor_loop():
                 best = await earn_get_best_rate("USDT")
                 if best["apr"] > 0:
                     log_activity(f"[earn_mon] best rate: {best['exchange']} {best['apr']}% APR")
+
+                # v10.9.7: DCI auto-placement (every 4th cycle ~1 hour to avoid spam)
+                if DCI_ENABLED and _earn_stats.get("_dci_cycle", 0) % 4 == 0:
+                    try:
+                        dci_result = await dci_auto_place_idle()
+                        if dci_result.get("placed"):
+                            for p in dci_result["placed"]:
+                                log_activity(
+                                    f"[dci_mon] ✅ auto-placed {p['direction']} "
+                                    f"${p['amount']:.2f} {p['coin']} APY={p['apy_pct']:.2f}%"
+                                )
+                    except Exception as dci_e:
+                        log_activity(f"[dci_mon] error: {dci_e}")
+                _earn_stats["_dci_cycle"] = _earn_stats.get("_dci_cycle", 0) + 1
 
         except Exception as e:
             log_activity(f"[earn_mon] error: {e}")
@@ -6597,6 +6850,7 @@ async def _tg_earn(chat_id: int):
         f"Auto-Redeem: перед покупкой → погашение из Savings</i>\n\n"
         f"📌 /earnplace — принудительно разместить idle USDT\n"
         f"📌 /earnall — разместить ВСЕ монеты (ETH/BTC/DOT) в Earn\n"
+        f"⚡ /dci — DualAssets DCI (опционные структурные продукты)\n"
         f"🔄 /router — Smart Money Router (авто-распределение)"
     )
     await _tg_send(chat_id, text)
@@ -6900,6 +7154,125 @@ async def _tg_command_center(chat_id: int):
             [{"text": "⚠️ URL не настроен — задай WEBAPP_URL в Railway", "callback_data": "noop"}]
         ]}
     await _tg_send(chat_id, text, keyboard=kb)
+
+
+async def _tg_dci(chat_id: int):
+    """v10.9.7: DualAssets DCI — show status + available products."""
+    await _tg_send(chat_id, "🔄 <i>Проверяю DCI продукты на ByBit...</i>")
+    products = await bybit_dci_get_products()
+    positions = await bybit_dci_get_positions()
+
+    dci_on = "✅ включён" if DCI_ENABLED else "❌ выключен (DCI_ENABLED=false)"
+    lines = [
+        f"⚡ <b>DualAssets DCI v10.9.7</b>",
+        f"━━━━━━━━━━━━━━━━━━━━━━",
+        f"<b>Статус:</b> {dci_on}",
+        f"<b>Мин APY:</b> <code>{DCI_MIN_APY_PCT}%</code>  |  <b>Макс:</b> <code>${DCI_MAX_INVEST_USDT:.0f}</code>",
+        f"<b>Направление:</b> {DCI_DIRECTION}",
+        f"",
+        f"<b>Продукты:</b> {len(products)} доступно",
+    ]
+
+    # Show top products with quotes (limit to 3 to avoid flood)
+    shown = 0
+    for product in products[:5]:
+        product_id = str(product.get("productId", product.get("id", "")))
+        coin = str(product.get("coin", product.get("baseCoin", "?")))
+        duration = product.get("duration", "?")
+        if not product_id:
+            continue
+        try:
+            quote = await bybit_dci_get_quote(product_id)
+            buy_opts = quote.get("buyLowPrice", [])
+            best_buy = max(buy_opts, key=lambda x: int(x.get("apyE8", 0))) if buy_opts else None
+            if best_buy:
+                apy_pct = round(int(best_buy.get("apyE8", 0)) / 1e8 * 100, 2)
+                strike = best_buy.get("selectPrice", "?")
+                min_inv = float(best_buy.get("minInvestmentAmount", 0))
+                lines.append(f"  📊 <b>{coin}</b> {duration} → BuyLow @ <code>{strike}</code> APY=<code>{apy_pct}%</code> min=<code>${min_inv:.0f}</code>")
+                shown += 1
+                if shown >= 3:
+                    break
+        except Exception:
+            pass
+
+    if shown == 0:
+        lines.append("  ⚠️ Нет доступных продуктов или ошибка API")
+
+    # Current positions
+    lines.append(f"")
+    lines.append(f"<b>Активных позиций:</b> {len(positions)}")
+    for pos in positions[:3]:
+        p_coin = pos.get("coin", "?")
+        p_dir = pos.get("orderDirection", pos.get("direction", "?"))
+        p_amt = pos.get("amount", "?")
+        p_status = pos.get("status", "?")
+        apy_e8 = pos.get("apyE8", "0")
+        try:
+            p_apy = round(int(apy_e8) / 1e8 * 100, 2)
+        except Exception:
+            p_apy = "?"
+        lines.append(f"  💰 {p_dir} {p_amt} {p_coin} APY={p_apy}% [{p_status}]")
+
+    # Session stats
+    lines += [
+        f"",
+        f"<b>За сессию:</b> {_dci_stats['subscriptions']} подписок, ${_dci_stats['total_invested']:.2f} вложено",
+        f"",
+        f"📌 /dciplace — разместить вручную",
+        f"📌 /earn — Flexible Savings",
+    ]
+
+    await _tg_send(chat_id, "\n".join(lines))
+
+
+async def _tg_dci_place(chat_id: int):
+    """v10.9.7: Manually trigger DCI auto-placement."""
+    if not DCI_ENABLED:
+        await _tg_send(
+            chat_id,
+            "❌ <b>DCI выключен</b>\n\n"
+            "Включить: добавь в Railway Variables\n"
+            "<code>DCI_ENABLED=true</code>\n\n"
+            "Дополнительные настройки:\n"
+            "<code>DCI_MIN_APY_PCT=20</code> — мин APY порог\n"
+            "<code>DCI_MAX_INVEST_USDT=20</code> — макс сумма\n"
+            "<code>DCI_DIRECTION=BuyLow</code> — BuyLow/SellHigh/Auto"
+        )
+        return
+
+    await _tg_send(chat_id, "⚡ <i>Ищу лучший DCI продукт...</i>")
+    result = await dci_auto_place_idle()
+    placed = result.get("placed", [])
+    reason = result.get("reason", "")
+    best_apy = result.get("best_apy", 0)
+
+    if placed:
+        lines = ["✅ <b>DCI размещено!</b>\n"]
+        for p in placed:
+            lines.append(
+                f"  📊 {p['direction']} <b>{p['coin']}</b> "
+                f"<code>${p['amount']:.2f}</code> "
+                f"@ APY=<code>{p['apy_pct']:.2f}%</code>"
+            )
+        lines.append(f"\n📌 /dci — статус")
+        await _tg_send(chat_id, "\n".join(lines))
+    else:
+        skip = result.get("skipped", 0)
+        msg_map = {
+            "DCI_ENABLED=false": "DCI выключен в настройках",
+            "no_products": "Нет доступных продуктов на ByBit",
+            "no_viable_options": "Нет подходящих опций (проверь min_amount)",
+        }
+        reason_text = msg_map.get(reason, reason)
+        await _tg_send(
+            chat_id,
+            f"ℹ️ <b>DCI не размещён</b>\n\n"
+            f"Причина: {reason_text}\n"
+            f"Лучший APY: <code>{best_apy:.2f}%</code> (порог: <code>{DCI_MIN_APY_PCT}%</code>)\n"
+            f"Проверено продуктов: {skip}\n\n"
+            f"💡 Снизь порог: <code>DCI_MIN_APY_PCT=10</code>"
+        )
 
 
 async def _tg_router(chat_id: int):
@@ -7553,6 +7926,8 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/earn":                await _tg_earn(chat_id)
         elif cmd == "/earnplace":           await _tg_earn_place(chat_id)
         elif cmd == "/earnall":             await _tg_earn_all(chat_id)
+        elif cmd == "/dci":                 await _tg_dci(chat_id)
+        elif cmd == "/dciplace":            await _tg_dci_place(chat_id)
         elif cmd == "/audit":               await _tg_audit(chat_id)
         elif cmd == "/fills":               await _tg_fills(chat_id)
         elif cmd == "/agency":              await _tg_agency(chat_id)
