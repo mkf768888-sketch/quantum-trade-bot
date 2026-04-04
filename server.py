@@ -1,10 +1,15 @@
 """
-QuantumTrade AI - FastAPI Backend v10.9.22
+QuantumTrade AI - FastAPI Backend v10.9.23
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.9.23: FIX — ByBit DCI dualAssetsExtra required:
+          ByBit returned "dual_assets_extra is required" — selectPrice and
+          apyE8 must be nested inside dualAssetsExtra object, not at top level.
+          Correct structure: orderType="Stake" + accountType="FUND" at top level,
+          dualAssetsExtra={selectPrice, apyE8} nested.
 v10.9.22: FIX — final DCI API fixes (Opus analysis):
           1. ByBit advance/place-order: orderType MUST be "Stake" — not "BuyLow"/
              "SellHigh" (invalid values) and not missing (required field). Added
@@ -1616,9 +1621,10 @@ async def bybit_dci_place_order(
     amount: in USDT for BuyLow, in base coin for SellHigh
     select_price + apy_e8 MUST exactly match quote response.
 
-    v10.9.22: orderType MUST be "Stake" (not "BuyLow"/"SellHigh" — invalid values).
-    accountType "FUND" required. Direction encoded in selectPrice from quote.
-    Fallback to UNIFIED if FUND fails."""
+    v10.9.23: ByBit requires dualAssetsExtra nested object.
+    Top-level: orderType="Stake", accountType="FUND".
+    dualAssetsExtra: selectPrice + apyE8 (DCI-specific fields).
+    Fallback FUND → UNIFIED."""
     import uuid
     order_link_id = f"dci_{uuid.uuid4().hex[:16]}"
     body = {
@@ -1626,11 +1632,13 @@ async def bybit_dci_place_order(
         "productId": str(product_id),
         "coin": coin,
         "amount": str(round(amount, 8)),
-        "orderType": "Stake",            # v10.9.22: MUST be "Stake", not direction
-        "accountType": "FUND",           # v10.9.22: required field
-        "selectPrice": str(select_price),
-        "apyE8": str(apy_e8),
+        "orderType": "Stake",            # top-level, like FlexibleSaving
+        "accountType": "FUND",           # required
         "orderLinkId": order_link_id,
+        "dualAssetsExtra": {             # v10.9.23: required nested object
+            "selectPrice": str(select_price),
+            "apyE8": str(apy_e8),
+        },
     }
     log_activity(f"[dci] place_order req: {json.dumps(body)}")
     res = await bybit_request("POST", "/v5/earn/advance/place-order", body)
