@@ -1,10 +1,16 @@
 """
-QuantumTrade AI - FastAPI Backend v10.9.18
+QuantumTrade AI - FastAPI Backend v10.9.19
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.9.19: FIX — two DCI API format fixes:
+          1. ByBit place_order: dualAssetsExtra nested object rejected with
+             "Invalid parameter: order_type". Fixed: flat body with orderType,
+             selectPrice, apyE8 at top level (no dualAssetsExtra wrapper).
+          2. KuCoin get_products: ?currency=USDT returns 400100 Invalid parameters.
+             Fixed: call endpoint without parameters, filter by investCurrency client-side.
 v10.9.18: FIX — kucoin_dci_scan: kucoin_request() does not exist — replaced with
           direct aiohttp call (same pattern as all other KuCoin functions).
           Result: KC TRADE USDT balance now read correctly for DCI product comparison.
@@ -1590,17 +1596,17 @@ async def bybit_dci_place_order(
     select_price + apy_e8 MUST exactly match quote response."""
     import uuid
     order_link_id = f"dci_{uuid.uuid4().hex[:16]}"
+    # v10.9.19: Flat structure — ByBit rejects nested dualAssetsExtra.
+    # orderType at top-level (not orderDirection inside dualAssetsExtra).
     body = {
         "category": "DualAssets",
         "productId": str(product_id),
         "coin": coin,
         "amount": str(round(amount, 8)),
+        "orderType": direction,          # "BuyLow" or "SellHigh"
+        "selectPrice": str(select_price),
+        "apyE8": str(apy_e8),
         "orderLinkId": order_link_id,
-        "dualAssetsExtra": {
-            "orderDirection": direction,
-            "selectPrice": str(select_price),
-            "apyE8": str(apy_e8),
-        },
     }
     res = await bybit_request("POST", "/v5/earn/advance/place-order", body)
     if res["success"]:
@@ -1651,12 +1657,12 @@ async def bybit_dci_get_positions() -> list:
 #       GET  /api/v1/struct-earn/orders          — open positions
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def kucoin_dci_get_products(currency: str = "USDT") -> list:
-    """KuCoin: GET /api/v1/struct-earn/dual/products
-    Returns Dual Investment products filtered by investCurrency.
+async def kucoin_dci_get_products(invest_currency: str = "USDT") -> list:
+    """KuCoin: GET /api/v1/struct-earn/dual/products (no currency filter — API returns 400100 with it).
+    Fetches all products then filters client-side by investCurrency.
     Each item: {productId, side (BUY/SELL), investCurrency, strikeCurrency,
                 targetPrice, apr, minInvestAmount, maxInvestAmount, duration}"""
-    endpoint = f"/api/v1/struct-earn/dual/products?currency={currency}"
+    endpoint = "/api/v1/struct-earn/dual/products"
     try:
         headers = kucoin_headers("GET", endpoint)
         async with aiohttp.ClientSession() as s:
@@ -1667,7 +1673,11 @@ async def kucoin_dci_get_products(currency: str = "USDT") -> list:
         if data.get("code") == "200000":
             raw = data.get("data", [])
             items = raw if isinstance(raw, list) else raw.get("items", raw.get("rows", []))
-            log_activity(f"[kc_dci] get_products: found {len(items)} products (currency={currency})")
+            # Filter client-side by invest currency
+            if invest_currency:
+                items = [p for p in items
+                         if str(p.get("investCurrency", p.get("currency", ""))).upper() == invest_currency.upper()]
+            log_activity(f"[kc_dci] get_products: {len(items)} products for {invest_currency}")
             return items
         else:
             log_activity(f"[kc_dci] get_products error: code={data.get('code','?')} {data.get('msg','?')}")
