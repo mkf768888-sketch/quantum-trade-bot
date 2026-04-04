@@ -1,10 +1,19 @@
 """
-QuantumTrade AI - FastAPI Backend v10.9.14
+QuantumTrade AI - FastAPI Backend v10.9.15
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.9.15: FIX — 3 bugs found in fresh logs:
+          1. _dci_get_fund_balances: read UNIFIED not FUND. bybit_earn_subscribe
+             uses UNIFIED account, so redeemed funds return to UNIFIED. FUND wallet
+             always showed $0 → DCI post-redeem still USDT=$0.00.
+          2. ByBit APR parsing: "0.6%" → stripped to 0.6 → *100 → 60% (wrong).
+             Fix: if original string ends with '%', the number IS already percentage.
+          3. earn_auto_place_idle (earn_mon path): added DCI_ENABLED check for ByBit
+             (same as router Step 3 fix from v10.9.14); KuCoin now uses TRADE account
+             type (same as v10.9.11 router fix — earn_mon had old code without it).
 v10.9.14: FIX — Earn/DCI routing system overhaul:
           1. ROUTER_TRADE_RESERVE default $20→$10: with $21 balance the old value
              left $0 earnable — Earn and DCI never got capital to work with.
@@ -1631,16 +1640,19 @@ def _dci_get_direction_from_fg(fg_val: int) -> str:
 
 
 async def _dci_get_fund_balances() -> dict:
-    """v10.9.8: Get all coin balances in ByBit FUND account.
+    """v10.9.15: Get coin balances available for DCI from ByBit UNIFIED account.
+    Changed from FUND to UNIFIED: bybit_earn_subscribe uses UNIFIED account,
+    so all funds (including redeemed FlexSaving) sit in UNIFIED, not FUND.
     Returns dict: {coin: available_amount, ...}"""
     balances = {}
     bal_res = await bybit_request("GET", "/v5/account/wallet-balance", {
-        "accountType": "FUND",
+        "accountType": "UNIFIED",
     })
     if bal_res["success"]:
         coins = bal_res["data"].get("list", [{}])[0].get("coin", [])
         for c in coins:
             sym = c.get("coin", "")
+            # availableToWithdraw = actually spendable; fallback to walletBalance
             amt = float(c.get("availableToWithdraw", c.get("walletBalance", 0)))
             if sym and amt > 0:
                 balances[sym] = amt
@@ -1924,11 +1936,18 @@ async def earn_get_best_rate(coin: str = "USDT") -> dict:
         for p in bb_products:
             # v10.2.3: ByBit uses "estimateApr" (not "estimateAnnualYield")
             # v10.9.9: strip trailing '%' — ByBit sometimes returns "0.6%" instead of "0.6"
-            apr_str = p.get("estimateApr", p.get("estimateAnnualYield", p.get("annualYield", "0")))
-            apr_str = str(apr_str).rstrip("%") if apr_str else "0"
+            # v10.9.15: if original value already had '%' suffix it IS already a percentage —
+            #           do NOT multiply by 100 again (was: "0.6%" → 0.6 → 60%, wrong!)
+            apr_raw = p.get("estimateApr", p.get("estimateAnnualYield", p.get("annualYield", "0")))
+            apr_raw_str = str(apr_raw) if apr_raw else "0"
+            already_pct = apr_raw_str.endswith("%")
+            apr_str = apr_raw_str.rstrip("%")
             apr = float(apr_str) if apr_str else 0.0
-            apr_pct = round(apr * 100, 2) if apr < 1 else round(apr, 2)
-            print(f"[earn/bb] APR parse: estimateApr={p.get('estimateApr','?')}, raw={apr}, pct={apr_pct}%", flush=True)
+            if already_pct:
+                apr_pct = round(apr, 2)          # "0.6%" → 0.6%
+            else:
+                apr_pct = round(apr * 100, 2) if apr < 1 else round(apr, 2)  # 0.006 → 0.6%
+            print(f"[earn/bb] APR parse: estimateApr={apr_raw}, raw={apr}, pct={apr_pct}%", flush=True)
             if apr_pct > best["apr"]:
                 best = {
                     "exchange": "bybit",
@@ -1997,7 +2016,8 @@ async def earn_auto_place_idle(exchange: str = "auto") -> dict:
                 min_amt = float(p.get("userLowerLimit", p.get("minInvestAmount", p.get("minPurchaseAmount", 1))))
                 log_activity(f"[earn/kc] product found: pid={pid}, min_amt={min_amt:.2f}, our_amount={amount:.2f}")
                 if amount >= min_amt and pid:
-                    sub = await kucoin_earn_subscribe(pid, round(amount, 2))
+                    # v10.9.11: use TRADE account — get_balance() reads TRADE, funds are there
+                    sub = await kucoin_earn_subscribe(pid, round(amount, 2), account_type="TRADE")
                     if sub["success"]:
                         _earn_stats["subscriptions"] += 1
                         _earn_stats["total_subscribed"] += amount
@@ -2017,6 +2037,11 @@ async def earn_auto_place_idle(exchange: str = "auto") -> dict:
                         _earn_stats["errors"] += 1
 
         elif exch == "bybit":
+            # v10.9.15: skip ByBit FlexSaving when DCI is enabled — DCI needs free UNIFIED funds.
+            # Locking funds in FlexSaving and then redeeming for DCI every cycle is wasteful.
+            if DCI_ENABLED:
+                log_activity(f"[earn_mon] BB: DCI_ENABLED → skip FlexSaving, leaving ${amount:.2f} free for DCI")
+                continue
             bb_products = await bybit_earn_get_products("USDT")
             if bb_products:
                 p = bb_products[0]
