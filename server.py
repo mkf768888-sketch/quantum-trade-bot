@@ -1,10 +1,13 @@
 """
-QuantumTrade AI - FastAPI Backend v10.9.17
+QuantumTrade AI - FastAPI Backend v10.9.18
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.9.18: FIX — kucoin_dci_scan: kucoin_request() does not exist — replaced with
+          direct aiohttp call (same pattern as all other KuCoin functions).
+          Result: KC TRADE USDT balance now read correctly for DCI product comparison.
 v10.9.17: FEATURE — KuCoin Dual Investment (DCI) support:
           1. kucoin_dci_get_products(): GET /api/v1/struct-earn/dual/products
           2. kucoin_dci_place_order(): POST /api/v1/struct-earn/orders (accountType=TRADE)
@@ -1969,25 +1972,23 @@ async def dci_auto_place_idle() -> dict:
         try:
             kc_usdt = 0.0
             kc_coin_balances: dict = {}
-            if direction == "BuyLow":
-                kc_bal_res = await kucoin_request("GET", "/api/v1/accounts?type=trade")
-                if kc_bal_res.get("success"):
-                    for acc in kc_bal_res.get("data", []):
-                        sym = acc.get("currency", "")
-                        avail = float(acc.get("available", 0) or 0)
-                        if sym == "USDT":
-                            kc_usdt = avail
-                        elif sym in ("BTC", "ETH", "SOL") and avail > 0:
-                            kc_coin_balances[sym] = avail
-                log_activity(f"[dci] KC TRADE USDT=${kc_usdt:.2f}")
-            else:  # SellHigh — need coin balances
-                kc_bal_res = await kucoin_request("GET", "/api/v1/accounts?type=trade")
-                if kc_bal_res.get("success"):
-                    for acc in kc_bal_res.get("data", []):
-                        sym = acc.get("currency", "")
-                        avail = float(acc.get("available", 0) or 0)
-                        if sym in ("BTC", "ETH", "SOL") and avail > 0:
-                            kc_coin_balances[sym] = avail
+            _kc_bal_endpoint = "/api/v1/accounts?type=trade"
+            async with aiohttp.ClientSession() as _kcs:
+                _kc_r = await _kcs.get(
+                    KUCOIN_BASE_URL + _kc_bal_endpoint,
+                    headers=kucoin_headers("GET", _kc_bal_endpoint),
+                    timeout=aiohttp.ClientTimeout(total=10)
+                )
+                _kc_data = await _kc_r.json()
+            if _kc_data.get("code") == "200000":
+                for acc in _kc_data.get("data", []):
+                    sym = acc.get("currency", "")
+                    avail = float(acc.get("available", 0) or 0)
+                    if sym == "USDT":
+                        kc_usdt = avail
+                    elif sym in ("BTC", "ETH", "SOL") and avail > 0:
+                        kc_coin_balances[sym] = avail
+            log_activity(f"[dci] KC TRADE USDT=${kc_usdt:.2f}")
 
             # side=BUY → BuyLow (invest USDT), side=SELL → SellHigh (invest coin)
             kc_side = "BUY" if direction == "BuyLow" else "SELL"
