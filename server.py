@@ -1,10 +1,13 @@
 """
-QuantumTrade AI - FastAPI Backend v10.9.11
+QuantumTrade AI - FastAPI Backend v10.9.12
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.9.12: DEBUG — DCI get_quote: add debug logging when buyLowPrice/sellHighPrice
+          arrays are empty to reveal actual ByBit API response structure.
+          Also handle list-wrapped response {"list": [{"buyLowPrice":[...]}]}.
 v10.9.11: FIX — KuCoin Earn "Insufficient balance" every 2 min: router reads TRADE
           account balance via get_balance() but subscribe used accountType="MAIN".
           MAIN account had $0 (funds are in TRADE) → code=151009 on every router cycle.
@@ -1521,8 +1524,15 @@ async def bybit_dci_get_quote(product_id: str) -> dict:
         log_activity(f"[dci] get_quote error for {product_id}: {res.get('error','?')}")
         return {}
     data = res["data"]
+    # v10.9.12: handle both flat and list-wrapped response structures
+    # ByBit may return: {"buyLowPrice": [...]} OR {"list": [{"buyLowPrice": [...]}]}
+    if isinstance(data.get("list"), list) and data["list"]:
+        data = data["list"][0]
     buy_low = data.get("buyLowPrice", [])
     sell_high = data.get("sellHighPrice", [])
+    if len(buy_low) == 0 and len(sell_high) == 0:
+        # v10.9.12: debug log raw response keys so we can see actual structure
+        print(f"[dci] DEBUG quote {product_id}: raw keys={list(data.keys())} raw_preview={str(data)[:300]}", flush=True)
     log_activity(f"[dci] quote {product_id}: {len(buy_low)} BuyLow, {len(sell_high)} SellHigh options")
     return {"product_id": product_id, "buyLowPrice": buy_low, "sellHighPrice": sell_high}
 
