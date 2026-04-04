@@ -1,10 +1,19 @@
 """
-QuantumTrade AI - FastAPI Backend v10.9.16
+QuantumTrade AI - FastAPI Backend v10.9.17
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.9.17: FEATURE — KuCoin Dual Investment (DCI) support:
+          1. kucoin_dci_get_products(): GET /api/v1/struct-earn/dual/products
+          2. kucoin_dci_place_order(): POST /api/v1/struct-earn/orders (accountType=TRADE)
+          3. kucoin_dci_get_positions(): GET /api/v1/struct-earn/orders?category=DUAL_CLASSIC
+          4. dci_auto_place_idle(): compares ByBit vs KuCoin DCI APR, routes order to
+             best exchange. KuCoin side=BUY→BuyLow, side=SELL→SellHigh.
+          5. _tg_dci: shows combined ByBit + KuCoin positions (BB= / KC= count).
+          6. DCI_ENABLED default reverted to false — add DCI_ENABLED=true in Railway
+             Variables to activate (safer than always-on default).
 v10.9.16: FIX — _dci_get_fund_balances crash: UNIFIED account returns
           availableToWithdraw="" (empty string) for margin/spot coins.
           float("") → ValueError → dci_auto_place_idle error every cycle.
@@ -1513,7 +1522,7 @@ _dci_stats: dict = {
     "positions": [],
     "last_check": 0.0,
 }
-DCI_ENABLED = os.getenv("DCI_ENABLED", "true").lower() == "true"  # v10.9.14: default true (was false)
+DCI_ENABLED = os.getenv("DCI_ENABLED", "false").lower() == "true"  # v10.9.17: default false — set DCI_ENABLED=true in Railway Variables to activate
 DCI_MIN_APY_PCT = float(os.getenv("DCI_MIN_APY_PCT", "20.0"))   # min annual APY % to place
 DCI_MAX_INVEST_USDT = float(os.getenv("DCI_MAX_INVEST_USDT", "20.0"))  # max per order
 DCI_DIRECTION = os.getenv("DCI_DIRECTION", "BuyLow")  # BuyLow or SellHigh or Auto
@@ -1627,6 +1636,101 @@ async def bybit_dci_get_positions() -> list:
         return []
     items = res["data"].get("list", [])
     return items
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v10.9.17: KuCoin Dual Investment (Structured Earn)
+# Identical concept to ByBit DCI:
+#   BUY  (Subscribe In)  = BuyLow  — invest USDT, receive coin if price drops
+#   SELL (Subscribe Out) = SellHigh — invest coin, receive USDT if price rises
+# API:  GET  /api/v1/struct-earn/dual/products  — available products
+#       POST /api/v1/struct-earn/orders          — subscribe
+#       GET  /api/v1/struct-earn/orders          — open positions
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def kucoin_dci_get_products(currency: str = "USDT") -> list:
+    """KuCoin: GET /api/v1/struct-earn/dual/products
+    Returns Dual Investment products filtered by investCurrency.
+    Each item: {productId, side (BUY/SELL), investCurrency, strikeCurrency,
+                targetPrice, apr, minInvestAmount, maxInvestAmount, duration}"""
+    endpoint = f"/api/v1/struct-earn/dual/products?currency={currency}"
+    try:
+        headers = kucoin_headers("GET", endpoint)
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(f"https://api.kucoin.com{endpoint}",
+                            headers=headers,
+                            timeout=aiohttp.ClientTimeout(total=10))
+            data = await r.json()
+        if data.get("code") == "200000":
+            raw = data.get("data", [])
+            items = raw if isinstance(raw, list) else raw.get("items", raw.get("rows", []))
+            log_activity(f"[kc_dci] get_products: found {len(items)} products (currency={currency})")
+            return items
+        else:
+            log_activity(f"[kc_dci] get_products error: code={data.get('code','?')} {data.get('msg','?')}")
+            return []
+    except Exception as e:
+        log_activity(f"[kc_dci] get_products exception: {e}")
+        return []
+
+
+async def kucoin_dci_place_order(product_id: str, amount: float,
+                                  invest_currency: str = "USDT") -> dict:
+    """KuCoin: POST /api/v1/struct-earn/orders — Subscribe to Dual Investment.
+    amount: in investCurrency (USDT for BuyLow, base coin for SellHigh)
+    Returns {success, order_id, exchange='kucoin'}"""
+    endpoint = "/api/v1/struct-earn/orders"
+    body = json.dumps({
+        "productId": str(product_id),
+        "amount": str(round(amount, 8)),
+        "accountType": "TRADE",   # funds live in TRADE account
+    })
+    try:
+        headers = kucoin_headers("POST", endpoint, body)
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(f"https://api.kucoin.com{endpoint}",
+                             headers=headers, data=body,
+                             timeout=aiohttp.ClientTimeout(total=10))
+            data = await r.json()
+        if data.get("code") == "200000":
+            order_id = str(data.get("data", {}).get("orderId", ""))
+            log_activity(f"[kc_dci] ✅ placed ${amount:.2f} {invest_currency} product={product_id} orderId={order_id}")
+            _dci_stats["subscriptions"] += 1
+            _dci_stats["total_invested"] += amount
+            return {"success": True, "order_id": order_id, "exchange": "kucoin"}
+        else:
+            err = f"code={data.get('code','?')} {data.get('msg','?')}"
+            log_activity(f"[kc_dci] ❌ place_order error: {err}")
+            _dci_stats["errors"] += 1
+            return {"success": False, "error": err}
+    except Exception as e:
+        log_activity(f"[kc_dci] place_order exception: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def kucoin_dci_get_positions() -> list:
+    """KuCoin: GET /api/v1/struct-earn/orders — open Dual Investment positions.
+    Returns list of active orders with fields:
+    {orderId, status, side, investCurrency, strikeCurrency, investAmount, apr,
+     targetPrice, expirationTime, category}"""
+    endpoint = "/api/v1/struct-earn/orders?category=DUAL_CLASSIC&pageSize=50"
+    try:
+        headers = kucoin_headers("GET", endpoint)
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(f"https://api.kucoin.com{endpoint}",
+                            headers=headers,
+                            timeout=aiohttp.ClientTimeout(total=10))
+            data = await r.json()
+        if data.get("code") == "200000":
+            raw = data.get("data", {})
+            items = raw if isinstance(raw, list) else raw.get("items", raw.get("rows", []))
+            return items
+        else:
+            log_activity(f"[kc_dci] get_positions error: {data.get('code','?')} {data.get('msg','?')}")
+            return []
+    except Exception as e:
+        log_activity(f"[kc_dci] get_positions exception: {e}")
+        return []
 
 
 def _dci_get_direction_from_fg(fg_val: int) -> str:
@@ -1802,6 +1906,7 @@ async def dci_auto_place_idle() -> dict:
         best_apy = 0.0
         best_option = None
 
+        # ── Step 4a: ByBit DCI products ──
         for product in products:
             product_id = str(product.get("productId", product.get("id", "")))
             if not product_id:
@@ -1826,6 +1931,7 @@ async def dci_auto_place_idle() -> dict:
                         if apy_pct > best_apy and min_invest <= usdt_free:
                             best_apy = apy_pct
                             best_option = {
+                                "exchange": "bybit",
                                 "product_id": product_id, "direction": "BuyLow",
                                 "coin": base_coin, "invest_coin": "USDT",
                                 "select_price": select_price, "apy_e8": apy_e8,
@@ -1849,6 +1955,7 @@ async def dci_auto_place_idle() -> dict:
                         if apy_pct > best_apy and coin_balance >= min_invest:
                             best_apy = apy_pct
                             best_option = {
+                                "exchange": "bybit",
                                 "product_id": product_id, "direction": "SellHigh",
                                 "coin": base_coin, "invest_coin": base_coin,
                                 "coin_balance": coin_balance,
@@ -1857,6 +1964,88 @@ async def dci_auto_place_idle() -> dict:
                             }
                     except Exception:
                         continue
+
+        # ── Step 4b: v10.9.17 KuCoin DCI products — compare with ByBit best ──
+        try:
+            kc_usdt = 0.0
+            kc_coin_balances: dict = {}
+            if direction == "BuyLow":
+                kc_bal_res = await kucoin_request("GET", "/api/v1/accounts?type=trade")
+                if kc_bal_res.get("success"):
+                    for acc in kc_bal_res.get("data", []):
+                        sym = acc.get("currency", "")
+                        avail = float(acc.get("available", 0) or 0)
+                        if sym == "USDT":
+                            kc_usdt = avail
+                        elif sym in ("BTC", "ETH", "SOL") and avail > 0:
+                            kc_coin_balances[sym] = avail
+                log_activity(f"[dci] KC TRADE USDT=${kc_usdt:.2f}")
+            else:  # SellHigh — need coin balances
+                kc_bal_res = await kucoin_request("GET", "/api/v1/accounts?type=trade")
+                if kc_bal_res.get("success"):
+                    for acc in kc_bal_res.get("data", []):
+                        sym = acc.get("currency", "")
+                        avail = float(acc.get("available", 0) or 0)
+                        if sym in ("BTC", "ETH", "SOL") and avail > 0:
+                            kc_coin_balances[sym] = avail
+
+            # side=BUY → BuyLow (invest USDT), side=SELL → SellHigh (invest coin)
+            kc_side = "BUY" if direction == "BuyLow" else "SELL"
+            kc_invest_currency = "USDT" if direction == "BuyLow" else None
+            kc_products = await kucoin_dci_get_products(kc_invest_currency or "BTC")
+
+            for kp in kc_products:
+                try:
+                    kp_side = str(kp.get("side", "")).upper()
+                    if kp_side != kc_side:
+                        continue
+                    kp_id = str(kp.get("productId", kp.get("id", "")))
+                    kp_invest_cur = str(kp.get("investCurrency", kp.get("currency", "USDT")))
+                    kp_strike_cur = str(kp.get("strikeCurrency", kp.get("targetCurrency", "")))
+                    kp_coin = kp_strike_cur if direction == "BuyLow" else kp_invest_cur
+                    # apr is already a percentage on KuCoin (e.g. "12.5" means 12.5%)
+                    kp_apr = float(str(kp.get("apr", kp.get("annualInterestRate", "0"))).rstrip("%") or 0)
+                    kp_min = float(kp.get("minInvestAmount", kp.get("minSubscriptionAmount", 1)) or 1)
+                    kp_max = float(kp.get("maxInvestAmount", kp.get("maxSubscriptionAmount", 999999)) or 999999)
+                    kp_strike = str(kp.get("targetPrice", kp.get("strikePrice", "")))
+                    if not kp_id:
+                        continue
+
+                    if direction == "BuyLow":
+                        if kc_usdt < 5.0 or kc_usdt < kp_min:
+                            continue
+                        if kp_apr > best_apy:
+                            best_apy = kp_apr
+                            best_option = {
+                                "exchange": "kucoin",
+                                "product_id": kp_id, "direction": "BuyLow",
+                                "coin": kp_coin, "invest_coin": "USDT",
+                                "select_price": kp_strike, "apy_pct": kp_apr,
+                                "min_amount": kp_min, "max_amount": kp_max,
+                                "kc_usdt": kc_usdt,
+                            }
+                    else:  # SellHigh
+                        kp_bal = kc_coin_balances.get(kp_invest_cur, 0.0)
+                        if kp_bal < kp_min:
+                            continue
+                        if kp_apr > best_apy:
+                            best_apy = kp_apr
+                            best_option = {
+                                "exchange": "kucoin",
+                                "product_id": kp_id, "direction": "SellHigh",
+                                "coin": kp_coin, "invest_coin": kp_invest_cur,
+                                "coin_balance": kp_bal,
+                                "select_price": kp_strike, "apy_pct": kp_apr,
+                                "min_amount": kp_min, "max_amount": kp_max,
+                            }
+                except Exception:
+                    continue
+            if best_option and best_option.get("exchange") == "kucoin":
+                log_activity(f"[dci] KC wins: {best_option['direction']} {best_option['coin']} APR={best_apy:.2f}%")
+            elif best_option:
+                log_activity(f"[dci] BB wins: {best_option['direction']} {best_option['coin']} APY={best_apy:.2f}%")
+        except Exception as e:
+            log_activity(f"[dci] kucoin_dci_scan error: {e}")
 
         if not best_option:
             reason = "no_viable_options"
@@ -1874,23 +2063,40 @@ async def dci_auto_place_idle() -> dict:
             }
 
         # Step 5: Calculate invest amount
+        exch = best_option.get("exchange", "bybit")
         if best_option["direction"] == "BuyLow":
-            invest_amount = min(usdt_free * 0.8, DCI_MAX_INVEST_USDT, best_option["max_amount"])
+            capital = best_option.get("kc_usdt", usdt_free) if exch == "kucoin" else usdt_free
+            invest_amount = min(capital * 0.8, DCI_MAX_INVEST_USDT, best_option["max_amount"])
         else:  # SellHigh — use 50% of coin balance (keep rest liquid)
             invest_amount = min(best_option["coin_balance"] * 0.5, best_option["max_amount"])
         invest_amount = max(invest_amount, best_option["min_amount"])
         invest_amount = round(invest_amount, 8)
 
-        res = await bybit_dci_place_order(
-            product_id=best_option["product_id"],
-            direction=best_option["direction"],
-            amount=invest_amount,
-            coin=best_option["coin"],
-            select_price=best_option["select_price"],
-            apy_e8=best_option["apy_e8"],
+        log_activity(
+            f"[dci] placing {best_option['direction']} ${invest_amount:.4f} {best_option['invest_coin']} "
+            f"@ {best_option['select_price']} APY={best_apy:.2f}% via {exch.upper()}"
         )
+
+        # v10.9.17: Route to correct exchange
+        if exch == "kucoin":
+            res = await kucoin_dci_place_order(
+                product_id=best_option["product_id"],
+                amount=invest_amount,
+                invest_currency=best_option["invest_coin"],
+            )
+        else:
+            res = await bybit_dci_place_order(
+                product_id=best_option["product_id"],
+                direction=best_option["direction"],
+                amount=invest_amount,
+                coin=best_option["coin"],
+                select_price=best_option["select_price"],
+                apy_e8=best_option.get("apy_e8", "0"),
+            )
+
         if res["success"]:
             placed.append({
+                "exchange": exch,
                 "product_id": best_option["product_id"],
                 "direction": best_option["direction"],
                 "coin": best_option["coin"],
@@ -7531,12 +7737,13 @@ async def _tg_command_center(chat_id: int):
 
 
 async def _tg_dci(chat_id: int):
-    """v10.9.13: DualAssets DCI — status, F&G direction, products, positions, history."""
+    """v10.9.17: DualAssets DCI — status, F&G direction, products, positions (ByBit + KuCoin), history."""
     await _tg_send(chat_id, "🔄 <i>Проверяю DCI...</i>")
 
     # Fetch data in parallel where possible
     products = await bybit_dci_get_products()
     positions = await bybit_dci_get_positions()
+    kc_positions = await kucoin_dci_get_positions()
     fg_data = await get_fear_greed()
     fg_val = fg_data.get("value", 50)
     fg_cls = fg_data.get("classification", "?")
@@ -7594,9 +7801,11 @@ async def _tg_dci(chat_id: int):
     if shown == 0:
         lines.append("  ⚠️ Нет продуктов или ошибка API")
 
-    # Active positions (from API)
+    # Active positions — ByBit
+    import datetime as _dt
+    total_pos = len(positions) + len(kc_positions)
     lines.append(f"")
-    lines.append(f"<b>💰 Активных позиций:</b> {len(positions)}")
+    lines.append(f"<b>💰 Активных позиций:</b> {total_pos} (BB={len(positions)}, KC={len(kc_positions)})")
     for pos in positions[:5]:
         p_coin = pos.get("coin", "?")
         p_dir = pos.get("orderDirection", pos.get("direction", "?"))
@@ -7611,12 +7820,32 @@ async def _tg_dci(chat_id: int):
         settle_txt = ""
         if settle_time:
             try:
-                import datetime as _dt
                 settle_dt = _dt.datetime.fromtimestamp(int(settle_time) / 1000)
                 settle_txt = f" до {settle_dt.strftime('%d.%m %H:%M')}"
             except Exception:
                 pass
-        lines.append(f"  ▸ {p_dir} {p_amt} {p_coin} APY={p_apy}%{settle_txt} [{p_status}]")
+        lines.append(f"  ▸ [BB] {p_dir} {p_amt} {p_coin} APY={p_apy}%{settle_txt} [{p_status}]")
+    # Active positions — KuCoin
+    for kpos in kc_positions[:5]:
+        kp_side = str(kpos.get("side", "?")).upper()
+        kp_dir = "BuyLow" if kp_side == "BUY" else ("SellHigh" if kp_side == "SELL" else kp_side)
+        kp_invest_cur = kpos.get("investCurrency", kpos.get("currency", "?"))
+        kp_amt = kpos.get("investAmount", kpos.get("amount", "?"))
+        kp_apr = kpos.get("apr", "?")
+        kp_status = kpos.get("status", "Active")
+        kp_expire = kpos.get("expirationTime", kpos.get("settleTime", ""))
+        settle_txt = ""
+        if kp_expire:
+            try:
+                ts = int(kp_expire)
+                # KuCoin may return seconds or milliseconds
+                if ts > 1e12:
+                    ts = ts / 1000
+                settle_dt = _dt.datetime.fromtimestamp(ts)
+                settle_txt = f" до {settle_dt.strftime('%d.%m %H:%M')}"
+            except Exception:
+                pass
+        lines.append(f"  ▸ [KC] {kp_dir} {kp_amt} {kp_invest_cur} APR={kp_apr}%{settle_txt} [{kp_status}]")
 
     # History (settled positions)
     history = _dci_stats.get("history", [])
