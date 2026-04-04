@@ -1,10 +1,14 @@
 """
-QuantumTrade AI - FastAPI Backend v10.9.10
+QuantumTrade AI - FastAPI Backend v10.9.11
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.9.11: FIX — KuCoin Earn "Insufficient balance" every 2 min: router reads TRADE
+          account balance via get_balance() but subscribe used accountType="MAIN".
+          MAIN account had $0 (funds are in TRADE) → code=151009 on every router cycle.
+          Fix: pass account_type="TRADE" to kucoin_earn_subscribe in router Step 3.
 v10.9.10: CRITICAL FIX — ROUTER_TRADE_RESERVE NameError: router_loop crashed every 2 min
           with 'name ROUTER_TRADE_RESERVE is not defined'. Fixed 3 occurrences in Step 2.5
           (Spot Replenishment) to use correct name ROUTER_TRADE_RESERVE_USDT.
@@ -2393,7 +2397,10 @@ async def smart_money_route() -> dict:
                         pid = str(p.get("id", p.get("productId", "")))
                         min_amt = float(p.get("userLowerLimit", p.get("minInvestAmount", 1)))
                         if amount >= min_amt and pid:
-                            sub = await kucoin_earn_subscribe(pid, round(amount, 2))
+                            # v10.9.11: TRADE accountType — get_balance() reads TRADE account,
+                            # so earn funds are in TRADE, not MAIN (default). Using MAIN caused
+                            # code=151009 Insufficient balance every 2 min.
+                            sub = await kucoin_earn_subscribe(pid, round(amount, 2), account_type="TRADE")
                             if sub["success"]:
                                 _earn_stats["subscriptions"] += 1
                                 _earn_stats["total_subscribed"] += amount
