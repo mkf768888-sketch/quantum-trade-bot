@@ -1,10 +1,14 @@
 """
-QuantumTrade AI - FastAPI Backend v10.9.12
+QuantumTrade AI - FastAPI Backend v10.9.13
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.9.13: FIX — DCI USDT=$0.00: dci_auto_place_idle now auto-redeems from ByBit
+          Flex Savings if FUND account USDT < 5.0. All ByBit USDT was locked in
+          FlexibleSaving → _dci_get_fund_balances() returned $0 → DCI never placed.
+          Now redeems up to DCI_MAX_INVEST_USDT from savings before order placement.
 v10.9.12: DEBUG — DCI get_quote: add debug logging when buyLowPrice/sellHighPrice
           arrays are empty to reveal actual ByBit API response structure.
           Also handle list-wrapped response {"list": [{"buyLowPrice":[...]}]}.
@@ -1702,11 +1706,12 @@ async def dci_check_settlements() -> list:
 
 
 async def dci_auto_place_idle() -> dict:
-    """v10.9.8: Auto-place idle capital into best DCI product.
+    """v10.9.13: Auto-place idle capital into best DCI product.
     Improvements:
     - Auto direction: BuyLow when F&G<60, SellHigh when F&G>=60
     - SellHigh support: use BTC/ETH balance from FUND account
     - Skips products already covered by open positions
+    - v10.9.13: Auto-redeem from ByBit Flex Savings if FUND USDT insufficient
     Returns: {placed: [...], skipped: int, reason: str, direction: str, fg_val: int}"""
     if not DCI_ENABLED:
         return {"placed": [], "skipped": 0, "reason": "DCI_ENABLED=false"}
@@ -1733,6 +1738,34 @@ async def dci_auto_place_idle() -> dict:
         fund_balances = await _dci_get_fund_balances()
         usdt_free = fund_balances.get("USDT", 0.0)
         log_activity(f"[dci] auto check: {len(products)} products, USDT=${usdt_free:.2f}, direction={direction}, F&G={fg_val}")
+
+        # Step 3.5 (v10.9.13): If USDT in FUND is insufficient for BuyLow,
+        # try to redeem from ByBit Flex Savings first.
+        # All ByBit USDT may be locked in FlexibleSaving → FUND shows $0.
+        if direction == "BuyLow" and usdt_free < 5.0:
+            log_activity(f"[dci] FUND USDT=${usdt_free:.2f} < 5.0 — checking Flex Savings for redemption")
+            try:
+                earn_positions = await bybit_earn_get_positions("USDT")
+                for pos in earn_positions:
+                    pos_product_id = str(pos.get("productId", ""))
+                    pos_amount = float(pos.get("amount", pos.get("totalAmount", pos.get("walletBalance", 0))))
+                    pos_coin = str(pos.get("coin", "USDT"))
+                    if pos_coin == "USDT" and pos_amount >= 5.0 and pos_product_id:
+                        redeem_amount = round(min(pos_amount, DCI_MAX_INVEST_USDT), 2)
+                        log_activity(f"[dci] redeeming ${redeem_amount:.2f} USDT from ByBit Flex Savings product={pos_product_id}")
+                        redeem_res = await bybit_earn_redeem(pos_product_id, redeem_amount, "USDT")
+                        if redeem_res["success"]:
+                            await asyncio.sleep(3)  # brief settle wait
+                            fund_balances = await _dci_get_fund_balances()
+                            usdt_free = fund_balances.get("USDT", 0.0)
+                            log_activity(f"[dci] post-redeem FUND USDT=${usdt_free:.2f}")
+                        else:
+                            log_activity(f"[dci] redeem failed: {redeem_res.get('error','?')}")
+                        break
+                else:
+                    log_activity(f"[dci] no Flex Savings USDT positions found (positions={len(earn_positions)})")
+            except Exception as e:
+                log_activity(f"[dci] redeem-before-dci error: {e}")
 
         # Step 4: Find best product for the chosen direction
         best_apy = 0.0
@@ -7434,7 +7467,7 @@ async def _tg_command_center(chat_id: int):
 
 
 async def _tg_dci(chat_id: int):
-    """v10.9.8: DualAssets DCI — status, F&G direction, products, positions, history."""
+    """v10.9.13: DualAssets DCI — status, F&G direction, products, positions, history."""
     await _tg_send(chat_id, "🔄 <i>Проверяю DCI...</i>")
 
     # Fetch data in parallel where possible
@@ -7454,7 +7487,7 @@ async def _tg_dci(chat_id: int):
 
     dci_on = "✅ включён" if DCI_ENABLED else "❌ выключен"
     lines = [
-        f"⚡ <b>DualAssets DCI v10.9.8</b>",
+        f"⚡ <b>DualAssets DCI v10.9.13</b>",
         f"━━━━━━━━━━━━━━━━━━━━━━",
         f"<b>Статус:</b> {dci_on}",
         f"<b>Направление:</b> {dir_txt}",
