@@ -58,7 +58,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.9.8")
+app = FastAPI(title="QuantumTrade AI", version="10.9.9")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -196,6 +196,104 @@ _perf_stats = {
     "streak": 0, "max_streak": 0, "max_drawdown": 0.0,
     "updated": None,
 }
+
+async def sync_open_positions_from_exchange() -> int:
+    """v10.9.9: Startup safety net — reconstruct open trade_log entries from real exchange balances.
+
+    Problem: after Railway restart all in-memory state is lost (_positions=[], trade_log=[]).
+    Without PostgreSQL, the bot doesn't know it already has open positions → buys duplicates.
+
+    Solution: read actual KuCoin TRADE account balances. Any non-dust coin balance = open position.
+    Inject synthetic 'open' entries into trade_log so the MAX_OPEN_POSITIONS check works correctly.
+
+    Returns: number of positions restored."""
+    global trade_log
+
+    # Only sync if trade_log has no open positions (avoids double-counting if DB already restored them)
+    already_open = sum(1 for t in trade_log if t.get("status") == "open")
+    if already_open >= MAX_OPEN_POSITIONS:
+        print(f"[startup_sync] {already_open} open positions already in trade_log — skipping exchange sync")
+        return 0
+
+    restored = 0
+    try:
+        # Fetch real KuCoin TRADE account balances
+        endpoint = "/api/v1/accounts?type=trade"
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(
+                KUCOIN_BASE_URL + endpoint,
+                headers=kucoin_headers("GET", endpoint),
+                timeout=aiohttp.ClientTimeout(total=10)
+            )
+            data = await r.json()
+
+        if data.get("code") != "200000":
+            print(f"[startup_sync] KuCoin balance fetch failed: {data.get('msg', '?')}")
+            return 0
+
+        # Find coins with non-dust balance in TRADE account
+        for acc in data.get("data", []):
+            cur = acc.get("currency", "")
+            bal = float(acc.get("balance", 0))
+            if cur in ("USDT", "KCS", "") or bal <= 0:
+                continue
+
+            symbol = f"{cur}-USDT"
+
+            # Check if already tracked as open in trade_log
+            already_tracked = any(
+                t.get("symbol") == symbol and t.get("status") == "open"
+                for t in trade_log
+            )
+            if already_tracked:
+                continue
+
+            # Get current price to estimate USDT value
+            try:
+                price = await get_ticker(symbol)
+            except Exception:
+                price = 0.0
+
+            usdt_val = round(bal * price, 2) if price > 0 else 0
+
+            # Skip dust (< $0.50 USDT equivalent)
+            if usdt_val < 0.5 and price > 0:
+                continue
+
+            # Inject synthetic open position into trade_log
+            synthetic_trade = {
+                "id": f"sync_{cur}_{int(time.time())}",
+                "ts": datetime.utcnow().isoformat(),
+                "open_ts": time.time() - 60,   # pretend it was bought 1 min ago
+                "symbol": symbol,
+                "side": "BUY",
+                "price": price if price > 0 else 0,
+                "size": round(bal, 8),
+                "usdt_size": usdt_val,
+                "tp": None, "sl": None,
+                "confidence": 70, "q_score": 70,
+                "pattern": "restored_on_restart",
+                "account": "kucoin_trade",
+                "strategy": "spot",
+                "status": "open",
+                "pnl": None,
+                "extra": {"restored": True, "source": "startup_sync_v10.9.9"},
+            }
+            trade_log.append(synthetic_trade)
+            restored += 1
+            print(f"[startup_sync] ✅ restored open position: {symbol} bal={bal:.6f} ~${usdt_val:.2f}", flush=True)
+
+        if restored > 0:
+            print(f"[startup_sync] 🔄 restored {restored} open positions from KuCoin exchange — trade_log protected", flush=True)
+            _save_trades_to_disk()
+        else:
+            print(f"[startup_sync] ✅ no open positions found on exchange — clean slate", flush=True)
+
+    except Exception as e:
+        print(f"[startup_sync] error: {e}", flush=True)
+
+    return restored
+
 
 def _load_trades_from_disk():
     """Загружаем историю сделок при старте."""
@@ -1762,7 +1860,9 @@ async def earn_get_best_rate(coin: str = "USDT") -> dict:
         bb_products = await bybit_earn_get_products(coin)
         for p in bb_products:
             # v10.2.3: ByBit uses "estimateApr" (not "estimateAnnualYield")
+            # v10.9.9: strip trailing '%' — ByBit sometimes returns "0.6%" instead of "0.6"
             apr_str = p.get("estimateApr", p.get("estimateAnnualYield", p.get("annualYield", "0")))
+            apr_str = str(apr_str).rstrip("%") if apr_str else "0"
             apr = float(apr_str) if apr_str else 0.0
             apr_pct = round(apr * 100, 2) if apr < 1 else round(apr, 2)
             print(f"[earn/bb] APR parse: estimateApr={p.get('estimateApr','?')}, raw={apr}, pct={apr_pct}%", flush=True)
@@ -8413,6 +8513,17 @@ async def startup():
 
     # Phase 6: пробуем подключить Origin QC Wukong 180
     qc_ok = await asyncio.get_event_loop().run_in_executor(None, _init_qcloud)
+
+    # v10.9.9: Exchange sync — restore open positions from KuCoin BEFORE trading starts
+    # Critical: prevents duplicate buys after restart when PostgreSQL/disk are unavailable
+    if KUCOIN_API_KEY:
+        try:
+            synced = await sync_open_positions_from_exchange()
+            if synced:
+                open_now = sum(1 for t in trade_log if t.get("status") == "open")
+                print(f"[startup] ⚡ exchange sync complete: {synced} positions restored, {open_now} open total", flush=True)
+        except Exception as sync_err:
+            print(f"[startup] exchange sync error (non-fatal): {sync_err}", flush=True)
 
     asyncio.create_task(trading_loop())
     asyncio.create_task(position_monitor_loop())
