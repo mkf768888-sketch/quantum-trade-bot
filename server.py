@@ -1,10 +1,17 @@
 """
-QuantumTrade AI - FastAPI Backend v10.9.20
+QuantumTrade AI - FastAPI Backend v10.9.21
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.9.21: FIX — two more DCI API fixes:
+          1. ByBit advance/place-order: removed orderType field entirely — ByBit v5
+             rejects it as "Invalid parameter: order_type". Direction (BuyLow/SellHigh)
+             is encoded in selectPrice (below market price = BuyLow, above = SellHigh).
+          2. KuCoin get_products: now tries ?investCurrency=USDT first (API may require
+             this exact param name), falls back to no-param if still 400100. Both attempts
+             logged so we can see which one works.
 v10.9.20: FEATURE — Mobile health monitoring:
           1. /health command: instant full system check — balances, F&G, Earn APR,
              DCI status/positions, Router cycles, API error counts, open positions.
@@ -1603,14 +1610,13 @@ async def bybit_dci_place_order(
     select_price + apy_e8 MUST exactly match quote response."""
     import uuid
     order_link_id = f"dci_{uuid.uuid4().hex[:16]}"
-    # v10.9.19: Flat structure — ByBit rejects nested dualAssetsExtra.
-    # orderType at top-level (not orderDirection inside dualAssetsExtra).
+    # v10.9.21: Removed orderType — ByBit rejects it with "Invalid parameter: order_type".
+    # Direction (BuyLow/SellHigh) is encoded in selectPrice (below market = BuyLow, above = SellHigh).
     body = {
         "category": "DualAssets",
         "productId": str(product_id),
         "coin": coin,
         "amount": str(round(amount, 8)),
-        "orderType": direction,          # "BuyLow" or "SellHigh"
         "selectPrice": str(select_price),
         "apyE8": str(apy_e8),
         "orderLinkId": order_link_id,
@@ -1665,33 +1671,36 @@ async def bybit_dci_get_positions() -> list:
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def kucoin_dci_get_products(invest_currency: str = "USDT") -> list:
-    """KuCoin: GET /api/v1/struct-earn/dual/products (no currency filter — API returns 400100 with it).
-    Fetches all products then filters client-side by investCurrency.
+    """KuCoin: GET /api/v1/struct-earn/dual/products
+    v10.9.21: Try with investCurrency param (400100 without it AND with currency= param).
+    Falls back to no-param if still fails.
     Each item: {productId, side (BUY/SELL), investCurrency, strikeCurrency,
                 targetPrice, apr, minInvestAmount, maxInvestAmount, duration}"""
-    endpoint = "/api/v1/struct-earn/dual/products"
-    try:
-        headers = kucoin_headers("GET", endpoint)
-        async with aiohttp.ClientSession() as s:
-            r = await s.get(f"https://api.kucoin.com{endpoint}",
-                            headers=headers,
-                            timeout=aiohttp.ClientTimeout(total=10))
-            data = await r.json()
-        if data.get("code") == "200000":
-            raw = data.get("data", [])
-            items = raw if isinstance(raw, list) else raw.get("items", raw.get("rows", []))
-            # Filter client-side by invest currency
-            if invest_currency:
-                items = [p for p in items
-                         if str(p.get("investCurrency", p.get("currency", ""))).upper() == invest_currency.upper()]
-            log_activity(f"[kc_dci] get_products: {len(items)} products for {invest_currency}")
-            return items
-        else:
-            log_activity(f"[kc_dci] get_products error: code={data.get('code','?')} {data.get('msg','?')}")
-            return []
-    except Exception as e:
-        log_activity(f"[kc_dci] get_products exception: {e}")
-        return []
+    # Try with investCurrency param first (KuCoin may require it)
+    for params_str in [f"?investCurrency={invest_currency}", ""]:
+        endpoint = "/api/v1/struct-earn/dual/products"
+        full_endpoint = endpoint + params_str
+        try:
+            headers = kucoin_headers("GET", full_endpoint)
+            async with aiohttp.ClientSession() as s:
+                r = await s.get(f"https://api.kucoin.com{full_endpoint}",
+                                headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=10))
+                data = await r.json()
+            if data.get("code") == "200000":
+                raw = data.get("data", [])
+                items = raw if isinstance(raw, list) else raw.get("items", raw.get("rows", []))
+                # Filter client-side by invest currency
+                if invest_currency:
+                    items = [p for p in items
+                             if str(p.get("investCurrency", p.get("currency", ""))).upper() == invest_currency.upper()]
+                log_activity(f"[kc_dci] get_products: {len(items)} products for {invest_currency} (params={params_str!r})")
+                return items
+            else:
+                log_activity(f"[kc_dci] get_products error (params={params_str!r}): code={data.get('code','?')} {data.get('msg','?')}")
+        except Exception as e:
+            log_activity(f"[kc_dci] get_products exception (params={params_str!r}): {e}")
+    return []
 
 
 async def kucoin_dci_place_order(product_id: str, amount: float,
