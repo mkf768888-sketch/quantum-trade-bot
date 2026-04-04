@@ -1,10 +1,20 @@
 """
-QuantumTrade AI - FastAPI Backend v10.9.13
+QuantumTrade AI - FastAPI Backend v10.9.14
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.9.14: FIX — Earn/DCI routing system overhaul:
+          1. ROUTER_TRADE_RESERVE default $20→$10: with $21 balance the old value
+             left $0 earnable — Earn and DCI never got capital to work with.
+          2. DCI_ENABLED default false→true: DCI was silently disabled unless
+             explicitly set in Railway Variables.
+          3. Router Step 3: when DCI_ENABLED, skip ByBit FlexSaving deposit and
+             leave funds free for DCI. Previously router locked ByBit funds in
+             FlexSaving every 2 min, forcing DCI to redeem every cycle (v10.9.13).
+          4. earn_get_best_rate() now actually used: result logged with APR for
+             both exchanges so routing decisions are visible in logs.
 v10.9.13: FIX — DCI USDT=$0.00: dci_auto_place_idle now auto-redeems from ByBit
           Flex Savings if FUND account USDT < 5.0. All ByBit USDT was locked in
           FlexibleSaving → _dci_get_fund_balances() returned $0 → DCI never placed.
@@ -1490,7 +1500,7 @@ _dci_stats: dict = {
     "positions": [],
     "last_check": 0.0,
 }
-DCI_ENABLED = os.getenv("DCI_ENABLED", "false").lower() == "true"
+DCI_ENABLED = os.getenv("DCI_ENABLED", "true").lower() == "true"  # v10.9.14: default true (was false)
 DCI_MIN_APY_PCT = float(os.getenv("DCI_MIN_APY_PCT", "20.0"))   # min annual APY % to place
 DCI_MAX_INVEST_USDT = float(os.getenv("DCI_MAX_INVEST_USDT", "20.0"))  # max per order
 DCI_DIRECTION = os.getenv("DCI_DIRECTION", "BuyLow")  # BuyLow or SellHigh or Auto
@@ -2323,7 +2333,7 @@ async def earn_monitor_loop():
 
 ROUTER_ENABLED = os.getenv("ROUTER_ENABLED", "true").lower() == "true"
 ROUTER_INTERVAL = int(os.getenv("ROUTER_INTERVAL", "120"))  # seconds between routing checks
-ROUTER_TRADE_RESERVE_USDT = float(os.getenv("ROUTER_TRADE_RESERVE", "20.0"))  # v10.9.4: $20 (was $2) — keep enough in spot for actual trading before routing to Earn
+ROUTER_TRADE_RESERVE_USDT = float(os.getenv("ROUTER_TRADE_RESERVE", "10.0"))  # v10.9.14: $10 (was $20) — lower reserve so Earn/DCI get something to work with on small accounts
 ROUTER_ARB_RESERVE_USDT = float(os.getenv("ROUTER_ARB_RESERVE", "1.0"))     # v10.3.1: $1 (was $3) — small account
 ROUTER_EARN_THRESHOLD = float(os.getenv("ROUTER_EARN_THRESHOLD", "1.0"))     # v10.3.1: $1 (was $2) — small account
 
@@ -2425,9 +2435,26 @@ async def smart_money_route() -> dict:
                                      f"(было ${balance:.2f} < резерв ${ROUTER_TRADE_RESERVE_USDT})")
 
     # ── Step 3: Place idle funds into Earn ────────────────────────────────────
+    # v10.9.14: Compare rates between exchanges; skip ByBit FlexSaving when DCI is enabled
+    # so DCI has capital to work with (avoids Router→lock / DCI→redeem loop every 2 min).
     if EARN_ENABLED:
+        # Fetch best rate once for rate-comparison logging
+        try:
+            best_rate = await earn_get_best_rate("USDT")
+            log_activity(f"[router] best earn rate: {best_rate['exchange']} {best_rate['apr']:.2f}% APR ({best_rate['product_name']})")
+        except Exception:
+            best_rate = {"exchange": "unknown", "apr": 0.0, "product_name": "?"}
+
         for exch, alloc in allocations.items():
             if alloc["action"] != "earn" or alloc["earnable"] < ROUTER_EARN_THRESHOLD:
+                log_activity(f"[router] {exch}: earnable=${alloc['earnable']:.2f} < threshold=${ROUTER_EARN_THRESHOLD} → skip earn")
+                continue
+
+            # v10.9.14: If DCI is enabled, reserve ByBit funds for DCI — skip FlexSaving deposit.
+            # DCI (BuyLow/SellHigh structured products) yields much higher APY than FlexSaving.
+            # Depositing to FlexSaving and then redeeming for DCI every cycle is wasteful.
+            if exch == "bybit" and DCI_ENABLED:
+                log_activity(f"[router] BB: DCI_ENABLED → skip FlexSaving, leaving ${alloc['earnable']:.2f} free for DCI")
                 continue
 
             amount = alloc["earnable"]
@@ -2452,17 +2479,19 @@ async def smart_money_route() -> dict:
                                 _earn_positions.append({
                                     "exchange": "kucoin", "product_id": pid,
                                     "coin": "USDT", "amount": round(amount, 2),
-                                    "apr": 0, "subscribed_at": time.time(),
+                                    "apr": best_rate["apr"] if best_rate["exchange"] == "kucoin" else 0,
+                                    "subscribed_at": time.time(),
                                     "order_id": sub.get("order_id", ""),
                                 })
                                 actions.append({"exchange": "kucoin", "action": "earn", "amount": round(amount, 2)})
                                 _router_stats["earn_placements"] += 1
                                 _router_stats["total_routed_to_earn"] += amount
-                                log_activity(f"[router] ✅ KC → Earn: ${amount:.2f}")
+                                log_activity(f"[router] ✅ KC → Earn: ${amount:.2f} @ {best_rate['apr']:.2f}% APR")
                             else:
                                 log_activity(f"[router] ❌ KC Earn failed: {sub.get('error','?')}")
 
                 elif exch == "bybit":
+                    # DCI_ENABLED=False path — put in FlexSaving as before
                     products = await bybit_earn_get_products("USDT")
                     if products:
                         p = products[0]
@@ -2478,13 +2507,14 @@ async def smart_money_route() -> dict:
                                 _earn_positions.append({
                                     "exchange": "bybit", "product_id": pid,
                                     "coin": "USDT", "amount": round(amount, 2),
-                                    "apr": 0, "subscribed_at": time.time(),
+                                    "apr": best_rate["apr"] if best_rate["exchange"] == "bybit" else 0,
+                                    "subscribed_at": time.time(),
                                     "order_id": sub.get("order_id", ""),
                                 })
                                 actions.append({"exchange": "bybit", "action": "earn", "amount": round(amount, 2)})
                                 _router_stats["earn_placements"] += 1
                                 _router_stats["total_routed_to_earn"] += amount
-                                log_activity(f"[router] ✅ BB → Earn: ${amount:.2f}")
+                                log_activity(f"[router] ✅ BB → FlexSaving: ${amount:.2f}")
                             else:
                                 log_activity(f"[router] ❌ BB Earn failed: {sub.get('error','?')}")
             except Exception as e:
