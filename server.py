@@ -4882,9 +4882,9 @@ async def auto_trade_cycle():
 
         # ── Спот (BUY + SELL) v8.3 ──────────────────────────────────────────────
         if action == "BUY":
-            # v8.3.4: Block buying during Extreme Fear (F&G < 15) — per trading.md rules
-            if fg_val < 15:
-                log_activity(f"[cycle] {symbol}: SKIP BUY — F&G={fg_val} Extreme Fear (threshold 15)")
+            # v8.3.4: Block buying during Extreme Fear — threshold lowered 15→8 (contrarian mode)
+            if fg_val < 8:
+                log_activity(f"[cycle] {symbol}: SKIP BUY — F&G={fg_val} Extreme Fear (threshold 8)")
                 continue
             elapsed = time.time() - last_signals.get(symbol, {}).get("ts", 0)
             eff_cd_spot = COOLDOWN // 2 if conf >= 0.80 else COOLDOWN  # v7.2.4
@@ -4985,8 +4985,8 @@ async def auto_trade_cycle():
 
         # ── Фьючерсы: собираем кандидатов ────────────────────────────────────
         if symbol in ("BTC-USDT", "ETH-USDT", "SOL-USDT"):
-            # v8.3.4: Block LONG during Extreme Fear
-            if action == "BUY" and fg_val < 15:
+            # v8.3.4: Block LONG during Extreme Fear — threshold lowered 15→8 (contrarian mode)
+            if action == "BUY" and fg_val < 8:
                 log_activity(f"[cycle] {symbol}: SKIP fut LONG — F&G={fg_val} Extreme Fear")
                 continue
             FMAP = {"BTC-USDT":("XBTUSDTM",0.001),"ETH-USDT":("ETHUSDTM",0.01),"SOL-USDT":("SOLUSDTM",1.0)}
