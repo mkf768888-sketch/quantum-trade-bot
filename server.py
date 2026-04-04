@@ -1,10 +1,14 @@
 """
-QuantumTrade AI - FastAPI Backend v10.9.15
+QuantumTrade AI - FastAPI Backend v10.9.16
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.9.16: FIX — _dci_get_fund_balances crash: UNIFIED account returns
+          availableToWithdraw="" (empty string) for margin/spot coins.
+          float("") → ValueError → dci_auto_place_idle error every cycle.
+          Safe-parse: treat "" or None as 0.0 instead of crashing.
 v10.9.15: FIX — 3 bugs found in fresh logs:
           1. _dci_get_fund_balances: read UNIFIED not FUND. bybit_earn_subscribe
              uses UNIFIED account, so redeemed funds return to UNIFIED. FUND wallet
@@ -1652,8 +1656,13 @@ async def _dci_get_fund_balances() -> dict:
         coins = bal_res["data"].get("list", [{}])[0].get("coin", [])
         for c in coins:
             sym = c.get("coin", "")
-            # availableToWithdraw = actually spendable; fallback to walletBalance
-            amt = float(c.get("availableToWithdraw", c.get("walletBalance", 0)))
+            # v10.9.16: UNIFIED account may return availableToWithdraw="" (empty string)
+            # for margin/spot coins — float("") raises ValueError. Safe-parse instead.
+            raw = c.get("availableToWithdraw") or c.get("walletBalance") or 0
+            try:
+                amt = float(raw) if raw != "" else 0.0
+            except (ValueError, TypeError):
+                amt = 0.0
             if sym and amt > 0:
                 balances[sym] = amt
     return balances
