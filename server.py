@@ -1,10 +1,17 @@
 """
-QuantumTrade AI - FastAPI Backend v10.9.21
+QuantumTrade AI - FastAPI Backend v10.9.22
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.9.22: FIX — final DCI API fixes (Opus analysis):
+          1. ByBit advance/place-order: orderType MUST be "Stake" — not "BuyLow"/
+             "SellHigh" (invalid values) and not missing (required field). Added
+             accountType "FUND" (required). Fallback to UNIFIED. Full debug logging.
+          2. KuCoin DCI: gracefully disabled — endpoint confirmed unavailable per
+             official kucoin-skills-hub docs (always returns 400100). All DCI
+             routes to ByBit only.
 v10.9.21: FIX — two more DCI API fixes:
           1. ByBit advance/place-order: removed orderType field entirely — ByBit v5
              rejects it as "Invalid parameter: order_type". Direction (BuyLow/SellHigh)
@@ -1607,20 +1614,25 @@ async def bybit_dci_place_order(
     """ByBit Advanced-Earn: POST /v5/earn/advance/place-order
     Places a DualAsset (DCI) order.
     amount: in USDT for BuyLow, in base coin for SellHigh
-    select_price + apy_e8 MUST exactly match quote response."""
+    select_price + apy_e8 MUST exactly match quote response.
+
+    v10.9.22: orderType MUST be "Stake" (not "BuyLow"/"SellHigh" — invalid values).
+    accountType "FUND" required. Direction encoded in selectPrice from quote.
+    Fallback to UNIFIED if FUND fails."""
     import uuid
     order_link_id = f"dci_{uuid.uuid4().hex[:16]}"
-    # v10.9.21: Removed orderType — ByBit rejects it with "Invalid parameter: order_type".
-    # Direction (BuyLow/SellHigh) is encoded in selectPrice (below market = BuyLow, above = SellHigh).
     body = {
         "category": "DualAssets",
         "productId": str(product_id),
         "coin": coin,
         "amount": str(round(amount, 8)),
+        "orderType": "Stake",            # v10.9.22: MUST be "Stake", not direction
+        "accountType": "FUND",           # v10.9.22: required field
         "selectPrice": str(select_price),
         "apyE8": str(apy_e8),
         "orderLinkId": order_link_id,
     }
+    log_activity(f"[dci] place_order req: {json.dumps(body)}")
     res = await bybit_request("POST", "/v5/earn/advance/place-order", body)
     if res["success"]:
         order_id = res["data"].get("orderId", order_link_id)
@@ -1642,8 +1654,27 @@ async def bybit_dci_place_order(
         return {"success": True, "order_id": order_id, "apy_pct": apy_pct}
     else:
         err = res.get("error", "?")
-        log_activity(f"[dci] ❌ place_order error: {err}")
+        raw = res.get("raw", {})
+        log_activity(f"[dci] ❌ place_order error: {err} | raw={json.dumps(raw)[:300]}")
         _dci_stats["errors"] += 1
+        # v10.9.22: fallback FUND → UNIFIED
+        body["accountType"] = "UNIFIED"
+        log_activity(f"[dci] retrying with accountType=UNIFIED")
+        res2 = await bybit_request("POST", "/v5/earn/advance/place-order", body)
+        if res2["success"]:
+            order_id = res2["data"].get("orderId", order_link_id)
+            apy_pct = round(int(apy_e8) / 1e8 * 100, 4)
+            log_activity(f"[dci] ✅ placed {direction} ${amount:.2f} {coin} @ strike={select_price} APY={apy_pct:.2f}% orderId={order_id} (UNIFIED)")
+            _dci_stats["subscriptions"] += 1
+            _dci_stats["total_invested"] += amount
+            _dci_stats["positions"].append({
+                "order_id": order_id, "product_id": product_id, "direction": direction,
+                "coin": coin, "amount": amount, "select_price": select_price,
+                "apy_e8": apy_e8, "apy_pct": apy_pct, "placed_at": time.time(),
+            })
+            return {"success": True, "order_id": order_id, "apy_pct": apy_pct}
+        raw2 = res2.get("raw", {})
+        log_activity(f"[dci] ❌ UNIFIED also failed: {res2.get('error','?')} | raw={json.dumps(raw2)[:300]}")
         return {"success": False, "error": err}
 
 
@@ -1671,35 +1702,14 @@ async def bybit_dci_get_positions() -> list:
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def kucoin_dci_get_products(invest_currency: str = "USDT") -> list:
-    """KuCoin: GET /api/v1/struct-earn/dual/products
-    v10.9.21: Try with investCurrency param (400100 without it AND with currency= param).
-    Falls back to no-param if still fails.
-    Each item: {productId, side (BUY/SELL), investCurrency, strikeCurrency,
-                targetPrice, apr, minInvestAmount, maxInvestAmount, duration}"""
-    # Try with investCurrency param first (KuCoin may require it)
-    for params_str in [f"?investCurrency={invest_currency}", ""]:
-        endpoint = "/api/v1/struct-earn/dual/products"
-        full_endpoint = endpoint + params_str
-        try:
-            headers = kucoin_headers("GET", full_endpoint)
-            async with aiohttp.ClientSession() as s:
-                r = await s.get(f"https://api.kucoin.com{full_endpoint}",
-                                headers=headers,
-                                timeout=aiohttp.ClientTimeout(total=10))
-                data = await r.json()
-            if data.get("code") == "200000":
-                raw = data.get("data", [])
-                items = raw if isinstance(raw, list) else raw.get("items", raw.get("rows", []))
-                # Filter client-side by invest currency
-                if invest_currency:
-                    items = [p for p in items
-                             if str(p.get("investCurrency", p.get("currency", ""))).upper() == invest_currency.upper()]
-                log_activity(f"[kc_dci] get_products: {len(items)} products for {invest_currency} (params={params_str!r})")
-                return items
-            else:
-                log_activity(f"[kc_dci] get_products error (params={params_str!r}): code={data.get('code','?')} {data.get('msg','?')}")
-        except Exception as e:
-            log_activity(f"[kc_dci] get_products exception (params={params_str!r}): {e}")
+    """KuCoin: Dual Investment products.
+
+    v10.9.22: KuCoin Structured Earn DCI API confirmed unavailable.
+    Official source (kucoin-skills-hub): endpoints return 400100.
+    The products returned by struct-earn are term deposits (not DCI) —
+    they lack investCurrency/strikeCurrency/targetPrice fields.
+    All DCI routes to ByBit. Re-enable when KuCoin opens the API."""
+    log_activity(f"[kc_dci] DCI API not available on KuCoin (400100 per official docs) — skipping")
     return []
 
 
