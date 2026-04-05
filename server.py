@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v10.11.2
+QuantumTrade AI - FastAPI Backend v10.11.3
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
@@ -9,6 +9,12 @@ v10.10.3: FIX — DCI place_order: Invalid coin.
           For BuyLow direction, ByBit expects the INVESTED coin (USDT), not the
           base coin (ETH). Was passing best_option["coin"] (= "ETH").
           Fixed to best_option["invest_coin"] (= "USDT" for BuyLow, base coin for SellHigh).
+v10.11.3: FIX — ByBit Funding account ($41+) now visible and auto-transferred to Unified for DCI.
+          NEW: bybit_get_funding_usdt() — reads FUND account balance via inter-transfer API.
+          NEW: bybit_transfer_fund_to_unified(amount) — auto-moves idle Funding USDT to UNIFIED.
+          FIX: /balance now queries real KuCoin Earn API (not in-memory stats that reset on restart).
+          FIX: /balance shows ByBit Funding separately with ⚠️ warning if idle > $5.
+          FIX: earn_monitor_loop DCI block checks Funding every cycle, auto-transfers when needed.
 v10.11.2: FIX — Duplicate _tg_balance removed (old simple version overrode new full breakdown).
           FIX — Dead elif cmd==/balance removed from command handler.
           /balance now correctly shows full KuCoin + ByBit + Earn + DCI breakdown (v10.11.1 feature).
@@ -1226,6 +1232,49 @@ async def bybit_get_balance() -> dict:
             total_usdt = eq
     return {"total_usdt": round(total_usdt, 2), "balances": balances,
             "success": True}
+
+
+async def bybit_get_funding_usdt() -> float:
+    """v10.11.3: Get USDT balance in ByBit FUND account (deposit/withdrawal account).
+    This is separate from UNIFIED (trading) — funds deposited via blockchain land here.
+    Returns float USDT amount available for transfer."""
+    try:
+        res = await bybit_request("GET", "/v5/asset/transfer/query-account-coin-balance",
+                                   {"accountType": "FUND", "coin": "USDT"})
+        if res["success"]:
+            data = res.get("data", {})
+            bal = data.get("balance", {})
+            # ByBit returns "transferBalance" for transferable amount
+            raw = bal.get("transferBalance") or bal.get("walletBalance") or 0
+            return round(float(raw), 2)
+    except Exception as e:
+        log_activity(f"[bybit] get_funding_usdt error: {e}")
+    return 0.0
+
+
+async def bybit_transfer_fund_to_unified(amount: float) -> dict:
+    """v10.11.3: Transfer USDT from ByBit FUND → UNIFIED account.
+    FUND = deposit/withdrawal account. UNIFIED = trading/DCI account.
+    Used by earn_monitor_loop to move idle Funding USDT into UNIFIED for DCI."""
+    import uuid as _uuid
+    try:
+        body = {
+            "transferId": str(_uuid.uuid4()),
+            "coin": "USDT",
+            "amount": str(round(amount, 2)),
+            "fromAccountType": "FUND",
+            "toAccountType": "UNIFIED",
+        }
+        res = await bybit_request("POST", "/v5/asset/transfer/inter-transfer", body)
+        if res["success"]:
+            log_activity(f"[bybit] FUND→UNIFIED transfer OK: ${amount:.2f} USDT")
+            return {"success": True, "amount": amount}
+        err = res.get("error", "unknown")
+        log_activity(f"[bybit] FUND→UNIFIED transfer FAIL: {err}")
+        return {"success": False, "error": err}
+    except Exception as e:
+        log_activity(f"[bybit] transfer_fund_to_unified error: {e}")
+        return {"success": False, "error": str(e)}
 
 
 async def bybit_get_ticker(symbol: str) -> float:
@@ -2723,6 +2772,34 @@ async def earn_monitor_loop():
                             )
                 except Exception as settle_e:
                     log_activity(f"[dci_mon] settlement check error: {settle_e}")
+
+                # v10.11.3: Auto-transfer ByBit Funding → Unified if DCI needs USDT.
+                # Funds deposited via blockchain land in FUND, not UNIFIED.
+                # DCI reads UNIFIED — so we auto-move idle Funding USDT every cycle.
+                try:
+                    bb_funding_bal = await bybit_get_funding_usdt()
+                    if bb_funding_bal >= 5.0:
+                        # Check how much is already in UNIFIED
+                        unified_bals = await _dci_get_fund_balances()
+                        unified_usdt = unified_bals.get("USDT", 0.0)
+                        if unified_usdt < DCI_MIN_APY_PCT / 10:  # heuristic: low unified
+                            # Transfer most of Funding to Unified (keep $1 buffer in Funding)
+                            xfer_amount = round(min(bb_funding_bal - 1.0, DCI_MAX_INVEST_USDT), 2)
+                            if xfer_amount >= 5.0:
+                                xfer_res = await bybit_transfer_fund_to_unified(xfer_amount)
+                                if xfer_res["success"]:
+                                    log_activity(
+                                        f"[dci_mon] 💸 auto-transferred ${xfer_amount:.2f} USDT "
+                                        f"FUND→UNIFIED (funding_bal=${bb_funding_bal:.2f})"
+                                    )
+                                    if ALERT_CHAT_ID:
+                                        await _tg_send(int(ALERT_CHAT_ID),
+                                            f"💸 <b>Авто-перевод ByBit</b>\n"
+                                            f"FUND → UNIFIED: <code>${xfer_amount:.2f}</code> USDT\n"
+                                            f"Теперь DCI может разместить эти средства"
+                                        )
+                except Exception as fund_e:
+                    log_activity(f"[dci_mon] funding transfer check error: {fund_e}")
 
                 # Auto-placement every 4th cycle (~1 hour)
                 if _earn_stats.get("_dci_cycle", 0) % 4 == 0:
@@ -8430,48 +8507,81 @@ async def send_hourly_report(chat_id: int):
 
 
 async def _tg_balance(chat_id: int):
-    """v10.11.1: Full balance breakdown across all exchanges."""
+    """v10.11.3: Full balance — ALL accounts: KuCoin trading+earn, ByBit unified+funding+earn+DCI.
+    Fixes: in-memory earn stats reset on restart → now queries real API for KuCoin Earn.
+    Fixes: ByBit Funding account ($41+ idle) now visible and shown separately."""
+    await _tg_send(chat_id, "🔄 <i>Запрашиваю все счета...</i>")
+
     lines = ["💰 <b>Баланс аккаунтов</b>", "━━━━━━━━━━━━━━━━━━━━━━"]
 
-    # KuCoin
+    # ── KuCoin ──────────────────────────────────────────────────────────────
+    kc_usdt = 0.0
     try:
         kc_bal = await get_balance()
         kc_usdt = kc_bal.get("total_usdt", 0) if kc_bal.get("success") else 0
     except Exception:
-        kc_usdt = 0
-    kc_earn = _earn_stats.get("kucoin_subscribed", 0)
-    kc_idle = max(0, kc_usdt - ROUTER_ARB_RESERVE_USDT - ROUTER_TRADE_RESERVE_USDT)
-    lines.append(f"\n🟡 <b>KuCoin</b>")
-    lines.append(f"  Всего: <code>${kc_usdt:.2f}</code> USDT")
-    lines.append(f"  В Earn: <code>${kc_earn:.2f}</code> USDT")
-    lines.append(f"  Idle (доступно): <code>${kc_idle:.2f}</code> USDT")
+        pass
 
-    # ByBit
-    bb_usdt = 0.0
+    # v10.11.3: Query real KuCoin Earn balance via API (not in-memory — resets on restart)
+    kc_earn_real = 0.0
+    try:
+        kc_holds = await kucoin_earn_get_hold_assets("USDT")
+        kc_earn_real = sum(float(h.get("currentAmount", h.get("holdAmount", 0)) or 0)
+                           for h in kc_holds)
+    except Exception:
+        kc_earn_real = _earn_stats.get("kucoin_subscribed", 0)  # fallback to in-memory
+
+    kc_idle = max(0, kc_usdt - ROUTER_ARB_RESERVE_USDT - ROUTER_TRADE_RESERVE_USDT)
+    kc_total_visible = kc_usdt + kc_earn_real
+    lines.append(f"\n🟡 <b>KuCoin</b>  (всего видимо: <code>${kc_total_visible:.2f}</code>)")
+    lines.append(f"  Торговый USDT: <code>${kc_usdt:.2f}</code>")
+    lines.append(f"  FlexSaving (Earn): <code>${kc_earn_real:.2f}</code> ✅ зарабатывает")
+    lines.append(f"  Свободно для торговли: <code>${kc_idle:.2f}</code>")
+
+    # ── ByBit ───────────────────────────────────────────────────────────────
+    bb_usdt = 0.0   # UNIFIED (trading account)
+    bb_funding = 0.0  # FUND (deposit/withdrawal account)
     if BYBIT_ENABLED:
         try:
             bb_bal = await bybit_get_balance()
             bb_usdt = bb_bal.get("total_usdt", 0) if bb_bal.get("success") else 0
         except Exception:
             pass
+        try:
+            bb_funding = await bybit_get_funding_usdt()
+        except Exception:
+            pass
+
     bb_earn = _earn_stats.get("bybit_subscribed", 0)
     dci_positions = _dci_stats.get("positions", [])
     dci_invested = sum(p.get("amount", 0) for p in dci_positions)
     dci_count = len(dci_positions)
-    bb_idle = max(0, bb_usdt - ROUTER_ARB_RESERVE_USDT - ROUTER_TRADE_RESERVE_USDT - bb_earn - dci_invested)
-    lines.append(f"\n🔵 <b>ByBit</b>")
-    lines.append(f"  Всего: <code>${bb_usdt:.2f}</code> USDT")
-    lines.append(f"  В Earn: <code>${bb_earn:.2f}</code> USDT")
-    lines.append(f"  В DCI: <code>${dci_invested:.2f}</code> USDT ({dci_count} поз.)")
-    lines.append(f"  Idle (доступно): <code>${bb_idle:.2f}</code> USDT")
+    bb_unified_idle = max(0, bb_usdt - ROUTER_ARB_RESERVE_USDT - ROUTER_TRADE_RESERVE_USDT - bb_earn - dci_invested)
+    bb_total_visible = bb_usdt + bb_funding + bb_earn
 
-    # Total
-    total = kc_usdt + bb_usdt
-    working = kc_earn + bb_earn + dci_invested
-    working_pct = (working / total * 100) if total > 0 else 0
-    lines.append(f"\n📊 <b>Итого:</b> <code>${total:.2f}</code> USDT")
-    lines.append(f"  Работает на тебя: <code>{working_pct:.1f}%</code> (${working:.2f})")
-    lines.append(f"\n📌 /earn — Earn детали | /dci — DCI детали | /router — роутер")
+    lines.append(f"\n🔵 <b>ByBit</b>  (всего видимо: <code>${bb_total_visible:.2f}</code>)")
+    lines.append(f"  Unified (торговля): <code>${bb_usdt:.2f}</code>")
+    lines.append(f"  FlexEarn: <code>${bb_earn:.2f}</code> ✅ зарабатывает")
+    lines.append(f"  DCI: <code>${dci_invested:.2f}</code> ({dci_count} поз.) 🚀 ~985% APY")
+    lines.append(f"  Unified idle: <code>${bb_unified_idle:.2f}</code>")
+    if bb_funding > 0:
+        hint = " ⚠️ /dci чтобы активировать" if bb_funding >= 5.0 else ""
+        lines.append(f"  Funding (депозит): <code>${bb_funding:.2f}</code>{hint}")
+    else:
+        lines.append(f"  Funding (депозит): <code>$0.00</code>")
+
+    # ── Итого ───────────────────────────────────────────────────────────────
+    total_usdt = kc_total_visible + bb_total_visible
+    working = kc_earn_real + bb_earn + dci_invested
+    working_pct = (working / total_usdt * 100) if total_usdt > 0 else 0
+    funding_idle_warn = f"\n⚠️ <b>ByBit Funding ${bb_funding:.2f} idle!</b> Перевести в Unified для DCI?" if bb_funding >= 5.0 else ""
+
+    lines.append(f"\n📊 <b>Итого USDT:</b> <code>${total_usdt:.2f}</code>")
+    lines.append(f"  Работает: <code>{working_pct:.1f}%</code> (${working:.2f})")
+    lines.append(f"  Простаивает: <code>${(total_usdt - working):.2f}</code>")
+    if funding_idle_warn:
+        lines.append(funding_idle_warn)
+    lines.append(f"\n📌 /earn | /dci | /router")
 
     await _tg_send(chat_id, "\n".join(lines))
 
@@ -10235,7 +10345,7 @@ body {
 <div class="header">
   <div>
     <div class="header-title">QuantumTrade AI</div>
-    <div class="header-version" id="ver-label">v10.11.2</div>
+    <div class="header-version" id="ver-label">v10.11.3</div>
   </div>
   <div style="display:flex;gap:8px;align-items:center">
     <div id="health-dot" class="status-dot"></div>
