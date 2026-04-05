@@ -2093,6 +2093,8 @@ async def dci_auto_place_idle() -> dict:
         # Step 4: Find best product for the chosen direction
         best_apy = 0.0
         best_option = None
+        # v10.12.2: collect all viable candidates (sorted desc) for VIP-fallback retry
+        _dci_candidates: list = []
 
         # ── Step 4a: ByBit DCI products ──
         for product in products:
@@ -2116,15 +2118,18 @@ async def dci_auto_place_idle() -> dict:
                         max_invest = float(opt.get("maxInvestmentAmount", 999))
                         min_invest = float(opt.get("minInvestmentAmount", 1))
                         select_price = str(opt.get("selectPrice", ""))
-                        if apy_pct > best_apy and min_invest <= usdt_free:
-                            best_apy = apy_pct
-                            best_option = {
+                        if min_invest <= usdt_free:
+                            candidate = {
                                 "exchange": "bybit",
                                 "product_id": product_id, "direction": "BuyLow",
                                 "coin": base_coin, "invest_coin": "USDT",
                                 "select_price": select_price, "apy_e8": apy_e8,
                                 "apy_pct": apy_pct, "min_amount": min_invest, "max_amount": max_invest,
                             }
+                            _dci_candidates.append(candidate)
+                            if apy_pct > best_apy:
+                                best_apy = apy_pct
+                                best_option = candidate
                     except Exception:
                         continue
 
@@ -2140,9 +2145,8 @@ async def dci_auto_place_idle() -> dict:
                         max_invest = float(opt.get("maxInvestmentAmount", 999))
                         min_invest = float(opt.get("minInvestmentAmount", 0.001))
                         select_price = str(opt.get("selectPrice", ""))
-                        if apy_pct > best_apy and coin_balance >= min_invest:
-                            best_apy = apy_pct
-                            best_option = {
+                        if coin_balance >= min_invest:
+                            candidate = {
                                 "exchange": "bybit",
                                 "product_id": product_id, "direction": "SellHigh",
                                 "coin": base_coin, "invest_coin": base_coin,
@@ -2150,8 +2154,14 @@ async def dci_auto_place_idle() -> dict:
                                 "select_price": select_price, "apy_e8": apy_e8,
                                 "apy_pct": apy_pct, "min_amount": min_invest, "max_amount": max_invest,
                             }
+                            _dci_candidates.append(candidate)
+                            if apy_pct > best_apy:
+                                best_apy = apy_pct
+                                best_option = candidate
                     except Exception:
                         continue
+        # Sort candidates desc by APY (try best first, fall back if VIP-restricted)
+        _dci_candidates.sort(key=lambda x: x.get("apy_pct", 0), reverse=True)
 
         # ── Step 4b: v10.9.17 KuCoin DCI products — compare with ByBit best ──
         try:
@@ -2248,72 +2258,85 @@ async def dci_auto_place_idle() -> dict:
                 "direction": direction, "fg_val": fg_val,
             }
 
-        # Step 5: Calculate invest amount
-        exch = best_option.get("exchange", "bybit")
-        if best_option["direction"] == "BuyLow":
-            capital = best_option.get("kc_usdt", usdt_free) if exch == "kucoin" else usdt_free
-            invest_amount = min(capital * 0.8, DCI_MAX_INVEST_USDT, best_option["max_amount"])
-        else:  # SellHigh — use 50% of coin balance (keep rest liquid)
-            invest_amount = min(best_option["coin_balance"] * 0.5, best_option["max_amount"])
-        invest_amount = max(invest_amount, best_option["min_amount"])
-        invest_amount = round(invest_amount, 8)
+        # Step 5: Try candidates in APY-desc order, skip VIP-only products (v10.12.3)
+        # _dci_candidates is already sorted by apy_pct descending (up to 5 attempts)
+        _last_err = "no_candidates_tried"
+        for _attempt_opt in (_dci_candidates[:5] if _dci_candidates else ([best_option] if best_option else [])):
+            exch = _attempt_opt.get("exchange", "bybit")
+            if _attempt_opt["direction"] == "BuyLow":
+                capital = _attempt_opt.get("kc_usdt", usdt_free) if exch == "kucoin" else usdt_free
+                invest_amount = min(capital * 0.8, DCI_MAX_INVEST_USDT, _attempt_opt["max_amount"])
+            else:  # SellHigh — use 50% of coin balance (keep rest liquid)
+                invest_amount = min(_attempt_opt["coin_balance"] * 0.5, _attempt_opt["max_amount"])
+            invest_amount = max(invest_amount, _attempt_opt["min_amount"])
+            invest_amount = round(invest_amount, 8)
 
-        # v10.12.2: FIX — re-fetch fresh quote right before placing to avoid "Invalid select price"
-        # ByBit updates selectPrice every ~30s; scanning all products takes >30s → stale price.
-        if exch == "bybit":
-            try:
-                fresh_q = await bybit_dci_get_quote(best_option["product_id"])
-                opts_key = "buyLowPrice" if best_option["direction"] == "BuyLow" else "sellHighPrice"
-                fresh_opts = fresh_q.get(opts_key, [])
-                if fresh_opts:
-                    best_fresh = max(fresh_opts, key=lambda x: int(x.get("apyE8", 0)))
-                    best_option["select_price"] = str(best_fresh.get("selectPrice", best_option["select_price"]))
-                    best_option["apy_e8"] = str(best_fresh.get("apyE8", best_option.get("apy_e8", "0")))
-                    best_apy = int(best_option["apy_e8"]) / 1e8 * 100
-                    log_activity(f"[dci] ✅ fresh quote: selectPrice={best_option['select_price']} APY={best_apy:.2f}%")
-            except Exception as _fq_e:
-                log_activity(f"[dci] ⚠️ re-fetch quote failed ({_fq_e}), using cached price")
+            # v10.12.2: re-fetch fresh quote right before placing (ByBit updates selectPrice every ~30s)
+            _opt_apy = _attempt_opt.get("apy_pct", 0)
+            if exch == "bybit":
+                try:
+                    fresh_q = await bybit_dci_get_quote(_attempt_opt["product_id"])
+                    opts_key = "buyLowPrice" if _attempt_opt["direction"] == "BuyLow" else "sellHighPrice"
+                    fresh_opts = fresh_q.get(opts_key, [])
+                    if fresh_opts:
+                        best_fresh = max(fresh_opts, key=lambda x: int(x.get("apyE8", 0)))
+                        _attempt_opt["select_price"] = str(best_fresh.get("selectPrice", _attempt_opt["select_price"]))
+                        _attempt_opt["apy_e8"] = str(best_fresh.get("apyE8", _attempt_opt.get("apy_e8", "0")))
+                        _opt_apy = int(_attempt_opt["apy_e8"]) / 1e8 * 100
+                        log_activity(f"[dci] ✅ fresh quote: selectPrice={_attempt_opt['select_price']} APY={_opt_apy:.2f}%")
+                except Exception as _fq_e:
+                    log_activity(f"[dci] ⚠️ re-fetch quote failed ({_fq_e}), using cached price")
 
-        log_activity(
-            f"[dci] placing {best_option['direction']} ${invest_amount:.4f} {best_option['invest_coin']} "
-            f"@ {best_option['select_price']} APY={best_apy:.2f}% via {exch.upper()}"
-        )
-
-        # v10.9.17: Route to correct exchange
-        if exch == "kucoin":
-            res = await kucoin_dci_place_order(
-                product_id=best_option["product_id"],
-                amount=invest_amount,
-                invest_currency=best_option["invest_coin"],
-            )
-        else:
-            res = await bybit_dci_place_order(
-                product_id=best_option["product_id"],
-                direction=best_option["direction"],
-                amount=invest_amount,
-                coin=best_option["invest_coin"],  # v10.10.3: invest_coin not base coin (USDT for BuyLow)
-                select_price=best_option["select_price"],
-                apy_e8=best_option.get("apy_e8", "0"),
+            log_activity(
+                f"[dci] trying {_attempt_opt['direction']} ${invest_amount:.4f} {_attempt_opt['invest_coin']} "
+                f"@ {_attempt_opt.get('select_price','?')} APY={_opt_apy:.2f}% via {exch.upper()} "
+                f"(product={_attempt_opt['product_id']})"
             )
 
-        if res["success"]:
-            placed.append({
-                "exchange": exch,
-                "product_id": best_option["product_id"],
-                "direction": best_option["direction"],
-                "coin": best_option["coin"],
-                "invest_coin": best_option["invest_coin"],
-                "amount": invest_amount,
-                "apy_pct": best_apy,
-                "order_id": res["order_id"],
-            })
-            return {"placed": placed, "best_apy": best_apy, "skipped": len(products) - 1, "direction": direction, "fg_val": fg_val}
-        else:
-            # v10.11.1: propagate error to caller (was silently swallowed before)
-            err = res.get("error", "unknown API error")
-            log_activity(f"[dci] place_order failed for caller: {err}")
-            return {"placed": [], "best_apy": best_apy, "skipped": len(products) - 1,
-                    "reason": f"API error: {err}", "direction": direction, "fg_val": fg_val}
+            # Route to correct exchange
+            if exch == "kucoin":
+                res = await kucoin_dci_place_order(
+                    product_id=_attempt_opt["product_id"],
+                    amount=invest_amount,
+                    invest_currency=_attempt_opt["invest_coin"],
+                )
+            else:
+                res = await bybit_dci_place_order(
+                    product_id=_attempt_opt["product_id"],
+                    direction=_attempt_opt["direction"],
+                    amount=invest_amount,
+                    coin=_attempt_opt["invest_coin"],
+                    select_price=_attempt_opt["select_price"],
+                    apy_e8=_attempt_opt.get("apy_e8", "0"),
+                )
+
+            if res["success"]:
+                placed.append({
+                    "exchange": exch,
+                    "product_id": _attempt_opt["product_id"],
+                    "direction": _attempt_opt["direction"],
+                    "coin": _attempt_opt["coin"],
+                    "invest_coin": _attempt_opt["invest_coin"],
+                    "amount": invest_amount,
+                    "apy_pct": _opt_apy,
+                    "order_id": res["order_id"],
+                })
+                return {"placed": placed, "best_apy": _opt_apy, "skipped": len(products) - 1, "direction": direction, "fg_val": fg_val}
+
+            _last_err = res.get("error", "unknown API error")
+            # v10.12.3: VIP-restricted → skip to next candidate, otherwise abort
+            if "vip" in _last_err.lower() or "not vip" in _last_err.lower():
+                log_activity(f"[dci] ⏭ skipping VIP-only product {_attempt_opt['product_id']}: {_last_err}")
+                continue
+            else:
+                log_activity(f"[dci] place_order failed (non-VIP error): {_last_err}")
+                return {"placed": [], "best_apy": _opt_apy, "skipped": len(products) - 1,
+                        "reason": f"API error: {_last_err}", "direction": direction, "fg_val": fg_val}
+
+        # All candidates exhausted (all VIP-restricted or no candidates)
+        log_activity(f"[dci] all candidates exhausted. last_err={_last_err}")
+        return {"placed": [], "best_apy": best_apy, "skipped": len(products),
+                "reason": f"all_candidates_vip_restricted: {_last_err}", "direction": direction, "fg_val": fg_val}
 
     except Exception as e:
         log_activity(f"[dci] dci_auto_place_idle error: {e}")
