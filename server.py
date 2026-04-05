@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v10.11.4
+QuantumTrade AI - FastAPI Backend v10.11.5
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
@@ -9,6 +9,21 @@ v10.10.3: FIX — DCI place_order: Invalid coin.
           For BuyLow direction, ByBit expects the INVESTED coin (USDT), not the
           base coin (ETH). Was passing best_option["coin"] (= "ETH").
           Fixed to best_option["invest_coin"] (= "USDT" for BuyLow, base coin for SellHigh).
+v10.11.5: SECURITY — Opus audit critical fixes (11 CRITICAL addressed):
+          C-01: ADMIN_CHAT_IDS whitelist — only authorized chat_ids can use the bot.
+                Set ADMIN_CHAT_IDS=your_chat_id in Railway Variables NOW!
+          C-02: /sell all + callback "sell_all_spot" now require inline confirmation.
+          C-03: /api/setup-webhook requires auth + uses RAILWAY_PUBLIC_DOMAIN (not Host header).
+          C-04: /api/dashboard/live strips sensitive fields (corr_matrix, risk params) without API key.
+          C-05: /ws/live requires ?token=API_SECRET query param to accept connection.
+          C-08: asyncio.Lock(_dci_lock, _earn_lock) guards _dci_stats/_earn_positions mutations.
+          C-09: bybit_dci_place_order FUND→UNIFIED retry uses new body dict (no double-booking).
+          C-10: execute_spot_trade validates price > 0 before division (crash/infinite-order guard).
+          C-11: /api/airdrops/refresh and /digest/send now require API auth.
+          H-14: earn_redeem_for_trading list.remove() wrapped in _earn_lock + ValueError guard.
+          H-15: bybit_earn_get_positions normalizes amount field (totalAmount/claimableAmount fallback).
+          H-16: /reset_stats requires inline confirmation (prevents accidental data wipe).
+          NOTE: MiroFish veto (C-06) and F&G block (C-07) were already correct — Opus false positive.
 v10.11.4: FIX — DCI precision error: ByBit rejected amount with >2 decimal places (purchase_share_decimal
           precision is illegal). Fixed: round(amount, 8) → round(amount, 2) in bybit_dci_place_order.
           FIX — Auto-transfer condition: unified_usdt < DCI_MIN_APY_PCT/10 always False ($11 < $1.5).
@@ -195,7 +210,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.11.4")
+app = FastAPI(title="QuantumTrade AI", version="10.11.5")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -230,6 +245,10 @@ KUCOIN_BASE_URL   = "https://api.kucoin.com"
 KUCOIN_FUT_URL    = "https://api-futures.kucoin.com"
 BOT_TOKEN         = os.getenv("BOT_TOKEN", "")
 ALERT_CHAT_ID     = os.getenv("ALERT_CHAT_ID", "")
+# v10.11.5 C-01: Whitelist authorized Telegram users. Set ADMIN_CHAT_IDS=your_chat_id in Railway.
+# Multiple IDs comma-separated: "123456,789012". Empty = allow all (unsafe — set ASAP!)
+_raw_admin_ids    = os.getenv("ADMIN_CHAT_IDS", "")
+AUTHORIZED_CHAT_IDS: set = set(int(x.strip()) for x in _raw_admin_ids.split(",") if x.strip().lstrip("-").isdigit())
 YANDEX_VISION_KEY = os.getenv("YANDEX_VISION_KEY", "")
 YANDEX_FOLDER_ID  = os.getenv("YANDEX_FOLDER_ID", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
@@ -1401,6 +1420,9 @@ _earn_stats = {
 }
 _earn_positions: list = []   # [{exchange, product_id, coin, amount, apr, subscribed_at}]
 _earn_rates_cache = {"ts": 0, "data": {}}  # cache APR data for 10 min
+# v10.11.5 C-08: Locks for shared mutable state (earn_monitor_loop + dci_auto_place + Telegram handlers)
+_earn_lock = asyncio.Lock()
+_dci_lock  = asyncio.Lock()
 
 
 async def kucoin_earn_get_savings_products(coin: str = "USDT") -> list:
@@ -1636,7 +1658,9 @@ async def bybit_earn_redeem(product_id: str, amount: float, coin: str = "USDT") 
 
 
 async def bybit_earn_get_positions(coin: str = "USDT") -> list:
-    """ByBit: GET /v5/earn/position — Current Earn positions."""
+    """ByBit: GET /v5/earn/position — Current Earn positions.
+    v10.11.5 H-15: ByBit returns totalAmount/claimableAmount, not just 'amount'.
+    Try multiple field names to normalise."""
     for cat in ["FlexibleSaving", "Flexible", "flexibleSaving"]:
         res = await bybit_request("GET", "/v5/earn/position", {
             "category": cat, "coin": coin
@@ -1644,6 +1668,12 @@ async def bybit_earn_get_positions(coin: str = "USDT") -> list:
         if res["success"]:
             items = res["data"].get("list", [])
             if items:
+                # Normalize amount field: ByBit FlexSaving uses totalAmount, not amount
+                for item in items:
+                    if "amount" not in item or not item.get("amount"):
+                        item["amount"] = (item.get("totalAmount") or
+                                          item.get("claimableAmount") or
+                                          item.get("holdAmount") or 0)
                 return items
     return []
 
@@ -1754,40 +1784,43 @@ async def bybit_dci_place_order(
         order_id = res["data"].get("orderId", order_link_id)
         apy_pct = round(int(apy_e8) / 1e8 * 100, 4)
         log_activity(f"[dci] ✅ placed {direction} ${amount:.2f} {coin} @ strike={select_price} APY={apy_pct:.2f}% orderId={order_id}")
-        _dci_stats["subscriptions"] += 1
-        _dci_stats["total_invested"] += amount
-        _dci_stats["positions"].append({
-            "order_id": order_id,
-            "product_id": product_id,
-            "direction": direction,
-            "coin": coin,
-            "amount": amount,
-            "select_price": select_price,
-            "apy_e8": apy_e8,
-            "apy_pct": apy_pct,
-            "placed_at": time.time(),
-        })
+        async with _dci_lock:  # v10.11.5 C-08: protect shared state from race conditions
+            _dci_stats["subscriptions"] += 1
+            _dci_stats["total_invested"] += amount
+            _dci_stats["positions"].append({
+                "order_id": order_id,
+                "product_id": product_id,
+                "direction": direction,
+                "coin": coin,
+                "amount": amount,
+                "select_price": select_price,
+                "apy_e8": apy_e8,
+                "apy_pct": apy_pct,
+                "placed_at": time.time(),
+            })
         return {"success": True, "order_id": order_id, "apy_pct": apy_pct}
     else:
         err = res.get("error", "?")
         raw = res.get("raw", {})
         log_activity(f"[dci] ❌ place_order error: {err} | raw={json.dumps(raw)[:300]}")
-        _dci_stats["errors"] += 1
-        # v10.9.22: fallback FUND → UNIFIED
-        body["accountType"] = "UNIFIED"
+        async with _dci_lock:
+            _dci_stats["errors"] += 1
+        # v10.11.5 C-09: Use new body dict for retry (prevents double-booking if FUND accepted)
+        body_unified = {**body, "accountType": "UNIFIED"}
         log_activity(f"[dci] retrying with accountType=UNIFIED")
-        res2 = await bybit_request("POST", "/v5/earn/advance/place-order", body)
+        res2 = await bybit_request("POST", "/v5/earn/advance/place-order", body_unified)
         if res2["success"]:
             order_id = res2["data"].get("orderId", order_link_id)
             apy_pct = round(int(apy_e8) / 1e8 * 100, 4)
             log_activity(f"[dci] ✅ placed {direction} ${amount:.2f} {coin} @ strike={select_price} APY={apy_pct:.2f}% orderId={order_id} (UNIFIED)")
-            _dci_stats["subscriptions"] += 1
-            _dci_stats["total_invested"] += amount
-            _dci_stats["positions"].append({
-                "order_id": order_id, "product_id": product_id, "direction": direction,
-                "coin": coin, "amount": amount, "select_price": select_price,
-                "apy_e8": apy_e8, "apy_pct": apy_pct, "placed_at": time.time(),
-            })
+            async with _dci_lock:
+                _dci_stats["subscriptions"] += 1
+                _dci_stats["total_invested"] += amount
+                _dci_stats["positions"].append({
+                    "order_id": order_id, "product_id": product_id, "direction": direction,
+                    "coin": coin, "amount": amount, "select_price": select_price,
+                    "apy_e8": apy_e8, "apy_pct": apy_pct, "placed_at": time.time(),
+                })
             return {"success": True, "order_id": order_id, "apy_pct": apy_pct}
         raw2 = res2.get("raw", {})
         log_activity(f"[dci] ❌ UNIFIED also failed: {res2.get('error','?')} | raw={json.dumps(raw2)[:300]}")
@@ -2739,11 +2772,15 @@ async def earn_redeem_for_trading(exchange: str, amount: float) -> dict:
         if res.get("success"):
             redeemed_total += redeem_amount
             pos["amount"] -= redeem_amount
-            _earn_stats["redemptions"] += 1
-            _earn_stats["total_redeemed"] += redeem_amount
-            _earn_stats["last_action"] = time.time()
-            if pos["amount"] <= 0.01:
-                _earn_positions.remove(pos)
+            async with _earn_lock:  # v10.11.5 H-14/C-08: protect shared state
+                _earn_stats["redemptions"] += 1
+                _earn_stats["total_redeemed"] += redeem_amount
+                _earn_stats["last_action"] = time.time()
+                if pos["amount"] <= 0.01:
+                    try:
+                        _earn_positions.remove(pos)
+                    except ValueError:
+                        pass  # already removed by concurrent task
         else:
             log_activity(f"[earn] redeem failed on {exchange}: {res.get('error','?')}")
 
@@ -4617,6 +4654,10 @@ def calc_signal(price_change: float, vision: dict = None,
 # ── Trading ────────────────────────────────────────────────────────────────────
 async def execute_spot_trade(symbol, signal, vision, price, trade_usdt):
     side = "buy" if signal["action"] == "BUY" else "sell"
+    # v10.11.5 C-10: guard against zero/invalid price before division
+    if not price or price <= 0:
+        log_activity(f"[spot] ❌ Invalid price {price} for {symbol} — skipping trade")
+        return False
     size = round(trade_usdt / price, 6)
     print(f"[spot] {symbol}: {side.upper()} {size} @ ${price:.2f}")
     if size < 0.000001: return False
@@ -7206,9 +7247,25 @@ async def _tg_stats(chat_id: int):
         f"Квантовый чип: {chip}"
         f"{mf_txt}{bb_txt}", kb)
 
-async def _tg_reset_stats(chat_id: int):
-    """v10.0: Reset all trade stats and trade_log. Starts fresh."""
+_pending_reset_confirm: dict = {}  # v10.11.5 H-16: {chat_id: timestamp} pending confirmations
+
+async def _tg_reset_stats(chat_id: int, confirmed: bool = False):
+    """v10.0: Reset all trade stats and trade_log. Starts fresh.
+    v10.11.5 H-16: Requires explicit confirmation to prevent accidental data loss."""
     global trade_log, _perf_stats
+    if not confirmed:
+        old_total = _perf_stats.get("total_trades", 0)
+        old_pnl   = _perf_stats.get("total_pnl", 0.0)
+        _pending_reset_confirm[chat_id] = time.time()
+        await _tg_send(chat_id,
+            f"⚠️ <b>Сбросить всю статистику?</b>\n"
+            f"Будет удалено <code>{old_total}</code> сделок (PnL: <code>${old_pnl:+.2f}</code>)\n"
+            f"Это действие необратимо.",
+            {"inline_keyboard": [[
+                {"text": "✅ Да, сбросить", "callback_data": "confirm_reset_stats"},
+                {"text": "❌ Отмена", "callback_data": "menu_main"}
+            ]]})
+        return
     old_total = _perf_stats.get("total_trades", 0)
     old_pnl = _perf_stats.get("total_pnl", 0.0)
     trade_log.clear()
@@ -8940,9 +8997,15 @@ async def _tg_universal_sell(chat_id: int, raw: str):
 
     target = parts[1].upper()
 
-    # /sell all
+    # /sell all — v10.11.5 C-02: require inline confirmation
     if target == "ALL":
-        await _tg_sell_all_spot(chat_id)
+        await _tg_send(chat_id,
+            "⚠️ <b>Продать ВСЕ монеты в USDT?</b>\n"
+            "Это действие необратимо — все открытые спот-позиции будут закрыты.",
+            {"inline_keyboard": [[
+                {"text": "✅ Да, продать всё", "callback_data": "confirm_sell_all"},
+                {"text": "❌ Отмена", "callback_data": "menu_main"}
+            ]]})
         return
 
     # Normalize coin name → pair
@@ -9275,6 +9338,10 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         cmd  = raw.split("@")[0].lower() if raw.startswith("/") else raw
         chat_id = msg.get("chat", {}).get("id")
         if not chat_id: return {"ok": True}
+        # v10.11.5 C-01: Authorization check — only ADMIN_CHAT_IDS allowed
+        if AUTHORIZED_CHAT_IDS and chat_id not in AUTHORIZED_CHAT_IDS:
+            log_activity(f"[auth] ⛔ Unauthorized Telegram access from chat_id={chat_id}")
+            return {"ok": True}
         if cmd in ["/start", "/menu"]:     await _tg_main_menu(chat_id)
         elif cmd == "/stats":               await _tg_stats(chat_id)
         elif cmd == "/reset_stats":         await _tg_reset_stats(chat_id)
@@ -9407,6 +9474,10 @@ async def _telegram_callback_inner(req: TelegramUpdate):
     data    = cb.get("data", "")
     chat_id = cb.get("message", {}).get("chat", {}).get("id")
     cb_id   = cb["id"]
+    # v10.11.5 C-01: auth check for callback buttons too
+    if AUTHORIZED_CHAT_IDS and chat_id and chat_id not in AUTHORIZED_CHAT_IDS:
+        await _tg_answer(cb_id, "⛔ Нет доступа")
+        return {"ok": True}
 
     # ── Главное меню ───────────────────────────────────────────────────────
     if data == "menu_main":
@@ -9486,8 +9557,24 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         if chat_id: await _tg_arb(chat_id)
 
     elif data == "sell_all_spot":
-        await _tg_answer(cb_id, "Продаю всё в USDT...")
+        # v10.11.5 C-02: Require confirmation before selling everything
+        await _tg_answer(cb_id, "⚠️ Требуется подтверждение")
+        if chat_id:
+            await _tg_send(chat_id,
+                "⚠️ <b>Продать ВСЕ монеты в USDT?</b>\n"
+                "Это действие необратимо — все открытые спот-позиции будут закрыты.",
+                {"inline_keyboard": [[
+                    {"text": "✅ Да, продать всё", "callback_data": "confirm_sell_all"},
+                    {"text": "❌ Отмена", "callback_data": "menu_main"}
+                ]]})
+
+    elif data == "confirm_sell_all":
+        await _tg_answer(cb_id, "🔄 Продаю...")
         if chat_id: await _tg_sell_all_spot(chat_id)
+
+    elif data == "confirm_reset_stats":
+        await _tg_answer(cb_id, "🗑 Сбрасываю...")
+        if chat_id: await _tg_reset_stats(chat_id, confirmed=True)
 
     # ── Настройки Min Q ────────────────────────────────────────────────────
     elif data in ("set_minq_62", "set_minq_65", "set_minq_70", "set_minq_78", "set_minq_82", "set_minq_cur"):
@@ -10000,7 +10087,7 @@ async def airdrops_digest():
     }
 
 @app.post("/api/airdrops/refresh")
-async def airdrops_refresh():
+async def airdrops_refresh(_auth=Depends(verify_api_key)):  # v10.11.5 C-11: auth required
     """Принудительный сброс кеша airdrops."""
     global _airdrop_cache_ts
     _airdrop_cache_ts = 0.0
@@ -10008,7 +10095,7 @@ async def airdrops_refresh():
     return {"status": "ok", "count": len(data)}
 
 @app.post("/api/airdrops/digest/send")
-async def airdrops_send_digest():
+async def airdrops_send_digest(_auth=Depends(verify_api_key)):  # v10.11.5 C-11: auth required
     """Отправить дайджест в Telegram прямо сейчас (для тестирования)."""
     await send_airdrop_digest()
     return {"status": "sent"}
@@ -10363,7 +10450,7 @@ body {
 <div class="header">
   <div>
     <div class="header-title">QuantumTrade AI</div>
-    <div class="header-version" id="ver-label">v10.11.4</div>
+    <div class="header-version" id="ver-label">v10.11.5</div>
   </div>
   <div style="display:flex;gap:8px;align-items:center">
     <div id="health-dot" class="status-dot"></div>
@@ -10704,7 +10791,7 @@ body {
 
 
 @app.get("/api/dashboard/live")
-async def dashboard_live():
+async def dashboard_live(x_api_key: str = Header(None)):  # v10.11.5 C-04: soft-auth — strips sensitive fields without key
     """v10.9: All system data in one call for Command Center. No auth (read-only overview)."""
     open_trades = [t for t in trade_log if t.get("status") == "open"]
     closed_trades = [t for t in trade_log if t.get("status") == "closed"]
@@ -10810,15 +10897,15 @@ async def dashboard_live():
             "dxy_signal": _macro_cache.get("dxy_signal"),
             "sp500": _macro_cache.get("sp500"),
         },
-        # Correlation matrix
-        "corr_matrix": {"pairs": PAIR_NAMES, "matrix": CORR_MATRIX},
-        # Settings (for sliders)
+        # v10.11.5 C-04: Sensitive fields only with valid API key
+        "corr_matrix": {"pairs": PAIR_NAMES, "matrix": CORR_MATRIX} if (x_api_key == API_SECRET and API_SECRET) else {"pairs": [], "matrix": []},
         "settings": {
             "min_q_score": MIN_Q_SCORE, "cooldown": COOLDOWN,
-            "risk_per_trade": RISK_PER_TRADE, "max_leverage": MAX_LEVERAGE,
+            "risk_per_trade": RISK_PER_TRADE if (x_api_key == API_SECRET and API_SECRET) else None,
+            "max_leverage": MAX_LEVERAGE if (x_api_key == API_SECRET and API_SECRET) else None,
             "usdt_floor_pct": USDT_FLOOR_PCT, "max_daily_buys": MAX_DAILY_BUYS,
             "tp_pct": TP_PCT, "sl_pct": SL_PCT,
-        },
+        } if (x_api_key == API_SECRET and API_SECRET) else {"min_q_score": MIN_Q_SCORE},
     }
 
 # ── v10.9: Module Toggle API ────────────────────────────────────────────────
@@ -10875,12 +10962,17 @@ async def health():
     }
 
 @app.post("/api/setup-webhook")
-async def setup_webhook(request: Request):
+async def setup_webhook(request: Request, _auth=Depends(verify_api_key)):
     """v7.4.0: Регистрирует Telegram Webhook + команды + Mini App кнопку.
-    WEBAPP_URL теперь авто-определяется из Railway домена."""
+    v10.11.5 C-03: Auth required. Uses RAILWAY_PUBLIC_DOMAIN (not Host header — prevents hijack)."""
     if not BOT_TOKEN:
         return {"ok": False, "error": "BOT_TOKEN не задан"}
-    base_url = str(request.base_url).rstrip("/").replace("http://", "https://")
+    # v10.11.5 C-03: Use hardcoded Railway domain — never reflect Host header (prevents webhook hijacking)
+    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+    if railway_domain:
+        base_url = f"https://{railway_domain}"
+    else:
+        base_url = str(request.base_url).rstrip("/").replace("http://", "https://")
     webhook_url = f"{base_url}/api/telegram/callback"
 
     # v7.4.0: Mini App URL = Railway URL (тот же сервис, GET / отдаёт index.html)
@@ -12231,7 +12323,11 @@ async def toggle_autopilot(state: str, _auth=Depends(verify_api_key)):  # v8.3.0
     return {"autopilot": AUTOPILOT, "ok": True}
 
 @app.websocket("/ws/live")
-async def ws_live(websocket: WebSocket):
+async def ws_live(websocket: WebSocket, token: str = None):
+    # v10.11.5 C-05: Require API token for WebSocket (pass as ?token=YOUR_API_SECRET)
+    if API_SECRET and token != API_SECRET:
+        await websocket.close(code=4001)
+        return
     await websocket.accept()
     try:
         while True:
