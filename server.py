@@ -1,10 +1,21 @@
 """
-QuantumTrade AI - FastAPI Backend v10.9.23
+QuantumTrade AI - FastAPI Backend v10.10.0
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.10.0: FEATURE — Three upgrades:
+          1. DXY + S&P500 in macro context via stooq.com (free, no key).
+             Macro strategist agent now receives real traditional market data.
+             Added to MiroFish context, /health, and DB macro snapshots.
+          2. ByBit Double Win integration: auto-place earn orders every ~60 min
+             (same cycle as DCI). Controlled by DOUBLE_WIN_ENABLED env var.
+             Functions: bybit_double_win_get_products/positions, double_win_auto_place.
+          3. Q-Score auto-tune: weekly analysis of last 30d trade data →
+             auto-adjusts MIN_Q_SCORE (bounds: 72-90). Per-pair thresholds
+             shift proportionally. Notifies Telegram on change.
+             New db function: get_best_q_threshold().
 v10.9.23: FIX — ByBit DCI dualAssetsExtra required:
           ByBit returned "dual_assets_extra is required" — selectPrice and
           apyE8 must be nested inside dualAssetsExtra object, not at top level.
@@ -2158,6 +2169,160 @@ async def dci_auto_place_idle() -> dict:
         return {"placed": [], "skipped": 0, "reason": str(e), "direction": DCI_DIRECTION, "fg_val": 50}
 
 
+# ── v10.10: ByBit Double Win — Structured Earn Product ─────────────────────────
+DOUBLE_WIN_ENABLED = os.getenv("DOUBLE_WIN_ENABLED", "false").lower() == "true"
+DOUBLE_WIN_MIN_INVEST = float(os.getenv("DOUBLE_WIN_MIN_INVEST", "5.0"))
+DOUBLE_WIN_MAX_INVEST = float(os.getenv("DOUBLE_WIN_MAX_INVEST", "20.0"))
+
+_double_win_stats: dict = {
+    "last_check": 0.0,
+    "positions": [],
+    "products_found": 0,
+    "errors": 0,
+    "total_invested": 0.0,
+}
+
+
+async def bybit_double_win_get_products(coin: str = None) -> list:
+    """v10.10: GET available Double Win products from ByBit Advanced Earn.
+    Uses same API pattern as DCI: /v5/earn/advance/product with category=DoubleWin."""
+    params: dict = {"category": "DoubleWin"}
+    if coin:
+        params["coin"] = coin
+    try:
+        res = await bybit_request("GET", "/v5/earn/advance/product", params)
+        if not res:
+            log_activity("[dw] get_products: empty response")
+            return []
+        items = res.get("result", {}).get("list", [])
+        products = []
+        for item in items:
+            try:
+                apy_str = item.get("estimateApy", item.get("apy", "0"))
+                # Parse APY — handle both "0.47" (=47%) and "47%" formats
+                apy_str_clean = str(apy_str).replace("%", "").strip()
+                apy_val = float(apy_str_clean) if apy_str_clean else 0.0
+                if apy_val < 1 and "%" not in str(apy_str):
+                    apy_val *= 100  # 0.47 → 47%
+                products.append({
+                    "product_id": item.get("productId", ""),
+                    "coin": item.get("coin", "USDT"),
+                    "apy_pct": round(apy_val, 2),
+                    "min_amount": float(item.get("minAmount", "1")),
+                    "max_amount": float(item.get("maxAmount", "10000")),
+                    "duration": item.get("duration", "?"),
+                    "status": item.get("status", "?"),
+                    "raw": item,
+                })
+            except (ValueError, TypeError) as e:
+                log_activity(f"[dw] product parse error: {e}")
+                continue
+        _double_win_stats["products_found"] = len(products)
+        _double_win_stats["last_check"] = time.time()
+        if products:
+            best = max(products, key=lambda p: p["apy_pct"])
+            log_activity(f"[dw] found {len(products)} products, best APY={best['apy_pct']}% ({best['coin']} {best['duration']})")
+        else:
+            log_activity("[dw] no Double Win products available")
+        return products
+    except Exception as e:
+        _double_win_stats["errors"] += 1
+        log_activity(f"[dw] get_products error: {e}")
+        return []
+
+
+async def bybit_double_win_get_positions() -> list:
+    """v10.10: GET active Double Win positions."""
+    try:
+        res = await bybit_request("GET", "/v5/earn/advance/orders", {"category": "DoubleWin"})
+        if not res:
+            return []
+        items = res.get("result", {}).get("list", [])
+        positions = []
+        for item in items:
+            positions.append({
+                "order_id": item.get("orderId", ""),
+                "product_id": item.get("productId", ""),
+                "coin": item.get("coin", "?"),
+                "amount": float(item.get("amount", 0)),
+                "apy": item.get("estimateApy", item.get("apy", "?")),
+                "status": item.get("status", "?"),
+                "create_time": item.get("createdTime", ""),
+            })
+        _double_win_stats["positions"] = positions
+        return positions
+    except Exception as e:
+        _double_win_stats["errors"] += 1
+        log_activity(f"[dw] get_positions error: {e}")
+        return []
+
+
+async def double_win_auto_place(usdt_amount: float) -> dict:
+    """v10.10: Auto-place best available Double Win order on ByBit.
+    Returns {success, order_id, product_id, apy_pct, amount}."""
+    if not DOUBLE_WIN_ENABLED:
+        return {"success": False, "reason": "DOUBLE_WIN_ENABLED=false"}
+    if usdt_amount < DOUBLE_WIN_MIN_INVEST:
+        return {"success": False, "reason": f"amount ${usdt_amount:.2f} < min ${DOUBLE_WIN_MIN_INVEST}"}
+
+    try:
+        products = await bybit_double_win_get_products("USDT")
+        if not products:
+            return {"success": False, "reason": "no Double Win products available"}
+
+        # Filter by min amount and pick best APY
+        eligible = [p for p in products if p["min_amount"] <= usdt_amount and p.get("status") in ("Subscribing", "1", None, "")]
+        if not eligible:
+            eligible = products  # fallback: try all
+
+        best = max(eligible, key=lambda p: p["apy_pct"])
+        invest = min(usdt_amount * 0.8, DOUBLE_WIN_MAX_INVEST, best["max_amount"])
+        invest = round(max(invest, best["min_amount"]), 8)
+
+        log_activity(f"[dw] placing ${invest:.4f} USDT in Double Win APY={best['apy_pct']}% product={best['product_id']}")
+
+        order_link_id = f"dw_{int(time.time())}_{random.randint(1000,9999)}"
+        body = {
+            "category": "DoubleWin",
+            "productId": str(best["product_id"]),
+            "coin": "USDT",
+            "amount": str(round(invest, 8)),
+            "orderType": "Stake",
+            "accountType": "FUND",
+            "orderLinkId": order_link_id,
+        }
+
+        log_activity(f"[dw] place_order req: {json.dumps(body)}")
+        res = await bybit_request("POST", "/v5/earn/advance/place-order", body)
+
+        if res and res.get("retCode") == 0:
+            oid = res.get("result", {}).get("orderId", order_link_id)
+            _double_win_stats["total_invested"] += invest
+            log_activity(f"[dw] ✅ placed ${invest:.2f} USDT, APY={best['apy_pct']}%, orderId={oid}")
+            return {"success": True, "order_id": oid, "product_id": best["product_id"],
+                    "apy_pct": best["apy_pct"], "amount": invest}
+
+        # Fallback: try UNIFIED account
+        body["accountType"] = "UNIFIED"
+        res2 = await bybit_request("POST", "/v5/earn/advance/place-order", body)
+        if res2 and res2.get("retCode") == 0:
+            oid = res2.get("result", {}).get("orderId", order_link_id)
+            _double_win_stats["total_invested"] += invest
+            log_activity(f"[dw] ✅ placed (UNIFIED) ${invest:.2f} USDT, APY={best['apy_pct']}%, orderId={oid}")
+            return {"success": True, "order_id": oid, "product_id": best["product_id"],
+                    "apy_pct": best["apy_pct"], "amount": invest}
+
+        err_msg = (res or res2 or {}).get("retMsg", "unknown error")
+        _double_win_stats["errors"] += 1
+        log_activity(f"[dw] ❌ place_order failed: {err_msg}")
+        return {"success": False, "reason": err_msg}
+
+    except Exception as e:
+        _double_win_stats["errors"] += 1
+        log_activity(f"[dw] auto_place error: {e}")
+        return {"success": False, "reason": str(e)}
+
+
 async def earn_get_best_rate(coin: str = "USDT") -> dict:
     """Compare APR across all exchanges, return the best option.
     Returns: {exchange, product_id, apr, min_amount, product_name}"""
@@ -2602,6 +2767,25 @@ async def earn_monitor_loop():
                                     )
                         except Exception as dci_e:
                             log_activity(f"[dci_mon] auto-place error: {dci_e}")
+
+                    # v10.10: Double Win — same hourly trigger as DCI
+                    if DOUBLE_WIN_ENABLED and _earn_stats.get("_dci_cycle", 0) % 4 == 0:
+                        try:
+                            # Check available USDT on ByBit FUND/UNIFIED
+                            dw_bals = await _dci_get_fund_balances()
+                            dw_usdt = dw_bals.get("USDT", 0.0)
+                            if dw_usdt >= DOUBLE_WIN_MIN_INVEST:
+                                dw_result = await double_win_auto_place(dw_usdt)
+                                if dw_result.get("success"):
+                                    log_activity(
+                                        f"[dw_mon] ✅ auto-placed ${dw_result['amount']:.2f} USDT "
+                                        f"APY={dw_result['apy_pct']:.2f}%"
+                                    )
+                            else:
+                                log_activity(f"[dw_mon] skip — USDT=${dw_usdt:.2f} < min ${DOUBLE_WIN_MIN_INVEST}")
+                        except Exception as dw_e:
+                            log_activity(f"[dw_mon] auto-place error: {dw_e}")
+
                     _earn_stats["_dci_cycle"] = _earn_stats.get("_dci_cycle", 0) + 1
 
                     # v10.9.20: Hourly auto-report to Telegram (every 4th cycle = ~60 min)
@@ -2610,6 +2794,13 @@ async def earn_monitor_loop():
                             await send_hourly_report(int(ALERT_CHAT_ID))
                         except Exception as report_e:
                             log_activity(f"[health] hourly report error: {report_e}")
+
+                    # v10.10: Q-Score auto-tune — every ~7 days (672 cycles = 4/hr * 24h * 7d)
+                    if _earn_stats.get("_dci_cycle", 0) % 672 == 1:
+                        try:
+                            await auto_tune_q_threshold()
+                        except Exception as tune_e:
+                            log_activity(f"[autotune] trigger error: {tune_e}")
 
         except Exception as e:
             log_activity(f"[earn_mon] error: {e}")
@@ -4008,6 +4199,11 @@ async def mirofish_simulate(symbol: str, price: float, q_score: float,
             f"Total MCap=${mc.get('total_mcap',0)}B ({mc.get('mcap_change_24h',0):+.1f}% 24h), "
             f"ETH/BTC={mc.get('eth_btc_ratio',0)}"
         )
+        # v10.10: DXY + S&P500 for Macro Strategist agent
+        if mc.get("dxy"):
+            market_ctx += f", DXY={mc['dxy']} ({mc.get('dxy_signal','?')})"
+        if mc.get("sp500"):
+            market_ctx += f", S&P500={mc['sp500']}"
         trending = mc.get("trending", [])
         if trending:
             market_ctx += f", Trending: {', '.join(t['symbol'] for t in trending[:5])}"
@@ -4650,6 +4846,37 @@ async def fetch_macro_context() -> dict:
                 result["btc_usd"] = prices.get("bitcoin", {}).get("usd", 0)
                 result["eth_usd"] = prices.get("ethereum", {}).get("usd", 0)
 
+            # 4. v10.10: DXY (US Dollar Index) + S&P500 via stooq.com (free, no key)
+            try:
+                r_dxy = await s.get("https://stooq.com/q/l/?s=dxy.fx&f=sd2t2ohlcv&h&e=csv",
+                                     timeout=aiohttp.ClientTimeout(total=6))
+                if r_dxy.status == 200:
+                    csv_text = await r_dxy.text()
+                    lines = csv_text.strip().split("\n")
+                    if len(lines) >= 2:
+                        vals = lines[1].split(",")
+                        if len(vals) >= 5 and vals[4].replace(".", "").replace("-", "").isdigit():
+                            dxy_val = round(float(vals[4]), 2)
+                            result["dxy"] = dxy_val
+                            result["dxy_signal"] = "bearish_usd" if dxy_val < 100 else "neutral" if dxy_val < 104 else "strong_usd"
+            except Exception as e_dxy:
+                log_activity(f"[macro] stooq DXY timeout: {e_dxy}")
+                result["dxy"] = None
+
+            try:
+                r_sp = await s.get("https://stooq.com/q/l/?s=%5Espx&f=sd2t2ohlcv&h&e=csv",
+                                    timeout=aiohttp.ClientTimeout(total=6))
+                if r_sp.status == 200:
+                    csv_text = await r_sp.text()
+                    lines = csv_text.strip().split("\n")
+                    if len(lines) >= 2:
+                        vals = lines[1].split(",")
+                        if len(vals) >= 5 and vals[4].replace(".", "").replace("-", "").isdigit():
+                            result["sp500"] = round(float(vals[4]), 2)
+            except Exception as e_sp:
+                log_activity(f"[macro] stooq S&P500 timeout: {e_sp}")
+                result["sp500"] = None
+
         result["success"] = True
         result["ts"] = time.time()
         _macro_cache = result
@@ -4663,10 +4890,17 @@ async def fetch_macro_context() -> dict:
                 eth_btc=result.get("eth_btc_ratio", 0),
                 gainers=[],
                 losers=[],
-                extra={"trending": result.get("trending", []), "mcap_change_24h": result.get("mcap_change_24h", 0)}
+                extra={
+                    "trending": result.get("trending", []),
+                    "mcap_change_24h": result.get("mcap_change_24h", 0),
+                    "dxy": result.get("dxy"),
+                    "sp500": result.get("sp500"),
+                }
             )
 
-        log_activity(f"[macro] BTC dom={result.get('btc_dominance')}% MCap=${result.get('total_mcap')}B ETH/BTC={result.get('eth_btc_ratio')}")
+        dxy_txt = f" DXY={result.get('dxy')}" if result.get("dxy") else ""
+        sp_txt = f" S&P={result.get('sp500')}" if result.get("sp500") else ""
+        log_activity(f"[macro] BTC dom={result.get('btc_dominance')}% MCap=${result.get('total_mcap')}B ETH/BTC={result.get('eth_btc_ratio')}{dxy_txt}{sp_txt}")
         return result
     except Exception as e:
         log_activity(f"[macro] fetch error: {e}")
@@ -5186,6 +5420,70 @@ async def update_learning_insights():
     except Exception as e:
         log_activity(f"[learning] error: {e}")
         return _learning_insights
+
+
+# ── v10.10: Q-Score Auto-Tune — weekly adjustment based on trade data ──────────
+
+async def auto_tune_q_threshold():
+    """v10.10: Weekly auto-tune: adjust MIN_Q_SCORE based on last 30 days trade data.
+    Safety bounds: never below 72 or above 90. Only adjusts if win_rate > 55% and
+    minimum 10 trades exist for the chosen range. Notifies Telegram on change."""
+    global MIN_Q_SCORE, PAIR_Q_THRESHOLDS
+    try:
+        data = await db.get_best_q_threshold()
+        if not data:
+            log_activity("[autotune] no data — skipping")
+            return
+
+        # Find best range: highest win_rate with >= 10 trades and positive avg_pnl
+        best = None
+        for d in data:
+            if d["total"] >= 10 and d["win_rate"] > 55 and d["avg_pnl"] > 0:
+                if best is None or d["win_rate"] > best["win_rate"]:
+                    best = d
+
+        if not best:
+            # Fallback: any range with >= 10 trades and highest win rate
+            candidates = [d for d in data if d["total"] >= 10 and d["win_rate"] > 50]
+            if candidates:
+                best = max(candidates, key=lambda x: x["win_rate"])
+
+        if not best:
+            log_activity(f"[autotune] no statistically valid range found — keeping Q={MIN_Q_SCORE}")
+            return
+
+        new_q = best["q_min"]
+        # Safety bounds per trading.md: never below 72 (relaxed from hard 65), never above 90
+        new_q = max(72, min(new_q, 90))
+
+        # Only adjust if difference > 2 points
+        if abs(new_q - MIN_Q_SCORE) <= 2:
+            log_activity(f"[autotune] best range {best['q_range']} (WR={best['win_rate']}%, n={best['total']}) — delta ≤ 2, keeping Q={MIN_Q_SCORE}")
+            return
+
+        old_q = MIN_Q_SCORE
+        MIN_Q_SCORE = new_q
+
+        # Update per-pair thresholds proportionally
+        delta = new_q - old_q
+        for pair in PAIR_Q_THRESHOLDS:
+            PAIR_Q_THRESHOLDS[pair] = max(70, min(PAIR_Q_THRESHOLDS[pair] + delta, 92))
+
+        log_activity(f"[autotune] ✅ Q_THRESHOLD: {old_q} → {new_q} (range={best['q_range']} WR={best['win_rate']}% n={best['total']} avg_pnl=${best['avg_pnl']:.4f})")
+
+        # Notify via Telegram
+        if ALERT_CHAT_ID:
+            await _tg_send(int(ALERT_CHAT_ID), (
+                f"🎯 <b>Q-Score автонастройка</b>\n\n"
+                f"<code>{old_q}</code> → <code>{new_q}</code> ({new_q - old_q:+d})\n\n"
+                f"Данные за 30 дней:\n"
+                f"  Диапазон: {best['q_range']}\n"
+                f"  Win Rate: <b>{best['win_rate']}%</b> ({best['wins']}/{best['total']} сделок)\n"
+                f"  Средний PnL: <code>${best['avg_pnl']:.4f}</code>\n\n"
+                f"<i>Per-pair пороги сдвинуты на {delta:+d}</i>"
+            ))
+    except Exception as e:
+        log_activity(f"[autotune] error: {e}")
 
 
 # ── v10.0: Rate Limiting Middleware ────────────────────────────────────────────
@@ -6922,7 +7220,11 @@ async def _tg_diag(chat_id: int):
     # 12. v9.2: Macro + Whale + Copy-Trading
     macro_ok = "✅" if _macro_cache.get("success") else "❌"
     macro_age = int(time.time() - _macro_cache_ts) if _macro_cache_ts else 0
+    dxy_v = _macro_cache.get('dxy', '?')
+    sp_v = _macro_cache.get('sp500', '?')
+    dxy_sig = _macro_cache.get('dxy_signal', '')
     results.append(f"<b>🌍 Macro:</b> {macro_ok} BTC dom={_macro_cache.get('btc_dominance','?')}% MCap=${_macro_cache.get('total_mcap','?')}B age={macro_age}s")
+    results.append(f"<b>📊 TradFi:</b> DXY={dxy_v} ({dxy_sig}) | S&P500={sp_v}")
 
     whale_ok = "✅" if _whale_alert_cache.get("success") else "❌"
     whale_sig = _whale_alert_cache.get("signal", "?")
@@ -8000,9 +8302,11 @@ async def _tg_health(chat_id: int):
         f"━━━━━━━━━━━━━━━━━━━━",
         f"💰 <b>Балансы:</b>  KC=<code>${kc_usdt:.2f}</code>  BB=<code>${bb_usdt:.2f}</code>",
         f"📊 <b>F&G:</b>      <code>{fg_val}</code> ({fg_cls})",
+        f"🌍 <b>Macro:</b>    DXY={_macro_cache.get('dxy','?')} | S&P={_macro_cache.get('sp500','?')}",
         f"",
         f"🏦 <b>Earn:</b>     {earn_txt}  |  {earn_locked}",
         f"⚡ <b>DCI:</b>      {dci_txt}",
+        f"🎰 <b>DW:</b>       {'✅ вкл' if DOUBLE_WIN_ENABLED else '❌ выкл'} | {len(_double_win_stats.get('positions',[]))} поз | products={_double_win_stats.get('products_found',0)}",
         f"🔀 <b>Router:</b>   {router_txt}",
         f"",
         f"📂 <b>Позиции:</b>  {len(open_pos)}/4  [{pos_syms}]",

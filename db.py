@@ -765,6 +765,62 @@ async def get_deep_analytics() -> dict:
         return {}
 
 
+# ── v10.10: Q-Score Threshold Auto-Tune Analytics ────────────────────────────
+
+async def get_best_q_threshold() -> list:
+    """Analyze last 30 days of closed trades, return win rates by Q-score range.
+    Returns list of {q_range, q_min, total, wins, win_rate, avg_pnl}."""
+    if not is_ready():
+        return []
+    try:
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT
+                    CASE
+                        WHEN q_score >= 85 THEN '85+'
+                        WHEN q_score >= 80 THEN '80-84'
+                        WHEN q_score >= 77 THEN '77-79'
+                        WHEN q_score >= 74 THEN '74-76'
+                        WHEN q_score >= 70 THEN '70-73'
+                        ELSE '<70'
+                    END as q_range,
+                    CASE
+                        WHEN q_score >= 85 THEN 85
+                        WHEN q_score >= 80 THEN 80
+                        WHEN q_score >= 77 THEN 77
+                        WHEN q_score >= 74 THEN 74
+                        WHEN q_score >= 70 THEN 70
+                        ELSE 65
+                    END as q_min,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END) as wins,
+                    ROUND(AVG(pnl_usdt)::numeric, 4) as avg_pnl
+                FROM trades
+                WHERE status = 'closed'
+                  AND pnl_usdt IS NOT NULL
+                  AND close_ts > EXTRACT(EPOCH FROM (NOW() - INTERVAL '30 days'))
+                  AND q_score IS NOT NULL
+                GROUP BY q_range, q_min
+                ORDER BY q_min DESC
+            """)
+            result = []
+            for r in rows:
+                total = int(r["total"])
+                wins = int(r["wins"])
+                result.append({
+                    "q_range": r["q_range"],
+                    "q_min": int(r["q_min"]),
+                    "total": total,
+                    "wins": wins,
+                    "win_rate": round(wins / total * 100, 1) if total > 0 else 0,
+                    "avg_pnl": float(r["avg_pnl"]) if r["avg_pnl"] else 0,
+                })
+            return result
+    except Exception as e:
+        print(f"[db] get_best_q_threshold error: {e}")
+        return []
+
+
 # ── Migrate from JSON ────────────────────────────────────────────────────────
 
 async def migrate_from_json(trade_log: list, perf_stats: dict):
