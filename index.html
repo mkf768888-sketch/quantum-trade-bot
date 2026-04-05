@@ -4,189 +4,331 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-<title>QuantumTrade AI v10.2.2</title>
+<title>QuantumTrade AI</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
-  :root {
-    --bg:#0a0b10;--bg2:#10121a;--bg3:#161925;--card:#12141f;
-    --border:rgba(99,102,241,0.12);--border2:rgba(99,102,241,0.25);
-    --accent:#818cf8;--accent2:#a5b4fc;--quantum:#34d399;--quantum2:#6ee7b7;
-    --warn:#fbbf24;--danger:#f87171;--profit:#34d399;--loss:#f87171;
-    --purple:#8b5cf6;--blue:#3b82f6;--pink:#ec4899;--cyan:#22d3ee;
-    --text:#f1f5f9;--text2:#94a3b8;--text3:#64748b;
-    --font:'Inter',sans-serif;--mono:'JetBrains Mono',monospace;
-    --nav-h:60px;
-  }
-  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  html,body{width:100%;min-height:100vh;overflow-x:hidden;background:var(--bg);color:var(--text);font-family:var(--font)}
-  body{padding-bottom:var(--nav-h)}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
 
-  /* ── AMBIENT BG ── */
-  .q-bg{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
-  .q-bg::before{content:'';position:absolute;width:420px;height:420px;background:radial-gradient(circle,rgba(99,102,241,0.06) 0%,transparent 70%);top:-120px;right:-120px;border-radius:50%;animation:d1 16s ease-in-out infinite}
-  .q-bg::after{content:'';position:absolute;width:350px;height:350px;background:radial-gradient(circle,rgba(52,211,153,0.05) 0%,transparent 70%);bottom:-80px;left:-80px;border-radius:50%;animation:d2 19s ease-in-out infinite}
-  @keyframes d1{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-25px,15px) scale(1.04)}}
-  @keyframes d2{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(15px,-20px) scale(1.06)}}
+:root {
+  --bg:           #020010;
+  --bg2:          #07051a;
+  --purple:       #7c3aed;
+  --purple-soft:  #9f67ff;
+  --purple-dim:   rgba(124,58,237,0.30);
+  --cyan:         #48cae4;
+  --cyan-dim:     rgba(72,202,228,0.28);
+  --gold:         #fbbf24;
+  --gold-dim:     rgba(251,191,36,0.22);
+  --glass-bg:     rgba(13,9,37,0.58);
+  --glass-bg2:    rgba(0,8,38,0.68);
+  --glass-border: rgba(124,58,237,0.20);
+  --profit:       #48cae4;
+  --profit-glow:  rgba(72,202,228,0.38);
+  --loss:         #ff6b6b;
+  --loss-glow:    rgba(255,107,107,0.32);
+  --warn:         #fbbf24;
+  --text:         rgba(210,225,255,0.95);
+  --text2:        rgba(150,185,230,0.72);
+  --text3:        rgba(90,130,180,0.52);
+  --font:         -apple-system,'SF Pro Display','Inter',system-ui,sans-serif;
+  --mono:         'SF Mono','JetBrains Mono','Fira Code',monospace;
+  --nav-h:        60px;
+  /* legacy aliases kept for JS-generated HTML */
+  --accent:       #9f67ff;
+  --accent2:      #c4b5fd;
+  --quantum:      #48cae4;
+  --quantum2:     #90e0ef;
+  --danger:       #ff6b6b;
+  --border:       rgba(124,58,237,0.18);
+  --border2:      rgba(124,58,237,0.32);
+}
 
-  .app{position:relative;z-index:1;min-height:100vh;display:flex;flex-direction:column}
+html, body { width:100%; min-height:100vh; overflow-x:hidden; background:var(--bg); color:var(--text); font-family:var(--font); font-size:13px; }
+body { padding-bottom:var(--nav-h); -webkit-font-smoothing:antialiased; }
 
-  /* ── HEADER ── */
-  .header{padding:10px 16px 8px;background:rgba(10,11,16,0.95);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100}
-  .header-row{display:flex;align-items:center;justify-content:space-between}
-  .logo{display:flex;align-items:center;gap:8px}
-  .logo-icon{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,#6366f1,#34d399);display:flex;align-items:center;justify-content:center;font-size:15px;box-shadow:0 0 20px rgba(99,102,241,0.35)}
-  .logo-text{font-size:15px;font-weight:700;letter-spacing:-0.3px}
-  .logo-text span{background:linear-gradient(90deg,var(--accent),var(--quantum));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-  .header-right{display:flex;align-items:center;gap:6px}
-  .pill{display:flex;align-items:center;gap:4px;padding:4px 10px;border-radius:16px;font-size:10px;font-weight:600;letter-spacing:0.2px}
-  .pill-status{background:rgba(52,211,153,0.1);border:1px solid rgba(52,211,153,0.2);color:var(--quantum)}
-  .pill-status.off{background:rgba(248,113,113,0.1);border-color:rgba(248,113,113,0.2);color:var(--danger)}
-  .pill-ap{background:rgba(99,102,241,0.12);border:1px solid rgba(99,102,241,0.2);color:var(--accent2);cursor:pointer}
-  .pill-ap.on{background:rgba(52,211,153,0.12);border-color:rgba(52,211,153,0.25);color:var(--quantum)}
-  .dot{width:5px;height:5px;border-radius:50%;background:currentColor;animation:blink 1.5s ease-in-out infinite}
-  @keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
+/* ── BACKGROUND ── */
+.q-bg { position:fixed; inset:0; z-index:0; pointer-events:none; }
+.q-bg::before {
+  content:'';position:absolute;inset:0;
+  background:
+    radial-gradient(ellipse at 22% 12%, rgba(60,10,130,0.32) 0%, transparent 55%),
+    radial-gradient(ellipse at 82% 78%, rgba(0,25,90,0.28) 0%, transparent 50%),
+    linear-gradient(180deg, #020010 0%, #040020 45%, #001030 72%, #020018 100%);
+  background-size:400% 400%;
+  animation:space-breathe 14s ease-in-out infinite;
+}
+@keyframes space-breathe {
+  0%,100%{background-position:0% 50%; filter:brightness(1);}
+  33%{background-position:100% 20%; filter:brightness(1.06);}
+  66%{background-position:40% 80%; filter:brightness(0.94);}
+}
+.q-bg::after {
+  content:'';position:absolute;inset:0;
+  background-image:
+    radial-gradient(1px 1px at  8% 12%,rgba(255,255,255,.75) 0%,transparent 100%),
+    radial-gradient(1px 1px at 22% 38%,rgba(255,255,255,.50) 0%,transparent 100%),
+    radial-gradient(2px 2px at 38%  6%,rgba(255,255,255,.80) 0%,transparent 100%),
+    radial-gradient(1px 1px at 55% 22%,rgba(255,255,255,.50) 0%,transparent 100%),
+    radial-gradient(1px 1px at 72% 48%,rgba(255,255,255,.58) 0%,transparent 100%),
+    radial-gradient(2px 2px at 88%  8%,rgba(255,255,255,.85) 0%,transparent 100%),
+    radial-gradient(1px 1px at 14% 68%,rgba(255,255,255,.42) 0%,transparent 100%),
+    radial-gradient(1px 1px at 48% 78%,rgba(255,255,255,.52) 0%,transparent 100%),
+    radial-gradient(1px 1px at 91% 44%,rgba(255,255,255,.62) 0%,transparent 100%),
+    radial-gradient(2px 2px at 68%  3%,rgba(255,255,255,.88) 0%,transparent 100%),
+    radial-gradient(2px 2px at 44% 50%,rgba(124,58,237,.65) 0%,transparent 100%),
+    radial-gradient(1px 1px at 78% 72%,rgba(72,202,228,.60) 0%,transparent 100%),
+    radial-gradient(2px 2px at 28% 85%,rgba(72,202,228,.48) 0%,transparent 100%),
+    radial-gradient(2px 2px at 75% 20%,rgba(251,191,36,.42) 0%,transparent 100%);
+  animation:star-twinkle 7s ease-in-out infinite alternate;
+}
+@keyframes star-twinkle { 0%{opacity:.7} 50%{opacity:1} 100%{opacity:.65} }
 
-  /* ── SUB TABS (within a section) ── */
-  .sub-tabs{display:flex;gap:3px;padding:8px 16px 4px;overflow-x:auto;scrollbar-width:none}
-  .sub-tabs::-webkit-scrollbar{display:none}
-  .sub-tab{flex-shrink:0;padding:5px 12px;border-radius:16px;font-size:11px;font-weight:500;color:var(--text3);cursor:pointer;transition:all 0.2s;white-space:nowrap;border:1px solid transparent}
-  .sub-tab.active{background:rgba(99,102,241,0.12);color:var(--accent2);border-color:var(--border2)}
+/* Floating orbs */
+.orb { position:fixed; border-radius:50%; pointer-events:none; z-index:1; }
+.orb-1 { width:260px;height:260px;background:radial-gradient(circle,rgba(124,58,237,.22) 0%,transparent 70%);top:-90px;left:-70px;filter:blur(50px);animation:orb-float 16s ease-in-out infinite; }
+.orb-2 { width:200px;height:200px;background:radial-gradient(circle,rgba(72,202,228,.18) 0%,transparent 70%);top:38%;right:-60px;filter:blur(44px);animation:orb-float 20s ease-in-out infinite reverse; }
+.orb-3 { width:180px;height:180px;background:radial-gradient(circle,rgba(0,20,80,.38) 0%,transparent 70%);bottom:110px;left:20px;filter:blur(52px);animation:orb-float 12s ease-in-out infinite 4s; }
+@keyframes orb-float { 0%,100%{transform:translate(0,0) scale(1)} 33%{transform:translate(16px,-18px) scale(1.06)} 66%{transform:translate(-10px,14px) scale(0.94)} }
 
-  /* ── TICKER ── */
-  .ticker-wrap{background:var(--bg2);border-bottom:1px solid var(--border);padding:5px 0;overflow:hidden}
-  .ticker{display:flex;gap:16px;animation:ticker 30s linear infinite;width:max-content}
-  @keyframes ticker{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
-  .ticker-item{display:flex;align-items:center;gap:5px;white-space:nowrap;font-size:11px;font-family:var(--mono)}
-  .ticker-sym{color:var(--accent2);font-weight:600}
-  .positive{color:var(--profit)}.negative{color:var(--loss)}
+/* Bio particles */
+.bio { position:fixed;inset:0;z-index:1;pointer-events:none;
+  background-image:
+    radial-gradient(2px 2px at  9% 21%,rgba(72,202,228,.65) 0%,transparent 100%),
+    radial-gradient(1px 1px at 36% 11%,rgba(144,224,239,.52) 0%,transparent 100%),
+    radial-gradient(2px 2px at 64% 26%,rgba(72,202,228,.56) 0%,transparent 100%),
+    radial-gradient(1px 1px at 82% 77%,rgba(144,224,239,.60) 0%,transparent 100%),
+    radial-gradient(1px 1px at 20% 82%,rgba(72,202,228,.46) 0%,transparent 100%),
+    radial-gradient(2px 2px at 50% 55%,rgba(124,58,237,.40) 0%,transparent 100%);
+  animation:bio-drift 25s ease-in-out infinite;
+}
+@keyframes bio-drift { 0%,100%{transform:translateY(0) translateX(0);opacity:.8} 50%{transform:translateY(-8px) translateX(-7px);opacity:.7} }
 
-  /* ── CONTENT ── */
-  .content{flex:1;padding:10px 14px 20px;display:flex;flex-direction:column;gap:10px}
-  .section{display:none;flex-direction:column;gap:10px}
-  .section.active{display:flex}
-  .subpage{display:none;flex-direction:column;gap:10px}
-  .subpage.active{display:flex}
-  .arb-sub{display:none;flex-direction:column;gap:10px}
-  .arb-sub.active{display:flex}
+/* ── ANIMATIONS ── */
+@keyframes jellyfish {
+  0%,100%{box-shadow:0 0 10px var(--purple-dim),0 0 20px rgba(72,202,228,.05);border-color:rgba(124,58,237,.20);}
+  50%{box-shadow:0 0 20px var(--purple-dim),0 0 40px rgba(72,202,228,.10),0 4px 28px rgba(0,0,0,.28);border-color:rgba(124,58,237,.38);}
+}
+@keyframes glow-cyan { 0%,100%{text-shadow:0 0 7px var(--profit-glow)} 50%{text-shadow:0 0 15px var(--profit-glow),0 0 28px rgba(72,202,228,.22)} }
+@keyframes glow-gold { 0%,100%{text-shadow:0 0 6px var(--gold-dim)} 50%{text-shadow:0 0 14px var(--gold-dim),0 0 26px rgba(251,191,36,.18)} }
+@keyframes loss-pulse { 0%,100%{text-shadow:0 0 5px var(--loss-glow)} 50%{text-shadow:0 0 12px var(--loss-glow),0 0 22px rgba(255,107,107,.18)} }
+@keyframes dot-pulse { 0%,100%{box-shadow:0 0 0 0 rgba(72,202,228,.5);opacity:1} 50%{box-shadow:0 0 0 5px rgba(72,202,228,0);opacity:.8} }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+@keyframes spin { to{transform:rotate(360deg)} }
+@keyframes orbit-1 { from{transform:rotateZ(0deg)} to{transform:rotateZ(360deg)} }
+@keyframes orbit-2 { from{transform:rotateZ(120deg)} to{transform:rotateZ(-240deg)} }
+@keyframes orbit-3 { from{transform:rotateZ(240deg)} to{transform:rotateZ(600deg)} }
+@keyframes ticker { 0%{transform:translateX(0)} 100%{transform:translateX(-50%)} }
 
-  /* ── CARD ── */
-  .card{background:rgba(18,20,31,0.85);backdrop-filter:blur(10px);border:1px solid var(--border);border-radius:14px;padding:13px 14px;position:relative;overflow:hidden}
-  .card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
-  .card-title{font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.7px}
-  .badge{font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px}
-  .badge-g{background:rgba(52,211,153,0.12);color:var(--quantum);border:1px solid rgba(52,211,153,0.2)}
-  .badge-r{background:rgba(248,113,113,0.12);color:var(--danger);border:1px solid rgba(248,113,113,0.2)}
-  .badge-p{background:rgba(99,102,241,0.12);color:var(--accent2);border:1px solid rgba(99,102,241,0.2)}
-  .badge-y{background:rgba(251,191,36,0.12);color:var(--warn);border:1px solid rgba(251,191,36,0.2)}
+/* ── APP ── */
+.app { position:relative;z-index:2;min-height:100vh;display:flex;flex-direction:column; }
 
-  /* ── METRICS ── */
-  .mg{display:grid;gap:8px}
-  .mg-2{grid-template-columns:1fr 1fr}
-  .mg-3{grid-template-columns:1fr 1fr 1fr}
-  .m{background:rgba(16,18,26,0.9);border:1px solid var(--border);border-radius:11px;padding:10px 11px;transition:border-color 0.2s}
-  .m-label{font-size:9px;color:var(--text3);margin-bottom:3px;text-transform:uppercase;letter-spacing:0.4px}
-  .m-val{font-size:18px;font-weight:700;font-family:var(--mono)}
-  .m-sub{font-size:9px;color:var(--text3);margin-top:2px}
-  .vg{color:var(--quantum)}.vr{color:var(--danger)}.vp{color:var(--accent2)}.vy{color:var(--warn)}
+/* ── HEADER ── */
+.header { padding:10px 16px 9px;background:rgba(2,0,16,.88);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);border-bottom:1px solid rgba(124,58,237,.18);position:sticky;top:0;z-index:100; }
+.header-row { display:flex;align-items:center;justify-content:space-between; }
 
-  /* ── PNL ── */
-  .pnl-big{font-size:32px;font-weight:800;font-family:var(--mono);line-height:1}
-  .pnl-sub{font-size:12px;color:var(--text2);margin-top:5px}
+/* Orbital logo */
+.logo { display:flex;align-items:center;gap:10px; }
+.orbit-container { width:34px;height:34px;position:relative;flex-shrink:0; }
+.orbit-core { position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:10px;height:10px;background:radial-gradient(circle,var(--purple-soft) 0%,var(--purple) 60%,transparent 100%);border-radius:50%;box-shadow:0 0 8px var(--purple-dim),0 0 16px rgba(124,58,237,.18); }
+.orbit-ring { position:absolute;top:50%;left:50%;border-radius:50%;border:1px solid transparent;transform-origin:center center; }
+.orbit-ring-1 { width:18px;height:18px;margin-top:-9px;margin-left:-9px;border-top-color:var(--purple);border-right-color:rgba(124,58,237,.25);animation:orbit-1 3s linear infinite; }
+.orbit-ring-2 { width:26px;height:26px;margin-top:-13px;margin-left:-13px;border-top-color:var(--cyan);border-left-color:rgba(72,202,228,.22);animation:orbit-2 5s linear infinite; }
+.orbit-ring-3 { width:34px;height:34px;margin-top:-17px;margin-left:-17px;border-bottom-color:var(--gold);border-right-color:rgba(251,191,36,.18);animation:orbit-3 8s linear infinite; }
+.orbit-dot { position:absolute;width:3px;height:3px;border-radius:50%;transform:translate(-50%,-50%); }
+.orbit-ring-1 .orbit-dot { background:var(--purple);top:0;left:50%;box-shadow:0 0 3px var(--purple); }
+.orbit-ring-2 .orbit-dot { background:var(--cyan);top:50%;right:-2px;transform:translate(50%,-50%);box-shadow:0 0 4px var(--cyan); }
+.orbit-ring-3 .orbit-dot { background:var(--gold);bottom:0;left:50%;transform:translate(-50%,50%);box-shadow:0 0 4px var(--gold); }
 
-  /* ── ROWS ── */
-  .row{display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border)}
-  .row:last-child{border-bottom:none}
-  .trade-item{display:flex;align-items:center;gap:9px;padding:9px 0;border-bottom:1px solid var(--border)}
-  .trade-item:last-child{border-bottom:none}
-  .trade-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
-  .trade-body{flex:1;min-width:0}
-  .trade-sym{font-size:12px;font-weight:600;font-family:var(--mono)}
-  .trade-meta{font-size:10px;color:var(--text3);margin-top:1px}
-  .trade-pnl{font-size:12px;font-weight:700;font-family:var(--mono);text-align:right}
+.logo-text { font-size:15px;font-weight:700;letter-spacing:-.3px;background:linear-gradient(135deg,var(--purple-soft),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text; }
 
-  /* ── TOGGLE ── */
-  .toggle-row{display:flex;align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--border)}
-  .toggle-row:last-child{border-bottom:none}
-  .toggle-info h4{font-size:13px;font-weight:600;margin-bottom:1px}
-  .toggle-info p{font-size:10px;color:var(--text3)}
-  .toggle{width:44px;height:24px;border-radius:12px;background:rgba(100,116,139,0.25);border:1px solid rgba(100,116,139,0.25);position:relative;cursor:pointer;transition:all 0.3s;flex-shrink:0}
-  .toggle.on{background:linear-gradient(135deg,var(--purple),var(--quantum));border-color:transparent}
-  .toggle::after{content:'';position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;top:2px;left:2px;transition:transform 0.3s}
-  .toggle.on::after{transform:translateX(20px)}
+.header-right { display:flex;align-items:center;gap:6px; }
+.pill { display:flex;align-items:center;gap:4px;padding:4px 10px;border-radius:16px;font-size:10px;font-weight:600;letter-spacing:.2px; }
+.pill-status { background:rgba(72,202,228,.10);border:1px solid rgba(72,202,228,.22);color:var(--cyan); }
+.pill-status.off { background:rgba(255,107,107,.10);border-color:rgba(255,107,107,.22);color:var(--loss); }
+.pill-ap { background:rgba(124,58,237,.10);border:1px solid rgba(124,58,237,.22);color:var(--purple-soft);cursor:pointer; }
+.pill-ap.on { background:rgba(72,202,228,.12);border-color:rgba(72,202,228,.25);color:var(--cyan); }
+.dot { width:5px;height:5px;border-radius:50%;background:currentColor;animation:blink 1.5s ease-in-out infinite; }
 
-  /* ── ACTION GRID ── */
-  .ag{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-  .ab{padding:11px;border-radius:12px;text-align:center;cursor:pointer;border:1px solid var(--border);background:rgba(16,18,26,0.9);transition:all 0.15s}
-  .ab:active{transform:scale(0.97)}
-  .ab-icon{font-size:20px;margin-bottom:3px}
-  .ab-label{font-size:11px;font-weight:600;color:var(--text2)}
+/* ── TICKER ── */
+.ticker-wrap { background:rgba(2,0,16,.7);border-bottom:1px solid rgba(124,58,237,.12);padding:5px 0;overflow:hidden; }
+.ticker { display:flex;gap:16px;animation:ticker 30s linear infinite;width:max-content; }
+.ticker-item { display:flex;align-items:center;gap:5px;white-space:nowrap;font-size:11px;font-family:var(--mono); }
+.ticker-sym { color:var(--purple-soft);font-weight:600; }
+.positive { color:var(--profit); }
+.negative { color:var(--loss); }
 
-  /* ── CHAT ── */
-  .chat-wrap{display:flex;flex-direction:column;gap:8px;max-height:300px;overflow-y:auto;padding-right:4px;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
-  .msg{display:flex;flex-direction:column;gap:2px}
-  .msg.user{align-items:flex-end}.msg.ai{align-items:flex-start}
-  .msg-bubble{padding:9px 13px;border-radius:14px;font-size:12px;line-height:1.5;max-width:85%;white-space:pre-wrap}
-  .msg.user .msg-bubble{background:linear-gradient(135deg,rgba(99,102,241,0.25),rgba(59,130,246,0.25));border:1px solid rgba(99,102,241,0.25);border-bottom-right-radius:4px}
-  .msg.ai .msg-bubble{background:rgba(16,18,26,0.9);border:1px solid var(--border);border-bottom-left-radius:4px}
-  .msg-time{font-size:9px;color:var(--text3);padding:0 4px}
-  .chat-input-wrap{display:flex;gap:7px;margin-top:5px}
-  .chat-input{flex:1;background:rgba(16,18,26,0.9);border:1px solid var(--border);border-radius:11px;padding:9px 12px;color:var(--text);font-size:12px;font-family:var(--font);outline:none}
-  .chat-input:focus{border-color:var(--border2)}
-  .chat-send{width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,var(--purple),var(--blue));border:none;color:#fff;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-  .chip{flex-shrink:0;padding:4px 10px;border-radius:16px;font-size:10px;font-weight:500;background:rgba(99,102,241,0.1);border:1px solid var(--border2);color:var(--accent2);cursor:pointer;white-space:nowrap}
+/* ── SUB TABS ── */
+.sub-tabs { display:flex;gap:3px;padding:8px 14px 4px;overflow-x:auto;scrollbar-width:none;background:rgba(2,0,16,.5); }
+.sub-tabs::-webkit-scrollbar { display:none; }
+.sub-tab { flex-shrink:0;padding:5px 12px;border-radius:16px;font-size:11px;font-weight:500;color:var(--text3);cursor:pointer;transition:all .2s;white-space:nowrap;border:1px solid transparent; }
+.sub-tab.active { background:rgba(124,58,237,.12);color:var(--purple-soft);border-color:rgba(124,58,237,.28); }
 
-  /* ── SETUP ── */
-  .setup-screen{position:fixed;inset:0;z-index:200;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:24px}
-  .setup-card{background:var(--card);border:1px solid var(--border2);border-radius:18px;padding:26px 22px;max-width:380px;width:100%}
-  .setup-title{font-size:18px;font-weight:700;margin-bottom:5px;background:linear-gradient(90deg,var(--accent2),var(--quantum));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-  .setup-desc{font-size:12px;color:var(--text2);margin-bottom:20px;line-height:1.5}
-  .setup-label{font-size:11px;color:var(--text3);margin-bottom:5px;font-weight:500;display:block}
-  .setup-input{width:100%;background:rgba(16,18,26,0.9);border:1px solid var(--border);border-radius:10px;padding:9px 12px;color:var(--text);font-size:12px;font-family:var(--mono);outline:none;margin-bottom:10px}
-  .setup-input:focus{border-color:var(--border2)}
-  .setup-btn{width:100%;padding:12px;border-radius:11px;background:linear-gradient(135deg,var(--purple),var(--blue));border:none;color:#fff;font-size:13px;font-weight:600;cursor:pointer;font-family:var(--font)}
+/* ── CONTENT ── */
+.content { flex:1;padding:8px 12px 18px;display:flex;flex-direction:column;gap:8px; }
+.section { display:none;flex-direction:column;gap:8px; }
+.section.active { display:flex; }
+.subpage { display:none;flex-direction:column;gap:8px; }
+.subpage.active { display:flex; }
+.arb-sub { display:none;flex-direction:column;gap:8px; }
+.arb-sub.active { display:flex; }
 
-  /* ── BOTTOM NAV ── */
-  .bottom-nav{position:fixed;bottom:0;left:0;right:0;height:var(--nav-h);background:rgba(10,11,16,0.97);backdrop-filter:blur(20px);border-top:1px solid var(--border);display:flex;z-index:100;padding-bottom:env(safe-area-inset-bottom)}
-  .nav-item{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;cursor:pointer;transition:all 0.2s;position:relative}
-  .nav-item .nav-icon{font-size:18px;transition:transform 0.2s}
-  .nav-item .nav-label{font-size:9px;font-weight:500;color:var(--text3);letter-spacing:0.2px;transition:color 0.2s}
-  .nav-item.active .nav-icon{transform:scale(1.1)}
-  .nav-item.active .nav-label{color:var(--accent2);font-weight:600}
-  .nav-item.active::before{content:'';position:absolute;top:0;left:25%;right:25%;height:2px;background:linear-gradient(90deg,var(--accent),var(--quantum));border-radius:0 0 2px 2px}
-  .nav-item.soon .nav-label{color:var(--text3);opacity:0.6}
-  .nav-badge{position:absolute;top:6px;right:calc(50% - 18px);width:6px;height:6px;border-radius:50%;background:var(--quantum)}
+/* ── CARD ── */
+.card { background:var(--glass-bg);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid var(--glass-border);border-radius:16px;padding:13px 14px;position:relative;overflow:hidden;animation:jellyfish 5s ease-in-out infinite; }
+.card:nth-child(2){animation-delay:1.2s}
+.card:nth-child(3){animation-delay:2.4s}
+.card:nth-child(4){animation-delay:.8s}
+.card::before { content:'';position:absolute;top:-24px;right:-24px;width:80px;height:80px;background:radial-gradient(circle,rgba(124,58,237,.12) 0%,transparent 70%);pointer-events:none;z-index:0; }
+.card-header { display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;position:relative;z-index:1; }
+.card-title { font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.7px; }
 
-  /* ── COMING SOON PAGE ── */
-  .soon-page{display:flex;flex-direction:column;align-items:center;padding:30px 20px;text-align:center}
-  .soon-icon{font-size:48px;margin-bottom:16px;filter:grayscale(0.3)}
-  .soon-title{font-size:20px;font-weight:700;margin-bottom:6px;background:linear-gradient(90deg,var(--accent),var(--quantum));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-  .soon-phase{font-size:11px;font-weight:600;color:var(--warn);margin-bottom:14px;letter-spacing:1px}
-  .soon-desc{font-size:13px;color:var(--text2);line-height:1.7;margin-bottom:20px;max-width:340px}
-  .soon-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;max-width:320px;margin-bottom:20px}
-  .soon-stat{background:rgba(16,18,26,0.9);border:1px solid var(--border);border-radius:11px;padding:12px 10px}
-  .soon-stat-val{font-size:16px;font-weight:700;color:var(--accent2);font-family:var(--mono)}
-  .soon-stat-label{font-size:9px;color:var(--text3);margin-top:3px;text-transform:uppercase;letter-spacing:0.4px}
-  .soon-features{width:100%;max-width:340px;text-align:left}
-  .soon-feat{display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;color:var(--text2);line-height:1.5}
-  .soon-feat:last-child{border-bottom:none}
-  .soon-feat-icon{flex-shrink:0;width:20px;height:20px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10px}
+/* ── BADGES ── */
+.badge { font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px; }
+.badge-g { background:rgba(72,202,228,.12);color:var(--cyan);border:1px solid rgba(72,202,228,.22); }
+.badge-r { background:rgba(255,107,107,.12);color:var(--loss);border:1px solid rgba(255,107,107,.22); }
+.badge-p { background:rgba(124,58,237,.12);color:var(--purple-soft);border:1px solid rgba(124,58,237,.22); }
+.badge-y { background:rgba(251,191,36,.12);color:var(--gold);border:1px solid rgba(251,191,36,.22); }
 
-  /* ── MISC ── */
-  .loading{display:flex;align-items:center;justify-content:center;padding:16px;gap:7px;color:var(--text3);font-size:12px}
-  .spin{width:14px;height:14px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite;flex-shrink:0}
-  @keyframes spin{to{transform:rotate(360deg)}}
-  .empty-state{text-align:center;padding:20px;color:var(--text3);font-size:12px;line-height:1.6}
-  .arb-row{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border)}
-  .arb-row:last-child{border-bottom:none}
-  .arb-path{font-size:11px;font-family:var(--mono);color:var(--text2)}
-  .arb-status{font-size:10px;font-weight:600;padding:2px 7px;border-radius:7px}
-  .arb-ok{background:rgba(52,211,153,0.1);color:var(--quantum)}
-  .arb-cd{background:rgba(100,116,139,0.12);color:var(--text3)}
+/* ── METRICS GRID ── */
+.mg { display:grid;gap:7px; }
+.mg-2 { grid-template-columns:1fr 1fr; }
+.mg-3 { grid-template-columns:1fr 1fr 1fr; }
+.m { background:rgba(0,0,20,.45);border:1px solid rgba(124,58,237,.12);border-radius:12px;padding:10px 11px;transition:border-color .2s;position:relative;z-index:1; }
+.m-label { font-size:9px;color:var(--text3);margin-bottom:3px;text-transform:uppercase;letter-spacing:.4px; }
+.m-val { font-size:18px;font-weight:700;font-family:var(--mono); }
+.m-sub { font-size:9px;color:var(--text3);margin-top:2px; }
+.vg { color:var(--cyan);animation:glow-cyan 3s ease-in-out infinite; }
+.vr { color:var(--loss);animation:loss-pulse 3s ease-in-out infinite; }
+.vp { color:var(--purple-soft); }
+.vy { color:var(--gold);animation:glow-gold 3s ease-in-out infinite; }
+
+/* ── PNL ── */
+.pnl-big { font-size:32px;font-weight:800;font-family:var(--mono);line-height:1; }
+.pnl-sub { font-size:12px;color:var(--text2);margin-top:5px; }
+
+/* ── ROWS ── */
+.row { display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid rgba(124,58,237,.08); }
+.row:last-child { border-bottom:none; }
+
+/* ── TRADE ITEMS ── */
+.trade-item { display:flex;align-items:center;gap:9px;padding:9px 0;border-bottom:1px solid rgba(124,58,237,.08); }
+.trade-item:last-child { border-bottom:none; }
+.trade-dot { width:7px;height:7px;border-radius:50%;flex-shrink:0; }
+.trade-body { flex:1;min-width:0; }
+.trade-sym { font-size:12px;font-weight:600;font-family:var(--mono); }
+.trade-meta { font-size:10px;color:var(--text3);margin-top:1px; }
+.trade-pnl { font-size:12px;font-weight:700;font-family:var(--mono);text-align:right; }
+
+/* ── TOGGLE ── */
+.toggle-row { display:flex;align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid rgba(124,58,237,.08); }
+.toggle-row:last-child { border-bottom:none; }
+.toggle-info h4 { font-size:13px;font-weight:600;margin-bottom:1px; }
+.toggle-info p { font-size:10px;color:var(--text3); }
+.toggle { width:44px;height:24px;border-radius:12px;background:rgba(100,116,139,.22);border:1px solid rgba(100,116,139,.22);position:relative;cursor:pointer;transition:all .3s;flex-shrink:0; }
+.toggle.on { background:linear-gradient(135deg,var(--purple),var(--cyan));border-color:transparent; }
+.toggle::after { content:'';position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;top:2px;left:2px;transition:transform .3s; }
+.toggle.on::after { transform:translateX(20px); }
+
+/* ── ACTION GRID ── */
+.ag { display:grid;grid-template-columns:1fr 1fr;gap:8px; }
+.ab { padding:11px;border-radius:14px;text-align:center;cursor:pointer;border:1px solid rgba(124,58,237,.18);background:rgba(0,0,20,.45);transition:all .15s; }
+.ab:active { transform:scale(.97); }
+.ab-icon { font-size:20px;margin-bottom:3px; }
+.ab-label { font-size:11px;font-weight:600;color:var(--text2); }
+
+/* ── CHAT ── */
+.chat-wrap { display:flex;flex-direction:column;gap:8px;max-height:300px;overflow-y:auto;padding-right:4px;scrollbar-width:thin;scrollbar-color:var(--border) transparent; }
+.msg { display:flex;flex-direction:column;gap:2px; }
+.msg.user { align-items:flex-end; }
+.msg.ai { align-items:flex-start; }
+.msg-bubble { padding:9px 13px;border-radius:14px;font-size:12px;line-height:1.5;max-width:85%;white-space:pre-wrap; }
+.msg.user .msg-bubble { background:linear-gradient(135deg,rgba(124,58,237,.22),rgba(72,202,228,.15));border:1px solid rgba(124,58,237,.25);border-bottom-right-radius:4px; }
+.msg.ai .msg-bubble { background:rgba(0,5,25,.7);border:1px solid var(--border);border-bottom-left-radius:4px; }
+.msg-time { font-size:9px;color:var(--text3);padding:0 4px; }
+.chat-input-wrap { display:flex;gap:7px;margin-top:5px; }
+.chat-input { flex:1;background:rgba(0,5,25,.7);border:1px solid var(--border);border-radius:11px;padding:9px 12px;color:var(--text);font-size:12px;font-family:var(--font);outline:none; }
+.chat-input:focus { border-color:var(--border2); }
+.chat-send { width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,var(--purple),var(--cyan));border:none;color:#fff;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0; }
+.chip { flex-shrink:0;padding:4px 10px;border-radius:16px;font-size:10px;font-weight:500;background:rgba(124,58,237,.10);border:1px solid var(--border2);color:var(--purple-soft);cursor:pointer;white-space:nowrap; }
+
+/* ── SETUP ── */
+.setup-screen { position:fixed;inset:0;z-index:200;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:24px; }
+.setup-card { background:var(--glass-bg);border:1px solid var(--border2);border-radius:20px;padding:26px 22px;max-width:380px;width:100%;backdrop-filter:blur(20px); }
+.setup-title { font-size:18px;font-weight:700;margin-bottom:5px;background:linear-gradient(90deg,var(--purple-soft),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent; }
+.setup-desc { font-size:12px;color:var(--text2);margin-bottom:20px;line-height:1.5; }
+.setup-label { font-size:11px;color:var(--text3);margin-bottom:5px;font-weight:500;display:block; }
+.setup-input { width:100%;background:rgba(0,5,25,.7);border:1px solid var(--border);border-radius:10px;padding:9px 12px;color:var(--text);font-size:12px;font-family:var(--mono);outline:none;margin-bottom:10px; }
+.setup-input:focus { border-color:var(--border2); }
+.setup-btn { width:100%;padding:12px;border-radius:12px;background:linear-gradient(135deg,var(--purple),var(--cyan));border:none;color:#fff;font-size:13px;font-weight:600;cursor:pointer;font-family:var(--font); }
+
+/* ── ARB ROWS ── */
+.arb-row { display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid rgba(124,58,237,.08); }
+.arb-row:last-child { border-bottom:none; }
+.arb-path { font-size:11px;font-family:var(--mono);color:var(--text2); }
+.arb-status { font-size:10px;font-weight:600;padding:2px 7px;border-radius:7px; }
+.arb-ok { background:rgba(72,202,228,.10);color:var(--cyan); }
+.arb-cd { background:rgba(100,116,139,.10);color:var(--text3); }
+
+/* ── STATS GRID (arb section) ── */
+.stats-grid { display:grid;gap:7px;margin-bottom:10px; }
+.stat-item { background:rgba(0,0,20,.45);border:1px solid rgba(124,58,237,.12);border-radius:10px;padding:10px 8px;text-align:center; }
+.stat-val { font-size:16px;font-weight:700;font-family:var(--mono);color:var(--purple-soft); }
+.stat-label { font-size:9px;color:var(--text3);margin-top:2px;text-transform:uppercase;letter-spacing:.4px; }
+
+/* ── LOADING / EMPTY ── */
+.loading { display:flex;align-items:center;justify-content:center;padding:16px;gap:7px;color:var(--text3);font-size:12px; }
+.spin { width:14px;height:14px;border:2px solid var(--border2);border-top-color:var(--cyan);border-radius:50%;animation:spin .8s linear infinite;flex-shrink:0; }
+.empty-state { text-align:center;padding:20px;color:var(--text3);font-size:12px;line-height:1.6; }
+
+/* ── WAVE DIVIDER ── */
+.wave-div { width:100%;height:24px;overflow:hidden;line-height:0;margin:-1px 0; }
+.wave-div svg { width:100%;height:100%;display:block; }
+
+/* ── MINI SPARKLINE ── */
+.mini-chart { height:48px;overflow:hidden;margin:10px -14px 0;position:relative; }
+.chart-svg { width:100%;height:100%;display:block; }
+
+/* ── BALANCE STATS ROW ── */
+.bal-stats { display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:rgba(124,58,237,.10);position:relative;z-index:1; }
+.bstat { background:rgba(2,0,16,.48);padding:12px 8px;text-align:center; }
+.bstat-label { font-size:9px;color:var(--text3);margin-bottom:4px;letter-spacing:.3px; }
+.bstat-val { font-size:15px;font-weight:700; }
+.bstat-sub { font-size:9px;color:var(--text3);margin-top:2px; }
+
+/* ── COMING SOON ── */
+.soon-page { display:flex;flex-direction:column;align-items:center;padding:28px 18px;text-align:center; }
+.soon-icon { font-size:46px;margin-bottom:14px;filter:grayscale(.2); }
+.soon-title { font-size:20px;font-weight:700;margin-bottom:6px;background:linear-gradient(90deg,var(--purple-soft),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent; }
+.soon-phase { font-size:11px;font-weight:600;color:var(--gold);margin-bottom:14px;letter-spacing:1px; }
+.soon-desc { font-size:13px;color:var(--text2);line-height:1.7;margin-bottom:18px;max-width:340px; }
+.soon-stats { display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;max-width:320px;margin-bottom:18px; }
+.soon-stat { background:rgba(0,5,25,.6);border:1px solid var(--border);border-radius:12px;padding:12px 10px; }
+.soon-stat-val { font-size:16px;font-weight:700;color:var(--purple-soft);font-family:var(--mono); }
+.soon-stat-label { font-size:9px;color:var(--text3);margin-top:3px;text-transform:uppercase;letter-spacing:.4px; }
+.soon-features { width:100%;max-width:340px;text-align:left; }
+.soon-feat { display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-bottom:1px solid rgba(124,58,237,.08);font-size:12px;color:var(--text2);line-height:1.5; }
+.soon-feat:last-child { border-bottom:none; }
+.soon-feat-icon { flex-shrink:0;width:20px;height:20px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10px; }
+
+/* ── BOTTOM NAV ── */
+.bottom-nav { position:fixed;bottom:0;left:0;right:0;height:var(--nav-h);background:rgba(2,0,16,.94);backdrop-filter:blur(28px);-webkit-backdrop-filter:blur(28px);border-top:1px solid rgba(124,58,237,.18);box-shadow:0 -4px 22px rgba(124,58,237,.10);display:flex;z-index:100;padding-bottom:env(safe-area-inset-bottom); }
+.nav-item { flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;cursor:pointer;transition:all .2s;position:relative; }
+.nav-item .nav-icon { font-size:18px;transition:transform .2s; }
+.nav-item .nav-label { font-size:9px;font-weight:500;color:var(--text3);letter-spacing:.2px;transition:color .2s; }
+.nav-item.active .nav-icon { transform:scale(1.1);filter:drop-shadow(0 0 4px var(--purple)); }
+.nav-item.active .nav-label { color:var(--purple-soft);font-weight:600; }
+.nav-item.active::before { content:'';position:absolute;top:0;left:25%;right:25%;height:2px;background:linear-gradient(90deg,var(--purple),var(--cyan));border-radius:0 0 2px 2px; }
+.nav-item.soon .nav-label { opacity:.6; }
+.nav-badge { position:absolute;top:6px;right:calc(50% - 18px);width:6px;height:6px;border-radius:50%;background:var(--cyan); }
 </style>
 </head>
 <body>
+
+<!-- Background -->
 <div class="q-bg"></div>
+<div class="bio"></div>
+<div class="orb orb-1"></div>
+<div class="orb orb-2"></div>
+<div class="orb orb-3"></div>
 
 <!-- SETUP SCREEN -->
 <div class="setup-screen" id="setupScreen" style="display:none">
@@ -207,8 +349,13 @@
   <div class="header">
     <div class="header-row">
       <div class="logo">
-        <div class="logo-icon">⚛</div>
-        <div class="logo-text">Quantum<span>Trade</span></div>
+        <div class="orbit-container">
+          <div class="orbit-core"></div>
+          <div class="orbit-ring orbit-ring-1"><div class="orbit-dot"></div></div>
+          <div class="orbit-ring orbit-ring-2"><div class="orbit-dot"></div></div>
+          <div class="orbit-ring orbit-ring-3"><div class="orbit-dot"></div></div>
+        </div>
+        <div class="logo-text">QuantumTrade</div>
       </div>
       <div class="header-right">
         <div class="pill pill-ap" id="apHeaderBtn" onclick="toggleAutopilot()">
@@ -238,7 +385,7 @@
     </div>
   </div>
 
-  <!-- SUB-TABS for Portfolio section -->
+  <!-- PORTFOLIO SUB-TABS -->
   <div class="sub-tabs" id="portfolioTabs">
     <div class="sub-tab active" onclick="showSub('dash')">📊 Обзор</div>
     <div class="sub-tab" onclick="showSub('balance')">💰 Баланс</div>
@@ -250,125 +397,171 @@
   </div>
 
   <div class="content">
-    <!-- ═══════════════════════════════════════════════ -->
-    <!-- SECTION 1: PORTFOLIO (current bot)             -->
-    <!-- ═══════════════════════════════════════════════ -->
+
+    <!-- ═══ SECTION 1: PORTFOLIO ═══ -->
     <div class="section active" id="sec-portfolio">
 
       <!-- DASHBOARD -->
       <div class="subpage active" id="sub-dash">
-        <div style="font-size:9px;color:var(--text3);text-align:right" id="lastRefresh"></div>
+        <div style="font-size:9px;color:var(--text3);text-align:right;padding:2px 2px 0" id="lastRefresh"></div>
+
+        <!-- Balance card with sparkline -->
+        <div class="card" style="padding-bottom:0">
+          <div style="padding:0 0 10px;position:relative;z-index:1">
+            <div style="font-size:10px;color:var(--text3);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px">Портфель</div>
+            <div style="font-size:36px;font-weight:800;color:var(--text);letter-spacing:-2px;line-height:1;margin-bottom:8px">
+              <span id="dashBalTotal" style="font-family:var(--mono)">—</span>
+              <span style="font-size:15px;font-weight:400;color:var(--text3);margin-left:4px">USDT</span>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <div id="pnlBlock"><div class="empty-state" style="padding:4px 0">Подключитесь для просмотра P&L</div></div>
+            </div>
+            <div style="font-size:10px;color:var(--text3);margin-top:6px">KuCoin · ByBit · <span id="balMetaTime">—</span></div>
+          </div>
+          <!-- Sparkline -->
+          <div class="mini-chart">
+            <svg class="chart-svg" viewBox="0 0 375 48" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <linearGradient id="qoG" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#48cae4" stop-opacity="0.25"/>
+                  <stop offset="100%" stop-color="#7c3aed" stop-opacity="0"/>
+                </linearGradient>
+                <filter id="gl"><feGaussianBlur stdDeviation="1.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+              </defs>
+              <path id="chartArea" d="M0,40 L60,37 L120,35 L180,28 L240,22 L300,16 L375,10 L375,48 L0,48 Z" fill="url(#qoG)"/>
+              <path id="chartLine" d="M0,40 L60,37 L120,35 L180,28 L240,22 L300,16 L375,10" fill="none" stroke="rgba(72,202,228,.4)" stroke-width="3" stroke-linecap="round" filter="url(#gl)"/>
+              <path id="chartLine2" d="M0,40 L60,37 L120,35 L180,28 L240,22 L300,16 L375,10" fill="none" stroke="#48cae4" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <!-- Stats row -->
+          <div class="bal-stats">
+            <div class="bstat">
+              <div class="bstat-label">Win Rate</div>
+              <div class="bstat-val vg" id="statWr" style="font-size:15px">—</div>
+              <div class="bstat-sub" id="statWL">—W/—L</div>
+            </div>
+            <div class="bstat">
+              <div class="bstat-label">Сделок</div>
+              <div class="bstat-val vp" id="statTotal" style="font-size:15px">—</div>
+              <div class="bstat-sub" id="statOpen">— откр.</div>
+            </div>
+            <div class="bstat">
+              <div class="bstat-label">Q-Score</div>
+              <div class="bstat-val vy" id="sysMinQ" style="font-size:15px">—</div>
+              <div class="bstat-sub">min порог</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- System status -->
         <div class="card">
           <div class="card-header">
-            <div class="card-title">Общая прибыль</div>
-            <div class="badge badge-p" id="versionBadge">v8.3</div>
+            <div class="card-title">Статус системы</div>
+            <div class="badge" id="apBadge">...</div>
           </div>
-          <div id="pnlBlock"><div class="empty-state">Подключитесь для просмотра P&L</div></div>
-        </div>
-        <div class="mg mg-2">
-          <div class="m"><div class="m-label">Сделок</div><div class="m-val vp" id="statTotal">—</div><div class="m-sub" id="statOpen">— открытых</div></div>
-          <div class="m"><div class="m-label">Win Rate</div><div class="m-val" id="statWr">—</div><div class="m-sub" id="statWL">—W / —L</div></div>
-        </div>
-        <div class="card">
-          <div class="card-header"><div class="card-title">Статус системы</div><div class="badge" id="apBadge">...</div></div>
-          <div class="mg mg-3">
+          <div class="mg mg-3" style="position:relative;z-index:1">
             <div class="m" style="text-align:center"><div class="m-label">Торговля</div><div class="m-val" id="sysAutopilot" style="font-size:20px">—</div></div>
             <div class="m" style="text-align:center"><div class="m-label">Арбитраж</div><div class="m-val" id="sysArb" style="font-size:20px">—</div></div>
-            <div class="m" style="text-align:center"><div class="m-label">Min Q</div><div class="m-val vp" id="sysMinQ" style="font-size:20px">—</div></div>
+            <div class="m" style="text-align:center"><div class="m-label">Версия</div><div class="m-val vp" id="versionBadge" style="font-size:13px">—</div></div>
           </div>
         </div>
+
+        <!-- Balance details inline -->
         <div class="card" style="cursor:pointer" onclick="showSub('balance')">
-          <div class="card-header"><div class="card-title">💰 Баланс</div><div style="font-size:10px;color:var(--accent2)">→</div></div>
-          <div class="mg mg-3">
-            <div class="m"><div class="m-label">Спот</div><div class="m-val vg" id="dashBalSpot" style="font-size:15px">—</div></div>
+          <div class="card-header"><div class="card-title">💰 Биржи</div><div style="font-size:10px;color:var(--purple-soft)">→</div></div>
+          <div class="mg mg-2" style="position:relative;z-index:1">
+            <div class="m"><div class="m-label">Спот (KuCoin)</div><div class="m-val vg" id="dashBalSpot" style="font-size:15px">—</div></div>
             <div class="m"><div class="m-label">Фьючерсы</div><div class="m-val" id="dashBalFut" style="font-size:15px">—</div></div>
-            <div class="m"><div class="m-label">Итого</div><div class="m-val vp" id="dashBalTotal" style="font-size:15px">—</div></div>
           </div>
         </div>
+
+        <!-- Quick actions -->
         <div class="card">
-          <div class="card-title" style="margin-bottom:10px">Быстрые действия</div>
-          <div class="ag">
+          <div class="card-title" style="margin-bottom:10px;position:relative;z-index:1">Быстрые действия</div>
+          <div class="ag" style="position:relative;z-index:1">
             <div class="ab" onclick="toggleAutopilot()"><div class="ab-icon">🤖</div><div class="ab-label">Торговля</div></div>
             <div class="ab" onclick="toggleArb()"><div class="ab-icon">⚡</div><div class="ab-label">Арбитраж</div></div>
             <div class="ab" onclick="loadData()"><div class="ab-icon">🔄</div><div class="ab-label">Обновить</div></div>
             <div class="ab" onclick="showSub('settings')"><div class="ab-icon">⚙️</div><div class="ab-label">Настройки</div></div>
           </div>
         </div>
+
+        <!-- Recent trades -->
         <div class="card">
-          <div class="card-header"><div class="card-title">Последние сделки</div><div style="font-size:10px;color:var(--accent2);cursor:pointer" onclick="showSub('trades')">Все →</div></div>
-          <div id="recentTradesPreview"><div class="empty-state">Сделок пока нет</div></div>
+          <div class="card-header" style="position:relative;z-index:1"><div class="card-title">Последние сделки</div><div style="font-size:10px;color:var(--purple-soft);cursor:pointer" onclick="showSub('trades')">Все →</div></div>
+          <div id="recentTradesPreview" style="position:relative;z-index:1"><div class="empty-state">Сделок пока нет</div></div>
         </div>
       </div>
 
       <!-- BALANCE -->
       <div class="subpage" id="sub-balance">
-        <div class="card" style="background:linear-gradient(135deg,rgba(99,102,241,0.12),rgba(52,211,153,0.06));border-color:rgba(99,102,241,0.25)">
+        <div class="card" style="background:linear-gradient(135deg,rgba(124,58,237,.10),rgba(72,202,228,.05));border-color:rgba(124,58,237,.28)">
           <div class="card-header"><div class="card-title">💼 Портфель</div><div class="badge badge-p" id="balLastUpdate">—</div></div>
-          <div style="text-align:center;padding:6px 0 14px">
+          <div style="text-align:center;padding:6px 0 14px;position:relative;z-index:1">
             <div style="font-size:10px;color:var(--text3);margin-bottom:3px">ИТОГО (USDT)</div>
-            <div style="font-size:28px;font-weight:800;color:var(--accent2)" id="balTotal">—</div>
+            <div style="font-size:28px;font-weight:800;color:var(--purple-soft);font-family:var(--mono)" id="balTotal">—</div>
           </div>
-          <div class="mg mg-2">
+          <div class="mg mg-2" style="position:relative;z-index:1">
             <div class="m"><div class="m-label">🏦 Спот</div><div class="m-val vg" id="balSpot">—</div></div>
             <div class="m"><div class="m-label">📈 Фьючерсы</div><div class="m-val" id="balFutures">—</div></div>
           </div>
-          <div class="mg mg-2" style="margin-top:8px">
+          <div class="mg mg-2" style="margin-top:7px;position:relative;z-index:1">
             <div class="m"><div class="m-label">Доступно</div><div class="m-val" id="balFutAvail">—</div></div>
             <div class="m"><div class="m-label">Нереал. P&L</div><div class="m-val" id="balFutPnl">—</div></div>
           </div>
         </div>
         <div class="card">
-          <div class="card-header"><div class="card-title">🏦 Спот активы</div><div class="badge badge-p" id="balAssetCount">0</div></div>
-          <div id="balSpotList"><div class="empty-state">Нет данных</div></div>
+          <div class="card-header" style="position:relative;z-index:1"><div class="card-title">🏦 Спот активы</div><div class="badge badge-p" id="balAssetCount">0</div></div>
+          <div id="balSpotList" style="position:relative;z-index:1"><div class="empty-state">Нет данных</div></div>
         </div>
         <div class="card">
-          <div class="card-header"><div class="card-title">📈 Фьючерс позиции</div><div class="badge" id="balPosBadge" style="background:rgba(52,211,153,0.12);color:var(--accent2)">0</div></div>
-          <div id="balPosList"><div class="empty-state">Нет открытых позиций</div></div>
+          <div class="card-header" style="position:relative;z-index:1"><div class="card-title">📈 Позиции</div><div class="badge" id="balPosBadge" style="background:rgba(72,202,228,.12);color:var(--cyan)">0</div></div>
+          <div id="balPosList" style="position:relative;z-index:1"><div class="empty-state">Нет открытых позиций</div></div>
         </div>
-        <div class="card" style="background:linear-gradient(135deg,rgba(139,92,246,0.08),rgba(52,211,153,0.04));border-color:rgba(139,92,246,0.2)">
-          <div class="card-header"><div class="card-title">💰 Earn (Пассивный доход)</div><div class="badge" id="earnBadge" style="background:rgba(139,92,246,0.12);color:var(--purple)">—</div></div>
-          <div class="mg mg-2">
+        <div class="card" style="background:linear-gradient(135deg,rgba(124,58,237,.08),rgba(72,202,228,.04));border-color:rgba(124,58,237,.22)">
+          <div class="card-header" style="position:relative;z-index:1"><div class="card-title">💰 Earn — Пассивный доход</div><div class="badge" id="earnBadge" style="background:rgba(124,58,237,.12);color:var(--purple-soft)">—</div></div>
+          <div class="mg mg-2" style="position:relative;z-index:1">
             <div class="m"><div class="m-label">В Earn</div><div class="m-val vg" id="earnTotal">$0.00</div></div>
-            <div class="m"><div class="m-label">APR</div><div class="m-val" id="earnAPR">—</div></div>
+            <div class="m"><div class="m-label">APR</div><div class="m-val vy" id="earnAPR">—</div></div>
           </div>
-          <div class="mg mg-2" style="margin-top:8px">
+          <div class="mg mg-2" style="margin-top:7px;position:relative;z-index:1">
             <div class="m"><div class="m-label">Доход/день</div><div class="m-val vg" id="earnDaily">—</div></div>
             <div class="m"><div class="m-label">Доход/мес</div><div class="m-val vg" id="earnMonthly">—</div></div>
           </div>
-          <div id="earnPositions" style="margin-top:8px;font-size:11px;color:var(--text3)"></div>
+          <div id="earnPositions" style="margin-top:8px;font-size:11px;color:var(--text3);position:relative;z-index:1"></div>
         </div>
       </div>
 
       <!-- TRADES -->
       <div class="subpage" id="sub-trades">
         <div class="card">
-          <div class="card-header"><div class="card-title">История сделок</div><div class="badge badge-p" id="tradeCountBadge">0</div></div>
-          <div id="tradesList"><div class="empty-state">Сделок пока нет</div></div>
+          <div class="card-header" style="position:relative;z-index:1"><div class="card-title">История сделок</div><div class="badge badge-p" id="tradeCountBadge">0</div></div>
+          <div id="tradesList" style="position:relative;z-index:1"><div class="empty-state">Сделок пока нет</div></div>
         </div>
         <div class="card">
-          <div class="card-title" style="margin-bottom:10px">По типам</div>
-          <div class="mg mg-2">
+          <div class="card-title" style="margin-bottom:10px;position:relative;z-index:1">По типам</div>
+          <div class="mg mg-2" style="position:relative;z-index:1">
             <div class="m"><div class="m-label">Спот</div><div class="m-val vg" id="spotPnl">$0</div><div class="m-sub" id="spotWR">—</div></div>
             <div class="m"><div class="m-label">Фьючерсы</div><div class="m-val" id="futPnl">$0</div><div class="m-sub" id="futWR">—</div></div>
           </div>
         </div>
       </div>
 
-      <!-- ARBITRAGE -->
+      <!-- ARB (sub-portfolio) -->
       <div class="subpage" id="sub-arb">
         <div class="card">
-          <div class="card-header"><div class="card-title">Треугольный арбитраж</div><div class="badge" id="arbBadge">ВЫКЛ</div></div>
-          <div class="mg mg-2" style="margin-bottom:10px">
+          <div class="card-header" style="position:relative;z-index:1"><div class="card-title">Треугольный арбитраж</div><div class="badge" id="arbBadge">ВЫКЛ</div></div>
+          <div class="mg mg-2" style="margin-bottom:10px;position:relative;z-index:1">
             <div class="m"><div class="m-label">Выполнено</div><div class="m-val vp" id="arbTotal">0</div></div>
             <div class="m"><div class="m-label">PnL Арб</div><div class="m-val" id="arbPnl">$0</div></div>
           </div>
-          <div class="toggle-row">
+          <div class="toggle-row" style="position:relative;z-index:1">
             <div class="toggle-info"><h4>Исполнение арбитража</h4><p>Авто-исполнение найденных возможностей</p></div>
             <div class="toggle" id="arbToggle" onclick="toggleArb()"></div>
           </div>
         </div>
         <div class="card">
-          <div class="card-title" style="margin-bottom:10px">Мониторинг треугольников</div>
+          <div class="card-title" style="margin-bottom:10px;position:relative;z-index:1">Мониторинг треугольников</div>
           <div class="arb-row"><div class="arb-path">USDT → BTC → ETH → USDT</div><div class="arb-status arb-cd">Мониторинг</div></div>
           <div class="arb-row"><div class="arb-path">USDT → ETH → BNB → USDT</div><div class="arb-status arb-cd">Мониторинг</div></div>
           <div class="arb-row"><div class="arb-path">USDT → BTC → SOL → USDT</div><div class="arb-status arb-cd">Мониторинг</div></div>
@@ -379,29 +572,29 @@
       <!-- SIGNALS -->
       <div class="subpage" id="sub-signals">
         <div class="card">
-          <div class="card-header"><div class="card-title">Активные сигналы</div><div class="badge badge-g" id="sigCount">0</div></div>
-          <div id="signalsList"><div class="empty-state">Ожидание сигналов...</div></div>
+          <div class="card-header" style="position:relative;z-index:1"><div class="card-title">Активные сигналы</div><div class="badge badge-g" id="sigCount">0</div></div>
+          <div id="signalsList" style="position:relative;z-index:1"><div class="empty-state">Ожидание сигналов...</div></div>
         </div>
         <div class="card">
-          <div class="card-title" style="margin-bottom:10px">Цены KuCoin</div>
-          <div id="pricesList"><div class="empty-state">—</div></div>
+          <div class="card-title" style="margin-bottom:10px;position:relative;z-index:1">Цены KuCoin</div>
+          <div id="pricesList" style="position:relative;z-index:1"><div class="empty-state">—</div></div>
         </div>
       </div>
 
       <!-- AI CHAT -->
       <div class="subpage" id="sub-ai">
         <div class="card">
-          <div class="card-header"><div class="card-title">Quantum AI Советник</div><div class="badge badge-p" id="aiModelBadge">DeepSeek V3</div></div>
-          <div class="chat-wrap" id="chatMessages">
+          <div class="card-header" style="position:relative;z-index:1"><div class="card-title">Quantum AI Советник</div><div class="badge badge-p" id="aiModelBadge">DeepSeek V3</div></div>
+          <div class="chat-wrap" id="chatMessages" style="position:relative;z-index:1">
             <div class="msg ai"><div class="msg-bubble">👋 Привет! Я QuantumTrade AI. Задай вопрос о рынке или стратегии.</div><div class="msg-time">сейчас</div></div>
           </div>
-          <div style="display:flex;gap:5px;overflow-x:auto;padding:4px 0;scrollbar-width:none">
+          <div style="display:flex;gap:5px;overflow-x:auto;padding:6px 0 4px;scrollbar-width:none;position:relative;z-index:1">
             <div class="chip" onclick="quickChat('Прогноз BTC')">📈 Прогноз BTC</div>
             <div class="chip" onclick="quickChat('Лучший сигнал?')">⚡ Сигнал</div>
             <div class="chip" onclick="quickChat('Статус бота')">📊 Статус</div>
             <div class="chip" onclick="quickChat('Как работает арбитраж?')">🔺 Арбитраж</div>
           </div>
-          <div class="chat-input-wrap">
+          <div class="chat-input-wrap" style="position:relative;z-index:1">
             <input class="chat-input" id="chatInput" placeholder="Спроси что угодно..." onkeydown="if(event.key==='Enter')sendChat()">
             <button class="chat-send" onclick="sendChat()">↑</button>
           </div>
@@ -411,21 +604,21 @@
       <!-- SETTINGS -->
       <div class="subpage" id="sub-settings">
         <div class="card">
-          <div class="card-title" style="margin-bottom:12px">Управление</div>
-          <div class="toggle-row"><div class="toggle-info"><h4>🤖 Автопилот</h4><p>Авто-исполнение сигналов</p></div><div class="toggle" id="apToggle" onclick="toggleAutopilot()"></div></div>
-          <div class="toggle-row"><div class="toggle-info"><h4>⚡ Арбитраж</h4><p>Треугольный арбитраж</p></div><div class="toggle" id="arbToggle2" onclick="toggleArb()"></div></div>
+          <div class="card-title" style="margin-bottom:12px;position:relative;z-index:1">Управление</div>
+          <div class="toggle-row" style="position:relative;z-index:1"><div class="toggle-info"><h4>🤖 Автопилот</h4><p>Авто-исполнение сигналов</p></div><div class="toggle" id="apToggle" onclick="toggleAutopilot()"></div></div>
+          <div class="toggle-row" style="position:relative;z-index:1"><div class="toggle-info"><h4>⚡ Арбитраж</h4><p>Треугольный арбитраж</p></div><div class="toggle" id="arbToggle2" onclick="toggleArb()"></div></div>
         </div>
         <div class="card">
-          <div class="card-title" style="margin-bottom:10px">Параметры</div>
-          <div class="mg mg-2">
+          <div class="card-title" style="margin-bottom:10px;position:relative;z-index:1">Параметры</div>
+          <div class="mg mg-2" style="position:relative;z-index:1">
             <div class="m"><div class="m-label">Min Q-Score</div><div class="m-val vp" id="cfgMinQ">—</div></div>
             <div class="m"><div class="m-label">Cooldown</div><div class="m-val vp" id="cfgCooldown">—</div><div class="m-sub">сек</div></div>
             <div class="m"><div class="m-label">Риск</div><div class="m-val vy" id="cfgRisk">—</div><div class="m-sub">% депозита</div></div>
-            <div class="m"><div class="m-label">Версия</div><div class="m-val vp" id="cfgVersion" style="font-size:13px">8.0</div></div>
+            <div class="m"><div class="m-label">Версия</div><div class="m-val vp" id="cfgVersion" style="font-size:13px">—</div></div>
           </div>
         </div>
         <div class="card">
-          <div class="card-title" style="margin-bottom:12px">Подключение</div>
+          <div class="card-title" style="margin-bottom:12px;position:relative;z-index:1">Подключение</div>
           <label class="setup-label">Railway URL</label>
           <input class="setup-input" id="cfgUrl" placeholder="https://your-app.railway.app">
           <label class="setup-label">API Key</label>
@@ -433,22 +626,20 @@
           <button class="setup-btn" onclick="updateConnection()">Сохранить</button>
         </div>
         <div class="card">
-          <div class="card-header"><div class="card-title">🔧 Диагностика</div><div class="badge" id="diagBadge">—</div></div>
-          <div id="diagResult" style="font-size:11px;color:var(--text3);margin-top:6px;line-height:1.5">Нажми для проверки</div>
+          <div class="card-header" style="position:relative;z-index:1"><div class="card-title">🔧 Диагностика</div><div class="badge" id="diagBadge">—</div></div>
+          <div id="diagResult" style="font-size:11px;color:var(--text3);margin-top:6px;line-height:1.5;position:relative;z-index:1">Нажми для проверки</div>
           <button class="setup-btn" style="margin-top:8px" onclick="runDiag()">🔍 Проверить</button>
         </div>
       </div>
     </div>
 
-    <!-- ═══════════════════════════════════════════════ -->
-    <!-- SECTION 2: QaaS (Coming Soon)                  -->
-    <!-- ═══════════════════════════════════════════════ -->
+    <!-- ═══ SECTION 2: QaaS ═══ -->
     <div class="section" id="sec-qaas">
       <div class="soon-page">
         <div class="soon-icon">📡</div>
         <div class="soon-title">QaaS — Quantum Signals</div>
         <div class="soon-phase">◆ ФАЗА 2 · ЗАПУСК Q3 2026</div>
-        <div class="soon-desc">Продавай квантовые сигналы через API. У нас уже есть <code style="color:var(--accent2)">/api/signal/{pair}</code> — осталось добавить авторизацию, тарифы и платёжку.</div>
+        <div class="soon-desc">Продавай квантовые сигналы через API. У нас уже есть <code style="color:var(--purple-soft)">/api/signal/{pair}</code> — осталось добавить авторизацию, тарифы и платёжку.</div>
         <div class="soon-stats">
           <div class="soon-stat"><div class="soon-stat-val">$49-199</div><div class="soon-stat-label">подписка/мес</div></div>
           <div class="soon-stat"><div class="soon-stat-val">75-93%</div><div class="soon-stat-label">маржинальность</div></div>
@@ -456,69 +647,54 @@
           <div class="soon-stat"><div class="soon-stat-val">&lt;100ms</div><div class="soon-stat-label">отклик API</div></div>
         </div>
         <div class="soon-features">
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(52,211,153,0.12);color:var(--quantum)">✓</div>REST API с JWT-авторизацией</div>
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(99,102,241,0.12);color:var(--accent2)">◎</div>3 тарифа: Free / Pro $49 / Enterprise $199</div>
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(99,102,241,0.12);color:var(--accent2)">◎</div>Webhook-доставка сигналов в реальном времени</div>
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(99,102,241,0.12);color:var(--accent2)">◎</div>Swagger/OpenAPI документация</div>
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(99,102,241,0.12);color:var(--accent2)">◎</div>Stripe интеграция для оплаты</div>
+          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(72,202,228,.12);color:var(--cyan)">✓</div>REST API с JWT-авторизацией</div>
+          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(124,58,237,.12);color:var(--purple-soft)">◎</div>3 тарифа: Free / Pro $49 / Enterprise $199</div>
+          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(124,58,237,.12);color:var(--purple-soft)">◎</div>Webhook-доставка сигналов в реальном времени</div>
+          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(124,58,237,.12);color:var(--purple-soft)">◎</div>Swagger/OpenAPI документация</div>
+          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(124,58,237,.12);color:var(--purple-soft)">◎</div>Stripe интеграция для оплаты</div>
         </div>
       </div>
     </div>
 
-    <!-- ═══════════════════════════════════════════════ -->
-    <!-- SECTION 3: MEV Arbitrage (Coming Soon)         -->
-    <!-- ═══════════════════════════════════════════════ -->
+    <!-- ═══ SECTION 3: MEV/ARB ═══ -->
     <div class="section" id="sec-mev">
-      <!-- v8.3.3: Arb sub-tabs: CEX (live) + MEV (roadmap) -->
-      <div class="sub-tabs" id="arbSubTabs">
+      <div class="sub-tabs" id="arbSubTabs" style="padding:8px 0 4px">
         <div class="sub-tab active" onclick="showArbSub('cex')">⚡ CEX Арбитраж</div>
         <div class="sub-tab" onclick="showArbSub('mev')">🔮 MEV DEX</div>
       </div>
       <div class="arb-sub active" id="arb-sub-cex">
-      <!-- Live Arbitrage Dashboard -->
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">Статус арбитража</div>
-          <div class="badge" id="arbWsBadge">--</div>
+        <div class="card">
+          <div class="card-header" style="position:relative;z-index:1"><div class="card-title">Статус арбитража</div><div class="badge" id="arbWsBadge">--</div></div>
+          <div class="stats-grid" style="grid-template-columns:1fr 1fr 1fr;position:relative;z-index:1">
+            <div class="stat-item"><div class="stat-val" id="arbActive">--</div><div class="stat-label">Связок</div></div>
+            <div class="stat-item"><div class="stat-val" id="arbExec">--</div><div class="stat-label">Исполнение</div></div>
+            <div class="stat-item"><div class="stat-val" id="arbScanSpeed">--</div><div class="stat-label">Скан (сек)</div></div>
+          </div>
         </div>
-        <div class="stats-grid" style="grid-template-columns:1fr 1fr 1fr">
-          <div class="stat-item"><div class="stat-val" id="arbActive">--</div><div class="stat-label">Связок</div></div>
-          <div class="stat-item"><div class="stat-val" id="arbExec">--</div><div class="stat-label">Исполнение</div></div>
-          <div class="stat-item"><div class="stat-val" id="arbScanSpeed">--</div><div class="stat-label">Скан (сек)</div></div>
+        <div class="card">
+          <div class="card-header" style="position:relative;z-index:1"><div class="card-title">Статистика</div><div class="badge badge-p" id="arbPnlBadge">$0</div></div>
+          <div class="stats-grid" style="grid-template-columns:1fr 1fr 1fr 1fr;position:relative;z-index:1">
+            <div class="stat-item"><div class="stat-val" id="arbFound">0</div><div class="stat-label">Найдено</div></div>
+            <div class="stat-item"><div class="stat-val positive" id="arbSuccess">0</div><div class="stat-label">Успех</div></div>
+            <div class="stat-item"><div class="stat-val negative" id="arbFailed">0</div><div class="stat-label">Ошибки</div></div>
+            <div class="stat-item"><div class="stat-val" id="arbBestSpread">0%</div><div class="stat-label">Лучший</div></div>
+          </div>
         </div>
-      </div>
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">Статистика</div>
-          <div class="badge badge-p" id="arbPnlBadge">$0</div>
+        <div class="card">
+          <div class="card-header" style="position:relative;z-index:1"><div class="card-title">Opus Gate</div><div class="badge badge-p">AI Risk</div></div>
+          <div class="stats-grid" style="grid-template-columns:1fr 1fr 1fr;position:relative;z-index:1">
+            <div class="stat-item"><div class="stat-val" id="opusAsked">0</div><div class="stat-label">Запросов</div></div>
+            <div class="stat-item"><div class="stat-val positive" id="opusApproved">0</div><div class="stat-label">Одобрено</div></div>
+            <div class="stat-item"><div class="stat-val negative" id="opusRejected">0</div><div class="stat-label">Отклонено</div></div>
+          </div>
         </div>
-        <div class="stats-grid" style="grid-template-columns:1fr 1fr 1fr 1fr">
-          <div class="stat-item"><div class="stat-val" id="arbFound">0</div><div class="stat-label">Найдено</div></div>
-          <div class="stat-item"><div class="stat-val positive" id="arbSuccess">0</div><div class="stat-label">Успех</div></div>
-          <div class="stat-item"><div class="stat-val negative" id="arbFailed">0</div><div class="stat-label">Ошибки</div></div>
-          <div class="stat-item"><div class="stat-val" id="arbBestSpread">0%</div><div class="stat-label">Лучший</div></div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">Opus Gate</div>
-          <div class="badge badge-p">AI Risk</div>
-        </div>
-        <div class="stats-grid" style="grid-template-columns:1fr 1fr 1fr">
-          <div class="stat-item"><div class="stat-val" id="opusAsked">0</div><div class="stat-label">Запросов</div></div>
-          <div class="stat-item"><div class="stat-val positive" id="opusApproved">0</div><div class="stat-label">Одобрено</div></div>
-          <div class="stat-item"><div class="stat-val negative" id="opusRejected">0</div><div class="stat-label">Отклонено</div></div>
+        <div class="card">
+          <div class="card-header" style="position:relative;z-index:1"><div class="card-title">Последние возможности</div></div>
+          <div id="arbHistoryList" style="display:flex;flex-direction:column;gap:6px;max-height:250px;overflow-y:auto;position:relative;z-index:1">
+            <div style="color:var(--text3);font-size:12px;text-align:center;padding:20px 0">Загрузка...</div>
+          </div>
         </div>
       </div>
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">Последние возможности</div>
-        </div>
-        <div id="arbHistoryList" style="display:flex;flex-direction:column;gap:6px;max-height:250px;overflow-y:auto">
-          <div style="color:var(--text3);font-size:12px;text-align:center;padding:20px 0">Загрузка...</div>
-        </div>
-      </div>
-      </div><!-- /arb-sub-cex -->
       <div class="arb-sub" id="arb-sub-mev" style="display:none">
         <div class="soon-page">
           <div class="soon-icon">🔮</div>
@@ -527,24 +703,13 @@
           <div class="soon-desc">Квантовая оптимизация маршрутов MEV через DEX-ы. QAOA находит оптимальный путь через 5-10 пулов ликвидности одновременно.</div>
           <div class="soon-stats">
             <div class="soon-stat"><div class="soon-stat-val">$50-500</div><div class="soon-stat-label">в день / ETH</div></div>
-            <div class="soon-stat"><div class="soon-stat-val">$30-300</div><div class="soon-stat-label">в день / SOL</div></div>
-            <div class="soon-stat"><div class="soon-stat-val">3 сети</div><div class="soon-stat-label">ETH + SOL + ARB</div></div>
             <div class="soon-stat"><div class="soon-stat-val">Flashbots</div><div class="soon-stat-label">приватный relay</div></div>
           </div>
-          <div class="soon-features">
-            <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(249,115,22,0.12);color:#f97316">◎</div>Мониторинг mempool в реальном времени</div>
-            <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(249,115,22,0.12);color:#f97316">◎</div>QAOA-оптимизация арбитражных путей</div>
-            <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(249,115,22,0.12);color:#f97316">◎</div>Flash-бандлы для атомарных транзакций</div>
-            <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(249,115,22,0.12);color:#f97316">◎</div>Uniswap V3, Jupiter, Raydium, Camelot</div>
-            <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(249,115,22,0.12);color:#f97316">◎</div>Jito MEV для Solana</div>
-          </div>
         </div>
-      </div><!-- /arb-sub-mev -->
+      </div>
     </div>
 
-    <!-- ═══════════════════════════════════════════════ -->
-    <!-- SECTION 4: DeFi Risk Scoring (Coming Soon)     -->
-    <!-- ═══════════════════════════════════════════════ -->
+    <!-- ═══ SECTION 4: DeFi ═══ -->
     <div class="section" id="sec-defi">
       <div class="soon-page">
         <div class="soon-icon">🛡</div>
@@ -554,22 +719,11 @@
         <div class="soon-stats">
           <div class="soon-stat"><div class="soon-stat-val">+2-5%</div><div class="soon-stat-label">доп. доходность</div></div>
           <div class="soon-stat"><div class="soon-stat-val">B2B API</div><div class="soon-stat-label">модель дохода</div></div>
-          <div class="soon-stat"><div class="soon-stat-val">3 протокола</div><div class="soon-stat-label">Aave, Comp, Maker</div></div>
-          <div class="soon-stat"><div class="soon-stat-val">$5K/мес</div><div class="soon-stat-label">целевой доход</div></div>
-        </div>
-        <div class="soon-features">
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(139,92,246,0.12);color:#8b5cf6">◎</div>Квантовый Monte Carlo для ликвидаций</div>
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(139,92,246,0.12);color:#8b5cf6">◎</div>Корреляционное моделирование дефолтов</div>
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(139,92,246,0.12);color:#8b5cf6">◎</div>Стресс-тестирование при экстремальных условиях</div>
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(139,92,246,0.12);color:#8b5cf6">◎</div>Telegram-оповещения о рисках ликвидации</div>
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(139,92,246,0.12);color:#8b5cf6">◎</div>Партнёрство с Nexus Mutual (страхование)</div>
         </div>
       </div>
     </div>
 
-    <!-- ═══════════════════════════════════════════════ -->
-    <!-- SECTION 5: Options Pricing (Coming Soon)       -->
-    <!-- ═══════════════════════════════════════════════ -->
+    <!-- ═══ SECTION 5: Options ═══ -->
     <div class="section" id="sec-options">
       <div class="soon-page">
         <div class="soon-icon">💎</div>
@@ -578,22 +732,13 @@
         <div class="soon-desc">Quantum Monte Carlo для ценообразования крипто-опционов на Deribit. Квадратичное ускорение O(√N) vs классического O(N).</div>
         <div class="soon-stats">
           <div class="soon-stat"><div class="soon-stat-val">$500M+</div><div class="soon-stat-label">объём рынка/день</div></div>
-          <div class="soon-stat"><div class="soon-stat-val">2-5%</div><div class="soon-stat-label">точнее pricing</div></div>
           <div class="soon-stat"><div class="soon-stat-val">Deribit</div><div class="soon-stat-label">80% крипто-опционов</div></div>
-          <div class="soon-stat"><div class="soon-stat-val">$10-50K</div><div class="soon-stat-label">доход в месяц</div></div>
-        </div>
-        <div class="soon-features">
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(34,211,238,0.12);color:#22d3ee">◎</div>Amplitude Estimation для распределений цен</div>
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(34,211,238,0.12);color:#22d3ee">◎</div>Экзотические опционы: барьерные, азиатские</div>
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(34,211,238,0.12);color:#22d3ee">◎</div>Реал-тайм вычисление греков</div>
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(34,211,238,0.12);color:#22d3ee">◎</div>Маркет-мейкинг на спредах</div>
-          <div class="soon-feat"><div class="soon-feat-icon" style="background:rgba(34,211,238,0.12);color:#22d3ee">◎</div>Мультиактивное корреляционное моделирование</div>
         </div>
       </div>
     </div>
 
-  </div>
-</div>
+  </div><!-- /content -->
+</div><!-- /app -->
 
 <!-- BOTTOM NAVIGATION -->
 <div class="bottom-nav">
@@ -623,17 +768,15 @@
 <script>
 // ── Telegram ──
 const tg = window.Telegram?.WebApp;
-if(tg){tg.ready();tg.expand();try{tg.setHeaderColor('#0a0b10');tg.setBackgroundColor('#0a0b10');}catch(e){}}
+if(tg){tg.ready();tg.expand();try{tg.setHeaderColor('#020010');tg.setBackgroundColor('#020010');}catch(e){}}
 
 // ── Config ──
-// Normalize URL: always ensure https:// prefix
 function normalizeUrl(u){
   if(!u)return '';
   u=u.trim().replace(/\/+$/,'');
   if(u&&!/^https?:\/\//i.test(u)) u='https://'+u;
   return u;
 }
-// Auto-detect API URL: same origin as Mini App (served from same Railway server)
 let BASE_URL = normalizeUrl(localStorage.getItem('qt_url')) || window.location.origin || '';
 let API_KEY  = localStorage.getItem('qt_key') || '';
 let _state   = { autopilot: false, arb: false };
@@ -661,7 +804,6 @@ function showSection(id){
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
   document.getElementById('sec-'+id).classList.add('active');
   document.getElementById('nav-'+id).classList.add('active');
-  // Show/hide sub-tabs and ticker
   const tabs=document.getElementById('portfolioTabs');
   if(id==='portfolio'){tabs.style.display='flex';}
   else{tabs.style.display='none';}
@@ -688,7 +830,7 @@ async function apiPost(path,body={}){
 }
 function escHtml(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
 
-// ── Load Data ──
+// ── Earn ──
 async function loadEarnData(){
   if(!BASE_URL)return;
   try{
@@ -713,12 +855,12 @@ async function loadEarnData(){
     }
   }catch(e){console.log('[earn] load error:',e.message);}
 }
+
+// ── Load Data ──
 async function loadData(){
   if(!BASE_URL){document.getElementById('setupScreen').style.display='flex';return;}
   try{
-    console.log('[QT] loadData → '+BASE_URL+'/api/public/stats');
     const stats=await fetch(BASE_URL+'/api/public/stats',{signal:AbortSignal.timeout(15000)}).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.json();});
-    console.log('[QT] stats OK, autopilot='+stats.autopilot);
     const trades=await apiGet('/api/trades?limit=20').catch(()=>null);
     renderDashboard(stats);
     renderTrades(trades,stats);
@@ -726,13 +868,14 @@ async function loadData(){
     renderArb(stats);
     renderTicker(stats.prices||{});
     document.getElementById('lastRefresh').textContent='🕐 '+new Date().toLocaleTimeString('ru');
+    const now=new Date().toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'});
+    const bmt=document.getElementById('balMetaTime');if(bmt)bmt.textContent='обновлено '+now;
     setStatus('online');
     const b=stats.balance||{};
     const fmt=v=>'$'+(v||0).toLocaleString('ru',{minimumFractionDigits:0,maximumFractionDigits:0});
     const sp=document.getElementById('dashBalSpot');if(sp)sp.textContent=fmt(b.spot_usdt);
     const fu=document.getElementById('dashBalFut');if(fu)fu.textContent=fmt(b.futures_equity);
     const to=document.getElementById('dashBalTotal');if(to)to.textContent=fmt(b.total_usdt);
-    // v10.2: Load Earn data
     loadEarnData().catch(()=>{});
   }catch(e){
     console.error('[QT] loadData error:',e.message||e);
@@ -744,14 +887,17 @@ async function loadData(){
 function renderDashboard(s){
   const t=s.trading||{};const pnl=t.total_pnl||0;const cls=pnl>=0?'vg':'vr';
   document.getElementById('pnlBlock').innerHTML=
-    `<div class="pnl-big ${cls}">${pnl>=0?'+':'-'}$${Math.abs(pnl).toFixed(4)}</div>
-     <div class="pnl-sub">Total PnL · ${t.total||0} сделок · WR ${t.win_rate||0}%</div>`;
-  document.getElementById('statTotal').textContent=t.total||0;
-  document.getElementById('statOpen').textContent=(t.open||0)+' открытых';
+    `<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(72,202,228,.08);border:1px solid rgba(72,202,228,.20);border-radius:20px;padding:5px 13px">
+       <span style="font-size:15px">${pnl>=0?'↑':'↓'}</span>
+       <span class="${cls}" style="font-size:13px;font-weight:700;font-family:var(--mono)">${pnl>=0?'+':'-'}$${Math.abs(pnl).toFixed(4)}</span>
+       <span style="font-size:11px;color:var(--text3)">Total PnL · ${t.total||0} сделок · WR ${t.win_rate||0}%</span>
+     </div>`;
+  const total=document.getElementById('statTotal');if(total)total.textContent=t.total||0;
+  const open=document.getElementById('statOpen');if(open)open.textContent=(t.open||0)+' откр.';
   const wr=t.win_rate||0;
-  document.getElementById('statWr').textContent=wr+'%';
-  document.getElementById('statWr').className='m-val '+(wr>=50?'vg':'vr');
-  document.getElementById('statWL').textContent=(t.wins||0)+'W / '+((t.total||0)-(t.wins||0))+'L';
+  const wrEl=document.getElementById('statWr');
+  if(wrEl){wrEl.textContent=wr+'%';wrEl.className='bstat-val '+(wr>=50?'vg':'vr');}
+  const wl=document.getElementById('statWL');if(wl)wl.textContent=(t.wins||0)+'W/'+(((t.total||0)-(t.wins||0))+'L');
   _state.autopilot=!!s.autopilot;_state.arb=!!(s.arb&&s.arb.enabled);
   document.getElementById('sysAutopilot').textContent=_state.autopilot?'🟢':'🔴';
   document.getElementById('sysArb').textContent=_state.arb?'🟢':'🔴';
@@ -765,7 +911,10 @@ function renderDashboard(s){
     const r=s.settings.risk_pct;
     document.getElementById('cfgRisk').textContent=r?(r*100).toFixed(1):'—';
   }
-  if(s.version)document.getElementById('cfgVersion').textContent=s.version;
+  if(s.version){
+    document.getElementById('cfgVersion').textContent=s.version;
+    document.getElementById('versionBadge').textContent=s.version;
+  }
   updateTogglesUI();
 }
 
@@ -871,7 +1020,6 @@ async function renderBalance(){
       pnlEl.textContent=(pnl>=0?'+':'')+pnl.toFixed(4)+' USDT';
       pnlEl.className='m-val '+(pnl>=0?'vg':'vr');
       document.getElementById('balLastUpdate').textContent=new Date().toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'});
-      // Spot assets
       const accs=(balRes.value.spot_accounts||[]).filter(a=>parseFloat(a.balance)>0.0001);
       document.getElementById('balAssetCount').textContent=accs.length;
       if(!accs.length){document.getElementById('balSpotList').innerHTML='<div class="empty-state">Нет активов</div>';}
@@ -885,7 +1033,6 @@ async function renderBalance(){
         }).join('');
       }
     }
-    // Positions
     if(posRes.status==='fulfilled'&&posRes.value){
       const pos=posRes.value.positions||[];
       document.getElementById('balPosBadge').textContent=pos.length;
@@ -968,14 +1115,14 @@ async function runDiag(){
     const labels={kucoin_price:'Цена',kucoin_spot:'Спот',kucoin_futures:'Фьючерсы',fear_greed:'F&G',coingecko:'CoinGecko',config:'Конфиг'};
     for(const[key,val]of Object.entries(checks)){
       if(!val.ok)allOk=false;
-      const color=val.ok?'#34d399':'#ef4444';const icon=val.ok?'✅':'❌';
+      const color=val.ok?'var(--cyan)':'var(--loss)';const icon=val.ok?'✅':'❌';
       let detail='';
       if(val.ok){if(val.price)detail=`$${parseFloat(val.price).toLocaleString()}`;else if(val.total_usdt!=null)detail=`${val.total_usdt.toFixed(2)}`;else if(key==='config')detail=`AP:${val.autopilot?'ON':'OFF'}`;else detail='OK';}
       else{detail=(val.error||'Ошибка').slice(0,30);}
-      html+=`<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.04)"><span style="color:var(--text2);font-size:11px">${labels[key]||key}</span><span style="color:${color};font-size:10px">${icon} ${detail}</span></div>`;
+      html+=`<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(124,58,237,.08)"><span style="color:var(--text2);font-size:11px">${labels[key]||key}</span><span style="color:${color};font-size:10px">${icon} ${detail}</span></div>`;
     }
     result.innerHTML=html;badge.textContent=allOk?'✅':'⚠️';
-  }catch(e){badge.textContent='❌';result.innerHTML=`<span style="color:#ef4444">${e.message}</span>`;}
+  }catch(e){badge.textContent='❌';result.innerHTML=`<span style="color:var(--loss)">${e.message}</span>`;}
 }
 
 // ── Settings ──
@@ -990,11 +1137,11 @@ function setStatus(s){
 function showToast(msg){
   if(tg?.showAlert){tg.showAlert(msg);return;}
   const t=document.createElement('div');
-  t.style.cssText='position:fixed;bottom:72px;left:50%;transform:translateX(-50%);background:rgba(10,11,16,0.96);border:1px solid rgba(99,102,241,0.25);color:#f1f5f9;padding:8px 16px;border-radius:10px;font-size:12px;z-index:999;backdrop-filter:blur(12px);white-space:nowrap;max-width:90vw;text-align:center';
+  t.style.cssText='position:fixed;bottom:72px;left:50%;transform:translateX(-50%);background:rgba(2,0,16,.96);border:1px solid rgba(124,58,237,.28);color:var(--text);padding:8px 16px;border-radius:12px;font-size:12px;z-index:999;backdrop-filter:blur(16px);white-space:nowrap;max-width:90vw;text-align:center;box-shadow:0 4px 20px rgba(124,58,237,.20)';
   t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),3000);
 }
 
-// ── v8.3.3: Arb sub-tabs ──
+// ── Arb sub-tabs ──
 function showArbSub(id){
   document.querySelectorAll('.arb-sub').forEach(s=>s.style.display='none');
   document.querySelectorAll('#arbSubTabs .sub-tab').forEach(t=>t.classList.remove('active'));
@@ -1003,20 +1150,18 @@ function showArbSub(id){
   if(id==='cex') loadArbStats();
 }
 
-// ── v8.3.3: Arb Dashboard ──
+// ── Arb Stats ──
 async function loadArbStats(){
   if(!BASE_URL)return;
   try{
     const d=await fetch(BASE_URL+'/api/arb/stats',{signal:AbortSignal.timeout(10000)}).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.json();});
     const s=d.stats||{}, c=d.config||{}, w=d.ws||{}, o=d.opus_gate||{}, h=d.history||[];
-    // Status
     const wsBadge=document.getElementById('arbWsBadge');
     if(w.connected){wsBadge.textContent='WS Live';wsBadge.className='badge badge-g';}
     else{wsBadge.textContent='WS Offline';wsBadge.className='badge badge-r';}
     document.getElementById('arbActive').textContent=c.active+'/'+c.total_triangles;
     document.getElementById('arbExec').textContent=c.exec_enabled?'ВКЛ':'ВЫКЛ';
     document.getElementById('arbScanSpeed').textContent=w.connected?'5':'30';
-    // Stats
     document.getElementById('arbFound').textContent=s.opportunities_found||0;
     document.getElementById('arbSuccess').textContent=s.success||0;
     document.getElementById('arbFailed').textContent=s.failed||0;
@@ -1025,11 +1170,9 @@ async function loadArbStats(){
     const pnlBadge=document.getElementById('arbPnlBadge');
     pnlBadge.textContent='$'+(s.total_pnl||0).toFixed(2);
     pnlBadge.className='badge '+((s.total_pnl||0)>=0?'badge-g':'badge-r');
-    // Opus Gate
     document.getElementById('opusAsked').textContent=o.asked||0;
     document.getElementById('opusApproved').textContent=o.approved||0;
     document.getElementById('opusRejected').textContent=o.rejected||0;
-    // History
     const list=document.getElementById('arbHistoryList');
     if(h.length===0){
       list.innerHTML='<div style="color:var(--text3);font-size:12px;text-align:center;padding:20px 0">Пока нет арбитражных возможностей</div>';
@@ -1039,11 +1182,8 @@ async function loadArbStats(){
         const time=dt.toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'});
         const spread=Math.abs(e.spread||0).toFixed(3);
         const icon=e.executed?'✅':'🔍';
-        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:rgba(255,255,255,0.03);border-radius:8px;font-size:11px">
-          <div style="display:flex;align-items:center;gap:6px">
-            <span>${icon}</span>
-            <span style="color:var(--accent2);font-family:var(--mono)">${e.cross||'?'}</span>
-          </div>
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:rgba(124,58,237,.05);border-radius:8px;font-size:11px">
+          <div style="display:flex;align-items:center;gap:6px"><span>${icon}</span><span style="color:var(--purple-soft);font-family:var(--mono)">${e.cross||'?'}</span></div>
           <div style="color:var(--text2)">${spread}%</div>
           <div style="color:var(--text3)">${time}</div>
         </div>`;
