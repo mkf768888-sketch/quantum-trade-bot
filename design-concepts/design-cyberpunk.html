@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>QuantumTrade — Cyberpunk Neon</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0a0a0f;
+  --bg2: #0f0f1a;
+  --bg3: #13131f;
+  --purple: #b722ff;
+  --cyan: #00fff7;
+  --purple-glow: rgba(183, 34, 255, 0.4);
+  --cyan-glow: rgba(0, 255, 247, 0.4);
+  --profit: #00ff88;
+  --loss: #ff2244;
+  --text: #e0e0ff;
+  --text-dim: #6060a0;
+  --font: 'Space Mono', 'Courier New', monospace;
+}
+
+html, body {
+  width: 375px;
+  max-width: 375px;
+  min-height: 100vh;
+  margin: 0 auto;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 12px;
+  overflow-x: hidden;
+  position: relative;
+}
+
+/* Scanlines overlay */
+body::before {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.08) 2px,
+    rgba(0, 0, 0, 0.08) 4px
+  );
+  pointer-events: none;
+  z-index: 100;
+}
+
+/* Corner decoration */
+body::after {
+  content: '';
+  position: fixed;
+  top: 0; left: 0;
+  width: 200px; height: 200px;
+  background: radial-gradient(circle at top left, var(--purple-glow) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  position: relative;
+  z-index: 1;
+}
+
+/* GLITCH ANIMATION */
+@keyframes glitch {
+  0%, 90%, 100% { transform: translate(0); text-shadow: 0 0 10px var(--cyan), 0 0 20px var(--cyan), 0 0 40px var(--purple); }
+  92% { transform: translate(-3px, 1px); text-shadow: -3px 0 var(--purple), 3px 0 var(--cyan); }
+  94% { transform: translate(3px, -1px); text-shadow: 3px 0 var(--cyan), -3px 0 var(--purple); }
+  96% { transform: translate(-1px, 2px); text-shadow: 2px 0 var(--purple), -2px 0 var(--cyan); }
+  98% { transform: translate(1px, -2px); text-shadow: -1px 0 var(--cyan), 1px 0 var(--purple); }
+}
+
+@keyframes pulse-profit {
+  0%, 100% { text-shadow: 0 0 5px var(--profit), 0 0 10px var(--profit); }
+  50% { text-shadow: 0 0 10px var(--profit), 0 0 25px var(--profit), 0 0 50px var(--profit); }
+}
+
+@keyframes pulse-loss {
+  0%, 100% { text-shadow: 0 0 5px var(--loss), 0 0 10px var(--loss); }
+  50% { text-shadow: 0 0 10px var(--loss), 0 0 25px var(--loss), 0 0 50px var(--loss); }
+}
+
+@keyframes border-glow {
+  0%, 100% { box-shadow: 0 0 5px var(--purple-glow), inset 0 0 5px rgba(183,34,255,0.05); }
+  50% { box-shadow: 0 0 15px var(--purple-glow), 0 0 30px rgba(183,34,255,0.2), inset 0 0 10px rgba(183,34,255,0.1); }
+}
+
+@keyframes scan-line {
+  0% { top: -5%; }
+  100% { top: 105%; }
+}
+
+@keyframes flicker {
+  0%, 19%, 21%, 23%, 25%, 54%, 56%, 100% { opacity: 1; }
+  20%, 24%, 55% { opacity: 0.4; }
+}
+
+@keyframes data-scroll {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(-50%); }
+}
+
+/* HEADER */
+.header {
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid rgba(183,34,255,0.3);
+  position: relative;
+  background: linear-gradient(180deg, rgba(183,34,255,0.08) 0%, transparent 100%);
+}
+
+.header-scan {
+  position: absolute;
+  left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+  animation: scan-line 3s linear infinite;
+  opacity: 0.6;
+}
+
+.logo-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.logo-text {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--cyan);
+  animation: glitch 4s infinite;
+}
+
+.logo-badge {
+  background: var(--purple);
+  color: #000;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 6px;
+  letter-spacing: 1px;
+  clip-path: polygon(4px 0%, 100% 0%, calc(100% - 4px) 100%, 0% 100%);
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.status-pill {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 0.5px;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--profit);
+  box-shadow: 0 0 6px var(--profit);
+  animation: pulse-profit 2s ease-in-out infinite;
+}
+
+.status-dot.warn { background: #ffbb00; box-shadow: 0 0 6px #ffbb00; animation: none; }
+
+.status-val {
+  color: var(--cyan);
+  font-weight: 700;
+}
+
+/* BALANCE CARD */
+.balance-card {
+  margin: 12px 16px;
+  padding: 16px;
+  background: var(--bg3);
+  border: 1px solid var(--purple);
+  animation: border-glow 3s ease-in-out infinite;
+  position: relative;
+  overflow: hidden;
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+}
+
+.balance-card::before {
+  content: '';
+  position: absolute;
+  top: 0; right: 0;
+  width: 60px; height: 60px;
+  background: radial-gradient(circle, var(--cyan-glow) 0%, transparent 70%);
+}
+
+.balance-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.balance-amount {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--cyan);
+  text-shadow: 0 0 10px var(--cyan), 0 0 20px rgba(0,255,247,0.3);
+  letter-spacing: 2px;
+  animation: flicker 8s ease-in-out infinite;
+}
+
+.balance-change {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--profit);
+  animation: pulse-profit 2s ease-in-out infinite;
+  margin-top: 4px;
+}
+
+.balance-subtext {
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  letter-spacing: 1px;
+}
+
+/* GRID METRICS */
+.metrics-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0 16px 12px;
+}
+
+.metric-card {
+  background: var(--bg2);
+  border: 1px solid rgba(183,34,255,0.25);
+  padding: 12px;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.3s;
+}
+
+.metric-card:hover { border-color: var(--purple); }
+
+.metric-card::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--purple), var(--cyan));
+  opacity: 0.5;
+}
+
+.metric-label {
+  font-size: 9px;
+  color: var(--text-dim);
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.metric-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.metric-value.profit { color: var(--profit); animation: pulse-profit 3s ease-in-out infinite; }
+.metric-value.warn { color: #ffbb00; }
+.metric-value.highlight { color: var(--cyan); }
+
+.metric-sub {
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-top: 3px;
+}
+
+/* POSITION SECTION */
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 16px 8px;
+}
+
+.section-title {
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.section-title::before {
+  content: '// ';
+  color: var(--purple);
+}
+
+.section-badge {
+  font-size: 9px;
+  background: rgba(183,34,255,0.2);
+  color: var(--purple);
+  border: 1px solid var(--purple);
+  padding: 2px 8px;
+  letter-spacing: 1px;
+}
+
+.position-card {
+  margin: 0 16px 12px;
+  background: var(--bg2);
+  border: 1px solid rgba(0,255,247,0.3);
+  padding: 14px;
+  position: relative;
+  overflow: hidden;
+}
+
+.position-card::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: linear-gradient(180deg, var(--profit), var(--cyan));
+  box-shadow: 0 0 8px var(--profit);
+}
+
+.pos-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.pos-symbol {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--cyan);
+  letter-spacing: 2px;
+}
+
+.pos-side {
+  font-size: 10px;
+  font-weight: 700;
+  color: #000;
+  background: var(--profit);
+  padding: 2px 8px;
+  letter-spacing: 1px;
+  clip-path: polygon(4px 0%, 100% 0%, calc(100% - 4px) 100%, 0% 100%);
+}
+
+.pos-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+
+.pos-metric-label {
+  font-size: 8px;
+  color: var(--text-dim);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-bottom: 3px;
+}
+
+.pos-metric-val {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.pos-metric-val.profit { color: var(--profit); animation: pulse-profit 2.5s ease-in-out infinite; }
+
+/* PASSIVE INCOME */
+.passive-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0 16px 12px;
+}
+
+.passive-card {
+  background: var(--bg2);
+  border: 1px solid rgba(183,34,255,0.2);
+  padding: 12px;
+  text-align: center;
+  position: relative;
+}
+
+.passive-label {
+  font-size: 9px;
+  color: var(--text-dim);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.passive-apy {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--purple);
+  text-shadow: 0 0 10px var(--purple-glow);
+}
+
+.passive-type {
+  font-size: 8px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+/* DATA TICKER */
+.ticker-wrap {
+  margin: 0 16px 12px;
+  border: 1px solid rgba(0,255,247,0.2);
+  padding: 8px;
+  overflow: hidden;
+  height: 28px;
+  background: var(--bg2);
+  position: relative;
+}
+
+.ticker-label {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 40px;
+  background: var(--purple);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-weight: 700;
+  color: #000;
+  letter-spacing: 1px;
+  z-index: 2;
+}
+
+.ticker-content {
+  display: flex;
+  gap: 30px;
+  margin-left: 50px;
+  white-space: nowrap;
+  animation: data-scroll 20s linear infinite;
+  font-size: 10px;
+  color: var(--text-dim);
+  align-items: center;
+  height: 100%;
+}
+
+.ticker-item { color: var(--cyan); }
+.ticker-sep { color: var(--purple); }
+
+/* BOTTOM NAV */
+.bottom-nav {
+  margin-top: auto;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border-top: 1px solid rgba(183,34,255,0.3);
+  background: rgba(10,10,15,0.95);
+  backdrop-filter: blur(20px);
+  position: sticky;
+  bottom: 0;
+}
+
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 4px;
+  gap: 4px;
+  cursor: pointer;
+  position: relative;
+  transition: color 0.2s;
+  color: var(--text-dim);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+
+.nav-item.active {
+  color: var(--cyan);
+}
+
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 20%; right: 20%;
+  height: 2px;
+  background: var(--cyan);
+  box-shadow: 0 0 8px var(--cyan);
+}
+
+.nav-icon { font-size: 16px; }
+
+/* SIGNAL LOG */
+.signal-log {
+  margin: 0 16px 12px;
+  background: var(--bg2);
+  border: 1px solid rgba(0,255,247,0.15);
+  padding: 10px;
+}
+
+.log-header {
+  font-size: 9px;
+  color: var(--cyan);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(0,255,247,0.1);
+  padding-bottom: 6px;
+}
+
+.log-line {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+  display: flex;
+  gap: 8px;
+}
+
+.log-time { color: var(--text-dim); min-width: 42px; }
+.log-tag { color: var(--purple); min-width: 50px; }
+.log-msg { color: var(--text); }
+.log-val { margin-left: auto; }
+.log-val.ok { color: var(--profit); }
+.log-val.warn { color: #ffbb00; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- HEADER -->
+  <header class="header">
+    <div class="header-scan"></div>
+    <div class="logo-row">
+      <div class="logo-text">QUANTUM</div>
+      <div class="logo-badge">v10.1</div>
+    </div>
+    <div class="status-row">
+      <div class="status-pill">
+        <div class="status-dot"></div>
+        <span>AUTOPILOT</span>
+        <span class="status-val">ON</span>
+      </div>
+      <div class="status-pill">
+        <div class="status-dot warn"></div>
+        <span>F&amp;G</span>
+        <span class="status-val" style="color:#ffbb00">12</span>
+      </div>
+      <div class="status-pill">
+        <span>Q-SCORE</span>
+        <span class="status-val">82</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- BALANCE -->
+  <div class="balance-card">
+    <div class="balance-label">// PORTFOLIO BALANCE</div>
+    <div class="balance-amount">$42.30</div>
+    <div class="balance-change">▲ +$0.87 (+2.1%) TODAY</div>
+    <div class="balance-subtext">USDT · KuCoin + ByBit</div>
+  </div>
+
+  <!-- METRICS GRID -->
+  <div class="metrics-grid">
+    <div class="metric-card">
+      <div class="metric-label">Q-Score</div>
+      <div class="metric-value highlight">82 / 100</div>
+      <div class="metric-sub">▲ +3 from avg</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Fear &amp; Greed</div>
+      <div class="metric-value warn">12 🔴</div>
+      <div class="metric-sub">Extreme Fear</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Win Rate</div>
+      <div class="metric-value profit">68.4%</div>
+      <div class="metric-sub">23 / 34 trades</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Positions</div>
+      <div class="metric-value">1 / 2</div>
+      <div class="metric-sub">Max open</div>
+    </div>
+  </div>
+
+  <!-- POSITION -->
+  <div class="section-header">
+    <div class="section-title">Active Positions</div>
+    <div class="section-badge">1 LIVE</div>
+  </div>
+  <div class="position-card">
+    <div class="pos-top">
+      <div class="pos-symbol">BTC-USDT</div>
+      <div class="pos-side">BUY</div>
+    </div>
+    <div class="pos-metrics">
+      <div>
+        <div class="pos-metric-label">Entry</div>
+        <div class="pos-metric-val">$5.00</div>
+      </div>
+      <div>
+        <div class="pos-metric-label">PnL</div>
+        <div class="pos-metric-val profit">+1.8%</div>
+      </div>
+      <div>
+        <div class="pos-metric-label">TP</div>
+        <div class="pos-metric-val" style="color:#00ff88">4%</div>
+      </div>
+      <div>
+        <div class="pos-metric-label">SL</div>
+        <div class="pos-metric-val" style="color:#ff2244">2%</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PASSIVE INCOME -->
+  <div class="section-header">
+    <div class="section-title">Passive Income</div>
+    <div class="section-badge">ACTIVE</div>
+  </div>
+  <div class="passive-row">
+    <div class="passive-card">
+      <div class="passive-label">DCI Strategy</div>
+      <div class="passive-apy">854%</div>
+      <div class="passive-type">APY · DUAL INVEST</div>
+    </div>
+    <div class="passive-card">
+      <div class="passive-label">Earn / Staking</div>
+      <div class="passive-apy" style="color:var(--cyan)">5.2%</div>
+      <div class="passive-type">APR · FLEXIBLE</div>
+    </div>
+  </div>
+
+  <!-- DATA TICKER -->
+  <div class="ticker-wrap">
+    <div class="ticker-label">LIVE</div>
+    <div class="ticker-content">
+      <span>BTC <span class="ticker-item">$83,241</span></span>
+      <span class="ticker-sep">|</span>
+      <span>ETH <span class="ticker-item">$1,892</span></span>
+      <span class="ticker-sep">|</span>
+      <span>SOL <span class="ticker-item">$128.4</span></span>
+      <span class="ticker-sep">|</span>
+      <span>BNB <span class="ticker-item">$598</span></span>
+      <span class="ticker-sep">|</span>
+      <span>SIGNAL <span class="ticker-item">RSI 34 — OVERSOLD</span></span>
+      <span class="ticker-sep">|</span>
+      <span>MIROFISH <span class="ticker-item">11/15 BEARISH</span></span>
+      <span class="ticker-sep">|</span>
+      <span>BTC <span class="ticker-item">$83,241</span></span>
+      <span class="ticker-sep">|</span>
+      <span>ETH <span class="ticker-item">$1,892</span></span>
+    </div>
+  </div>
+
+  <!-- SIGNAL LOG -->
+  <div class="section-header">
+    <div class="section-title">Signal Log</div>
+    <div class="section-badge">LIVE</div>
+  </div>
+  <div class="signal-log">
+    <div class="log-header">// RECENT EVENTS</div>
+    <div class="log-line">
+      <span class="log-time">14:32</span>
+      <span class="log-tag">[TRADE]</span>
+      <span class="log-msg">BTC-USDT BUY executed</span>
+      <span class="log-val ok">OK</span>
+    </div>
+    <div class="log-line">
+      <span class="log-time">14:31</span>
+      <span class="log-tag">[QSCORE]</span>
+      <span class="log-msg">Signal evaluated</span>
+      <span class="log-val ok">82</span>
+    </div>
+    <div class="log-line">
+      <span class="log-time">14:28</span>
+      <span class="log-tag">[MIROFISH]</span>
+      <span class="log-msg">11/15 agents bearish</span>
+      <span class="log-val warn">CAUTION</span>
+    </div>
+    <div class="log-line">
+      <span class="log-time">14:15</span>
+      <span class="log-tag">[DCI]</span>
+      <span class="log-msg">Order placed 854% APY</span>
+      <span class="log-val ok">OK</span>
+    </div>
+    <div class="log-line">
+      <span class="log-time">13:50</span>
+      <span class="log-tag">[TA]</span>
+      <span class="log-msg">RSI(14)=34 — oversold zone</span>
+      <span class="log-val warn">WATCH</span>
+    </div>
+  </div>
+
+  <!-- BOTTOM NAV -->
+  <nav class="bottom-nav">
+    <div class="nav-item active">
+      <div class="nav-icon">📊</div>
+      <div>Дашборд</div>
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">💼</div>
+      <div>Позиции</div>
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">💰</div>
+      <div>Earn</div>
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">⚙️</div>
+      <div>Настройки</div>
+    </div>
+  </nav>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>QuantumTrade — Minimal Dark</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #111111;
+  --card: #1a1a1a;
+  --card-hover: #1f1f1f;
+  --border: #2a2a2a;
+  --border-light: #333333;
+  --text: #ffffff;
+  --text-mid: #a0a0a0;
+  --text-dim: #505050;
+  --profit: #00d084;
+  --loss: #ff4455;
+  --accent: #ffffff;
+  --blue: #3b82f6;
+  --warning: #f59e0b;
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+}
+
+html, body {
+  width: 375px;
+  max-width: 375px;
+  min-height: 100vh;
+  margin: 0 auto;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding-bottom: 70px;
+}
+
+/* HEADER */
+.header {
+  padding: 16px 20px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.logo {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.3px;
+}
+
+.logo span {
+  color: var(--profit);
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-pill {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(0,208,132,0.1);
+  border: 1px solid rgba(0,208,132,0.2);
+  border-radius: 20px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--profit);
+  transition: all 0.15s ease;
+}
+
+.status-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--profit);
+}
+
+.fg-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(245,158,11,0.1);
+  border: 1px solid rgba(245,158,11,0.2);
+  border-radius: 20px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--warning);
+}
+
+/* BALANCE SECTION */
+.balance-section {
+  padding: 28px 20px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.bal-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-dim);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.bal-amount {
+  font-size: 40px;
+  font-weight: 800;
+  color: var(--text);
+  letter-spacing: -2px;
+  line-height: 1;
+  margin-bottom: 10px;
+}
+
+.bal-amount span {
+  font-size: 20px;
+  font-weight: 400;
+  color: var(--text-dim);
+  letter-spacing: 0;
+  margin-left: 4px;
+}
+
+.bal-change {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--profit);
+  margin-bottom: 6px;
+}
+
+.bal-change-arrow {
+  font-size: 12px;
+}
+
+.bal-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+/* MINI PROGRESS BAR */
+.progress-bar {
+  height: 2px;
+  background: var(--border);
+  border-radius: 2px;
+  margin-top: 16px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--profit);
+  transition: width 0.5s ease;
+}
+
+.progress-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+/* STATS GRID */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.stat-item {
+  padding: 16px 8px;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  transition: background 0.15s ease;
+}
+
+.stat-item:hover { background: var(--card); }
+.stat-item:nth-child(2n) { border-right: none; }
+.stat-item:nth-child(3), .stat-item:nth-child(4) { border-bottom: none; }
+
+.si-label {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-dim);
+  margin-bottom: 5px;
+  letter-spacing: 0.2px;
+}
+
+.si-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.5px;
+}
+
+.si-value.profit { color: var(--profit); }
+.si-value.loss { color: var(--loss); }
+.si-value.blue { color: var(--blue); }
+.si-value.warning { color: var(--warning); }
+
+.si-sub {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  font-weight: 400;
+}
+
+/* SECTION */
+.section-title {
+  padding: 16px 20px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+/* POSITION CARD */
+.position-card {
+  margin: 0 14px 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  transition: all 0.15s ease;
+}
+
+.position-card:hover {
+  background: var(--card-hover);
+  border-color: var(--border-light);
+}
+
+.pc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.pc-symbol {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.3px;
+}
+
+.pc-badge {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(0,208,132,0.1);
+  border: 1px solid rgba(0,208,132,0.2);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--profit);
+  letter-spacing: 0.5px;
+}
+
+.pc-pnl {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--profit);
+  letter-spacing: -1px;
+  margin-bottom: 12px;
+}
+
+.pc-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.pm-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-bottom: 3px;
+  font-weight: 400;
+}
+
+.pm-val {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-mid);
+}
+
+.pm-val.tp { color: var(--profit); }
+.pm-val.sl { color: var(--loss); }
+
+/* TP/SL BAR */
+.tpsl-bar {
+  margin-top: 12px;
+  position: relative;
+}
+
+.tpsl-track {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  position: relative;
+  overflow: visible;
+}
+
+.tpsl-sl-zone {
+  position: absolute;
+  left: 0;
+  height: 100%;
+  width: 33%;
+  background: rgba(255,68,85,0.2);
+  border-radius: 2px 0 0 2px;
+}
+
+.tpsl-tp-zone {
+  position: absolute;
+  right: 0;
+  height: 100%;
+  width: 33%;
+  background: rgba(0,208,132,0.2);
+  border-radius: 0 2px 2px 0;
+}
+
+.tpsl-marker {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--profit);
+  border: 2px solid var(--card);
+  left: 60%;
+  box-shadow: 0 0 0 2px rgba(0,208,132,0.3);
+}
+
+.tpsl-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 5px;
+  font-size: 9px;
+  color: var(--text-dim);
+}
+
+.tpsl-labels .sl-label { color: var(--loss); }
+.tpsl-labels .tp-label { color: var(--profit); }
+
+/* PASSIVE CARDS */
+.passive-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0 14px 14px;
+}
+
+.pcard {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  transition: all 0.15s ease;
+}
+
+.pcard:hover { background: var(--card-hover); border-color: var(--border-light); }
+
+.pcard-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  letter-spacing: 0.3px;
+}
+
+.pcard-apy {
+  font-size: 24px;
+  font-weight: 800;
+  color: var(--text);
+  letter-spacing: -1px;
+  margin-bottom: 2px;
+}
+
+.pcard-apy.profit { color: var(--profit); }
+.pcard-apy.blue { color: var(--blue); }
+
+.pcard-sub {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+/* QUICK ACTIONS */
+.quick-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0 14px 14px;
+}
+
+.qa-btn {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-mid);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.15s ease;
+}
+
+.qa-btn:hover { background: var(--card-hover); border-color: var(--border-light); color: var(--text); }
+
+.qa-btn.primary {
+  background: var(--profit);
+  border-color: var(--profit);
+  color: #000;
+}
+
+.qa-btn.primary:hover { opacity: 0.9; }
+
+/* BOTTOM NAV */
+.bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 375px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  padding-bottom: env(safe-area-inset-bottom);
+  z-index: 10;
+}
+
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 4px;
+  gap: 3px;
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 500;
+  transition: color 0.15s ease;
+}
+
+.nav-item.active { color: var(--text); }
+
+.nav-item.active .nav-label {
+  color: var(--text);
+}
+
+.nav-icon { font-size: 16px; }
+.nav-label { font-size: 10px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- HEADER -->
+  <header class="header">
+    <div class="logo">Quantum<span>Trade</span></div>
+    <div class="header-right">
+      <div class="status-pill">
+        <div class="status-dot"></div>
+        Автопилот
+      </div>
+      <div class="fg-pill">12</div>
+    </div>
+  </header>
+
+  <!-- BALANCE -->
+  <div class="balance-section">
+    <div class="bal-label">Баланс</div>
+    <div class="bal-amount">$42.30 <span>USDT</span></div>
+    <div class="bal-change">
+      <span class="bal-change-arrow">↑</span>
+      +$0.87 (+2.1%) сегодня
+    </div>
+    <div class="bal-meta">KuCoin · ByBit · обновлено 14:32</div>
+    <div class="progress-bar">
+      <div class="progress-fill" style="width: 68%;"></div>
+    </div>
+    <div class="progress-labels">
+      <span>цель: $100</span>
+      <span>68% выполнено</span>
+    </div>
+  </div>
+
+  <!-- STATS -->
+  <div class="stats-grid">
+    <div class="stat-item">
+      <div class="si-label">Win Rate</div>
+      <div class="si-value profit">68.4%</div>
+      <div class="si-sub">30 дней</div>
+    </div>
+    <div class="stat-item">
+      <div class="si-label">Q-Score</div>
+      <div class="si-value">82</div>
+      <div class="si-sub">порог 77</div>
+    </div>
+    <div class="stat-item">
+      <div class="si-label">F&amp;G Index</div>
+      <div class="si-value warning">12 🔴</div>
+      <div class="si-sub">Extreme Fear</div>
+    </div>
+    <div class="stat-item">
+      <div class="si-label">Позиций</div>
+      <div class="si-value blue">1 / 2</div>
+      <div class="si-sub">открыто</div>
+    </div>
+  </div>
+
+  <!-- POSITIONS -->
+  <div class="section-title">Позиции</div>
+  <div class="position-card">
+    <div class="pc-header">
+      <div class="pc-symbol">BTC-USDT</div>
+      <div class="pc-badge">BUY</div>
+    </div>
+    <div class="pc-pnl">+1.8%</div>
+    <div class="pc-metrics">
+      <div>
+        <div class="pm-label">Размер</div>
+        <div class="pm-val">$5.00</div>
+      </div>
+      <div>
+        <div class="pm-label">Take Profit</div>
+        <div class="pm-val tp">4%</div>
+      </div>
+      <div>
+        <div class="pm-label">Stop Loss</div>
+        <div class="pm-val sl">2%</div>
+      </div>
+    </div>
+    <div class="tpsl-bar">
+      <div class="tpsl-track">
+        <div class="tpsl-sl-zone"></div>
+        <div class="tpsl-tp-zone"></div>
+        <div class="tpsl-marker"></div>
+      </div>
+      <div class="tpsl-labels">
+        <span class="sl-label">SL -2%</span>
+        <span>+1.8% текущий</span>
+        <span class="tp-label">TP +4%</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- PASSIVE -->
+  <div class="section-title">Пассивный доход</div>
+  <div class="passive-row">
+    <div class="pcard">
+      <div class="pcard-label">DCI</div>
+      <div class="pcard-apy profit">854%</div>
+      <div class="pcard-sub">APY</div>
+    </div>
+    <div class="pcard">
+      <div class="pcard-label">Earn</div>
+      <div class="pcard-apy blue">5.2%</div>
+      <div class="pcard-sub">APR</div>
+    </div>
+  </div>
+
+  <!-- QUICK ACTIONS -->
+  <div class="section-title">Действия</div>
+  <div class="quick-actions">
+    <button class="qa-btn primary">
+      <span>📊</span> Анализ
+    </button>
+    <button class="qa-btn">
+      <span>⚖️</span> Арбитраж
+    </button>
+    <button class="qa-btn">
+      <span>🐋</span> Whales
+    </button>
+    <button class="qa-btn">
+      <span>🤖</span> MiroFish
+    </button>
+  </div>
+
+  <!-- BOTTOM NAV -->
+  <nav class="bottom-nav">
+    <div class="nav-item active">
+      <div class="nav-icon">📊</div>
+      <div class="nav-label">Дашборд</div>
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">💼</div>
+      <div class="nav-label">Позиции</div>
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">💰</div>
+      <div class="nav-label">Earn</div>
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">⚙️</div>
+      <div class="nav-label">Настройки</div>
+    </div>
+  </nav>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,1223 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>QuantumTrade — Quantum Ocean</title>
+<style>
+/*
+  CONCEPT: Quantum Ocean
+  Fusion of: design-quantum + design-glassmorphism + design-deep-ocean
+  ----------------------------------------------------------
+  Background:   Deep space #020010 + ocean navy #001233 gradient
+  Stars:        CSS radial-gradient star field + twinkle animation (Quantum)
+  Orbs:         Floating blur orbs — purple + cyan (Glassmorphism recolored)
+  Cards:        Frosted glass backdrop-filter + purple border glow (Quantum Glass)
+  Logo:         Orbital rings animation (Quantum)
+  Accent:       Bioluminescent cyan #48cae4 + quantum purple #7c3aed + gold #fbbf24
+  Numbers:      Cyan for profit, coral for loss, gold for stellar gains
+  Dividers:     SVG wave separators — cyan tint (Deep Ocean)
+  Animations:   jellyfish-pulse + orbital spin + star-twinkle + orb-float
+  Font:         -apple-system / Inter / system-ui
+*/
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  /* Core palette */
+  --bg:           #020010;
+  --bg-ocean:     #001233;
+  --purple:       #7c3aed;
+  --purple-soft:  #9f67ff;
+  --purple-dim:   rgba(124,58,237,0.35);
+  --cyan:         #48cae4;
+  --cyan-soft:    #90e0ef;
+  --cyan-dim:     rgba(72,202,228,0.3);
+  --gold:         #fbbf24;
+  --gold-dim:     rgba(251,191,36,0.25);
+
+  /* Glass cards */
+  --glass-bg:     rgba(13,9,37,0.55);
+  --glass-bg2:    rgba(0,10,40,0.65);
+  --glass-border: rgba(124,58,237,0.22);
+  --glass-blur:   blur(22px);
+
+  /* Semantic colors */
+  --profit:       #48cae4;
+  --profit-glow:  rgba(72,202,228,0.4);
+  --profit-gold:  #fbbf24;
+  --loss:         #ff6b6b;
+  --loss-glow:    rgba(255,107,107,0.35);
+
+  /* Text */
+  --text:         rgba(210,225,255,0.95);
+  --text-mid:     rgba(150,185,230,0.75);
+  --text-dim:     rgba(90,130,180,0.55);
+
+  /* Font */
+  --font: -apple-system, 'SF Pro Display', 'Inter', system-ui, sans-serif;
+}
+
+html, body {
+  width: 375px;
+  max-width: 375px;
+  min-height: 100vh;
+  margin: 0 auto;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* =====================================================
+   BACKGROUND LAYERS
+   ===================================================== */
+
+/* Layer 1: Animated deep space → ocean gradient */
+.bg-space {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse at 25% 15%, rgba(60,10,130,0.35) 0%, transparent 55%),
+    radial-gradient(ellipse at 80% 75%, rgba(0,30,100,0.3) 0%, transparent 50%),
+    radial-gradient(ellipse at 60% 40%, rgba(0,50,80,0.2) 0%, transparent 60%),
+    linear-gradient(180deg, #020010 0%, #040020 40%, #001030 70%, #020018 100%);
+  background-size: 400% 400%;
+  animation: space-breathe 14s ease-in-out infinite;
+}
+
+@keyframes space-breathe {
+  0%, 100% { background-position: 0% 50%; filter: brightness(1); }
+  33%       { background-position: 100% 20%; filter: brightness(1.07); }
+  66%       { background-position: 40% 80%; filter: brightness(0.95); }
+}
+
+/* Layer 2: CSS Star field — quantum-style */
+.stars {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.stars::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(1px 1px at  8% 12%, rgba(255,255,255,0.75) 0%, transparent 100%),
+    radial-gradient(1px 1px at 22% 38%, rgba(255,255,255,0.55) 0%, transparent 100%),
+    radial-gradient(2px 2px at 38%  6%, rgba(255,255,255,0.80) 0%, transparent 100%),
+    radial-gradient(1px 1px at 55% 22%, rgba(255,255,255,0.50) 0%, transparent 100%),
+    radial-gradient(1px 1px at 72% 48%, rgba(255,255,255,0.60) 0%, transparent 100%),
+    radial-gradient(2px 2px at 88%  8%, rgba(255,255,255,0.85) 0%, transparent 100%),
+    radial-gradient(1px 1px at 14% 68%, rgba(255,255,255,0.45) 0%, transparent 100%),
+    radial-gradient(1px 1px at 48% 78%, rgba(255,255,255,0.55) 0%, transparent 100%),
+    radial-gradient(1px 1px at 91% 44%, rgba(255,255,255,0.65) 0%, transparent 100%),
+    radial-gradient(1px 1px at 32% 58%, rgba(255,255,255,0.35) 0%, transparent 100%),
+    radial-gradient(2px 2px at 68%  3%, rgba(255,255,255,0.90) 0%, transparent 100%),
+    radial-gradient(1px 1px at  4% 88%, rgba(255,255,255,0.40) 0%, transparent 100%),
+    radial-gradient(2px 2px at 44% 48%, rgba(124,58,237,0.70) 0%, transparent 100%),
+    radial-gradient(1px 1px at 78% 72%, rgba(72,202,228,0.65) 0%, transparent 100%),
+    radial-gradient(1px 1px at 18% 28%, rgba(255,255,255,0.55) 0%, transparent 100%),
+    radial-gradient(1px 1px at 62% 62%, rgba(255,255,255,0.45) 0%, transparent 100%),
+    radial-gradient(1px 1px at 95% 18%, rgba(255,255,255,0.70) 0%, transparent 100%),
+    radial-gradient(1px 1px at  2% 52%, rgba(255,255,255,0.50) 0%, transparent 100%),
+    radial-gradient(2px 2px at 28% 84%, rgba(72,202,228,0.50) 0%, transparent 100%),
+    radial-gradient(1px 1px at 58% 32%, rgba(255,255,255,0.60) 0%, transparent 100%);
+  animation: star-twinkle 6s ease-in-out infinite alternate;
+}
+
+.stars::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(1px 1px at 16% 32%, rgba(72,202,228,0.55) 0%, transparent 100%),
+    radial-gradient(1px 1px at 42% 56%, rgba(255,255,255,0.75) 0%, transparent 100%),
+    radial-gradient(2px 2px at 66% 14%, rgba(255,255,255,0.65) 0%, transparent 100%),
+    radial-gradient(1px 1px at 84% 52%, rgba(124,58,237,0.55) 0%, transparent 100%),
+    radial-gradient(1px 1px at  6% 74%, rgba(255,255,255,0.70) 0%, transparent 100%),
+    radial-gradient(1px 1px at 94% 88%, rgba(72,202,228,0.40) 0%, transparent 100%),
+    radial-gradient(1px 1px at 36% 92%, rgba(255,255,255,0.50) 0%, transparent 100%),
+    radial-gradient(2px 2px at 75% 20%, rgba(251,191,36,0.45) 0%, transparent 100%),
+    radial-gradient(1px 1px at 52% 70%, rgba(255,255,255,0.55) 0%, transparent 100%),
+    radial-gradient(1px 1px at 10% 42%, rgba(255,255,255,0.60) 0%, transparent 100%);
+  animation: star-twinkle 9s ease-in-out infinite alternate-reverse;
+}
+
+@keyframes star-twinkle {
+  0%   { opacity: 0.7; transform: scale(1); }
+  50%  { opacity: 1.0; transform: scale(1.02); }
+  100% { opacity: 0.6; transform: scale(0.98); }
+}
+
+/* Layer 3: Floating glow orbs (Glassmorphism style, Quantum colors) */
+.orb {
+  position: fixed;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.orb-purple {
+  width: 280px; height: 280px;
+  background: radial-gradient(circle, rgba(124,58,237,0.25) 0%, transparent 70%);
+  top: -100px; left: -80px;
+  filter: blur(50px);
+  animation: orb-float 16s ease-in-out infinite;
+}
+
+.orb-cyan {
+  width: 220px; height: 220px;
+  background: radial-gradient(circle, rgba(72,202,228,0.20) 0%, transparent 70%);
+  top: 35%; right: -70px;
+  filter: blur(45px);
+  animation: orb-float 20s ease-in-out infinite reverse;
+}
+
+.orb-deep {
+  width: 200px; height: 200px;
+  background: radial-gradient(circle, rgba(0,30,100,0.40) 0%, transparent 70%);
+  bottom: 120px; left: 30px;
+  filter: blur(55px);
+  animation: orb-float 12s ease-in-out infinite 4s;
+}
+
+@keyframes orb-float {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33%       { transform: translate(18px, -20px) scale(1.06); }
+  66%       { transform: translate(-12px, 16px) scale(0.94); }
+}
+
+/* Bioluminescent particles (Deep Ocean style, cyan) */
+.bio-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background-image:
+    radial-gradient(2px 2px at  9% 21%, rgba(72,202,228,0.70) 0%, transparent 100%),
+    radial-gradient(1px 1px at 36% 11%, rgba(144,224,239,0.55) 0%, transparent 100%),
+    radial-gradient(2px 2px at 64% 26%, rgba(72,202,228,0.60) 0%, transparent 100%),
+    radial-gradient(1px 1px at 82% 77%, rgba(144,224,239,0.65) 0%, transparent 100%),
+    radial-gradient(1px 1px at 20% 82%, rgba(72,202,228,0.50) 0%, transparent 100%),
+    radial-gradient(2px 2px at 50% 55%, rgba(124,58,237,0.45) 0%, transparent 100%),
+    radial-gradient(1px 1px at 93% 38%, rgba(72,202,228,0.55) 0%, transparent 100%);
+  animation: bio-drift 25s ease-in-out infinite;
+}
+
+@keyframes bio-drift {
+  0%, 100% { transform: translateY(0) translateX(0); opacity: 0.8; }
+  25%       { transform: translateY(-10px) translateX(6px); opacity: 1; }
+  50%       { transform: translateY(-4px) translateX(-9px); opacity: 0.7; }
+  75%       { transform: translateY(-14px) translateX(4px); opacity: 0.9; }
+}
+
+/* =====================================================
+   ANIMATIONS — jellyfish pulse + orbital
+   ===================================================== */
+
+@keyframes jellyfish-pulse {
+  0%, 100% {
+    box-shadow: 0 0 12px var(--purple-dim), 0 0 24px rgba(72,202,228,0.06);
+    border-color: rgba(124,58,237,0.22);
+  }
+  50% {
+    box-shadow: 0 0 22px var(--purple-dim), 0 0 45px rgba(72,202,228,0.12), 0 4px 30px rgba(0,0,0,0.3);
+    border-color: rgba(124,58,237,0.40);
+  }
+}
+
+@keyframes bio-glow-cyan {
+  0%, 100% { text-shadow: 0 0 8px var(--profit-glow); }
+  50%       { text-shadow: 0 0 16px var(--profit-glow), 0 0 32px rgba(72,202,228,0.25); }
+}
+
+@keyframes bio-glow-gold {
+  0%, 100% { text-shadow: 0 0 6px var(--gold-dim); }
+  50%       { text-shadow: 0 0 14px var(--gold-dim), 0 0 28px rgba(251,191,36,0.2); }
+}
+
+@keyframes loss-pulse {
+  0%, 100% { text-shadow: 0 0 6px var(--loss-glow); }
+  50%       { text-shadow: 0 0 14px var(--loss-glow), 0 0 25px rgba(255,107,107,0.2); }
+}
+
+@keyframes dot-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(72,202,228,0.5); opacity: 1; }
+  50%       { box-shadow: 0 0 0 5px rgba(72,202,228,0); opacity: 0.8; }
+}
+
+/* Orbital rings */
+@keyframes orbit-1 { from { transform: rotateZ(0deg); }   to { transform: rotateZ(360deg); } }
+@keyframes orbit-2 { from { transform: rotateZ(120deg); } to { transform: rotateZ(-240deg); } }
+@keyframes orbit-3 { from { transform: rotateZ(240deg); } to { transform: rotateZ(600deg); } }
+
+/* =====================================================
+   APP SHELL
+   ===================================================== */
+
+.app {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding-bottom: 75px;
+}
+
+/* =====================================================
+   HEADER
+   ===================================================== */
+
+.header {
+  background: rgba(2,0,16,0.75);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border-bottom: 1px solid rgba(124,58,237,0.20);
+  padding: 16px 18px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: relative;
+}
+
+/* Orbital logo */
+.logo-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.orbit-container {
+  width: 42px;
+  height: 42px;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.orbit-core {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 12px; height: 12px;
+  background: radial-gradient(circle, var(--purple-soft) 0%, var(--purple) 60%, transparent 100%);
+  border-radius: 50%;
+  box-shadow: 0 0 10px var(--purple-dim), 0 0 20px rgba(124,58,237,0.2);
+}
+
+.orbit-ring {
+  position: absolute;
+  top: 50%; left: 50%;
+  border-radius: 50%;
+  border: 1px solid transparent;
+  transform-origin: center center;
+}
+
+.orbit-ring-1 {
+  width: 24px; height: 24px;
+  margin-top: -12px; margin-left: -12px;
+  border-top-color: var(--purple);
+  border-right-color: rgba(124,58,237,0.3);
+  animation: orbit-1 3s linear infinite;
+}
+
+.orbit-ring-2 {
+  width: 34px; height: 34px;
+  margin-top: -17px; margin-left: -17px;
+  border-top-color: var(--cyan);
+  border-left-color: rgba(72,202,228,0.3);
+  animation: orbit-2 5s linear infinite;
+}
+
+.orbit-ring-3 {
+  width: 42px; height: 42px;
+  margin-top: -21px; margin-left: -21px;
+  border-bottom-color: var(--gold);
+  border-right-color: rgba(251,191,36,0.2);
+  animation: orbit-3 8s linear infinite;
+}
+
+/* Orbit dots */
+.orbit-dot {
+  position: absolute;
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.orbit-ring-1 .orbit-dot { background: var(--purple); top: 0; left: 50%; box-shadow: 0 0 4px var(--purple); }
+.orbit-ring-2 .orbit-dot { background: var(--cyan);   top: 50%; right: -2px; transform: translate(50%,-50%); box-shadow: 0 0 5px var(--cyan); }
+.orbit-ring-3 .orbit-dot { background: var(--gold);   bottom: 0; left: 50%; transform: translate(-50%,50%); box-shadow: 0 0 5px var(--gold); }
+
+.logo-text-area {
+  display: flex;
+  flex-direction: column;
+}
+
+.logo-name {
+  font-size: 18px;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--purple-soft), var(--cyan));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  letter-spacing: 0.3px;
+  line-height: 1.1;
+}
+
+.logo-tagline {
+  font-size: 9px;
+  color: var(--text-dim);
+  letter-spacing: 1.2px;
+  margin-top: 2px;
+  text-transform: uppercase;
+}
+
+/* Status right */
+.header-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+}
+
+.autopilot-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(72,202,228,0.08);
+  border: 1px solid rgba(72,202,228,0.22);
+  border-radius: 20px;
+  padding: 4px 11px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--cyan);
+  animation: jellyfish-pulse 4s ease-in-out infinite;
+}
+
+.ap-dot {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--cyan);
+  animation: dot-pulse 2s ease-in-out infinite;
+}
+
+.score-badges {
+  display: flex;
+  gap: 5px;
+}
+
+.score-badge {
+  font-size: 10px;
+  color: var(--text-dim);
+  background: rgba(13,9,37,0.6);
+  border: 1px solid rgba(124,58,237,0.18);
+  border-radius: 10px;
+  padding: 2px 8px;
+}
+
+.score-badge em { font-style: normal; font-weight: 700; color: var(--cyan); }
+.score-badge.danger em { color: var(--loss); }
+
+/* =====================================================
+   WAVE DIVIDER
+   ===================================================== */
+
+.wave-divider {
+  width: 100%;
+  height: 28px;
+  overflow: hidden;
+  line-height: 0;
+  margin: -1px 0;
+}
+
+.wave-divider svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* =====================================================
+   GLASS CARD
+   ===================================================== */
+
+.glass-card {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border-radius: 20px;
+  margin: 8px 14px;
+  overflow: hidden;
+  animation: jellyfish-pulse 5s ease-in-out infinite;
+  position: relative;
+}
+
+.glass-card:nth-child(2) { animation-delay: 1.2s; }
+.glass-card:nth-child(3) { animation-delay: 2.4s; }
+.glass-card:nth-child(4) { animation-delay: 0.6s; }
+
+/* Inner glow on top-right */
+.glass-card::before {
+  content: '';
+  position: absolute;
+  top: -30px; right: -30px;
+  width: 100px; height: 100px;
+  background: radial-gradient(circle, rgba(124,58,237,0.14) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* =====================================================
+   BALANCE CARD
+   ===================================================== */
+
+.balance-card {
+  padding: 20px 20px 0;
+  position: relative;
+  z-index: 1;
+}
+
+.balance-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-dim);
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.balance-amount {
+  font-size: 40px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -2px;
+  line-height: 1;
+  margin-bottom: 10px;
+}
+
+.balance-amount .currency {
+  font-size: 17px;
+  font-weight: 400;
+  color: var(--text-dim);
+  letter-spacing: 0;
+  margin-left: 3px;
+}
+
+.balance-change {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(72,202,228,0.08);
+  border: 1px solid rgba(72,202,228,0.22);
+  border-radius: 20px;
+  padding: 5px 13px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--profit);
+  animation: bio-glow-cyan 3s ease-in-out infinite;
+  margin-bottom: 10px;
+}
+
+.balance-meta {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-bottom: 14px;
+  letter-spacing: 0.3px;
+}
+
+/* Mini chart */
+.mini-chart {
+  height: 52px;
+  overflow: hidden;
+  margin: 0 -20px;
+  position: relative;
+}
+
+.chart-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Stats row inside balance */
+.balance-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  background: rgba(124,58,237,0.12);
+  position: relative;
+  z-index: 1;
+}
+
+.bstat {
+  background: rgba(2,0,16,0.45);
+  padding: 13px 10px;
+  text-align: center;
+}
+
+.bstat-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+  letter-spacing: 0.3px;
+}
+
+.bstat-val {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.bstat-val.cyan   { color: var(--cyan);   animation: bio-glow-cyan 3s ease-in-out infinite; }
+.bstat-val.gold   { color: var(--gold);   animation: bio-glow-gold 3s ease-in-out infinite; }
+.bstat-val.purple { color: var(--purple-soft); }
+
+.bstat-sub { font-size: 9px; color: var(--text-dim); margin-top: 2px; }
+
+/* =====================================================
+   Q-SCORE ORBITAL ORB
+   ===================================================== */
+
+.qscore-card {
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  position: relative;
+  z-index: 1;
+}
+
+.qscore-orb {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  flex-shrink: 0;
+}
+
+.qscore-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--purple) 0deg,
+    var(--cyan) 180deg,
+    var(--gold) 260deg,
+    rgba(255,255,255,0.08) 296deg
+  );
+  padding: 3px;
+  animation: orbit-1 8s linear infinite;
+}
+
+.qscore-ring::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  background: var(--bg);
+  border-radius: 50%;
+}
+
+.qscore-val {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+}
+
+.qscore-num {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--purple-soft);
+  line-height: 1;
+  letter-spacing: -1px;
+}
+
+.qscore-label {
+  font-size: 8px;
+  color: var(--text-dim);
+  letter-spacing: 0.5px;
+  margin-top: 1px;
+}
+
+.qscore-info {
+  flex: 1;
+}
+
+.qscore-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.qscore-desc {
+  font-size: 11px;
+  color: var(--text-mid);
+  line-height: 1.4;
+}
+
+.qscore-desc span {
+  color: var(--cyan);
+  font-weight: 600;
+}
+
+/* =====================================================
+   SECTION LABEL
+   ===================================================== */
+
+.section-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  padding: 4px 20px 6px;
+}
+
+/* =====================================================
+   POSITION CARD
+   ===================================================== */
+
+.pos-inner {
+  padding: 16px 18px;
+  position: relative;
+  z-index: 1;
+}
+
+.pos-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.pos-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.pos-count-badge {
+  font-size: 10px;
+  color: var(--cyan);
+  background: rgba(72,202,228,0.10);
+  border: 1px solid rgba(72,202,228,0.22);
+  border-radius: 20px;
+  padding: 2px 10px;
+  animation: bio-glow-cyan 4s ease-in-out infinite;
+}
+
+.position-item {
+  background: rgba(0,5,25,0.55);
+  border: 1px solid rgba(72,202,228,0.14);
+  border-radius: 16px;
+  padding: 14px 14px 14px 18px;
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.2s;
+}
+
+/* Left glow stripe */
+.position-item::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: linear-gradient(180deg, var(--cyan), var(--purple));
+  border-radius: 3px 0 0 3px;
+  box-shadow: 0 0 8px var(--cyan-dim);
+}
+
+.pi-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.pi-sym {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.pi-pnl {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--profit);
+  animation: bio-glow-cyan 3s ease-in-out infinite;
+}
+
+.pi-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.pi-side-badge {
+  background: rgba(72,202,228,0.12);
+  border: 1px solid rgba(72,202,228,0.25);
+  border-radius: 8px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--cyan);
+}
+
+.pi-size {
+  font-size: 13px;
+  color: var(--text-mid);
+}
+
+.pi-tpsl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.tpsl-box {
+  background: rgba(0,0,20,0.45);
+  border: 1px solid rgba(124,58,237,0.12);
+  border-radius: 10px;
+  padding: 9px 12px;
+}
+
+.tpsl-lbl {
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-bottom: 3px;
+  letter-spacing: 0.3px;
+}
+
+.tpsl-v {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.tpsl-v.tp { color: var(--profit); animation: bio-glow-cyan 3s ease-in-out infinite; }
+.tpsl-v.sl { color: var(--loss); animation: loss-pulse 3s ease-in-out infinite; }
+
+/* =====================================================
+   PASSIVE INCOME CARD
+   ===================================================== */
+
+.passive-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 14px;
+  position: relative;
+  z-index: 1;
+}
+
+.pcard {
+  background: rgba(0,5,30,0.5);
+  border: 1px solid rgba(124,58,237,0.14);
+  border-radius: 16px;
+  padding: 16px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.pcard::after {
+  content: '';
+  position: absolute;
+  bottom: -20px; left: 50%;
+  transform: translateX(-50%);
+  width: 80px; height: 60px;
+  background: radial-gradient(circle, rgba(124,58,237,0.12) 0%, transparent 70%);
+}
+
+.pc-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+.pc-apy {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -1px;
+  margin-bottom: 4px;
+}
+
+.pc-apy.dci  { color: var(--gold);  animation: bio-glow-gold  4s ease-in-out infinite; }
+.pc-apy.earn { color: var(--cyan);  animation: bio-glow-cyan  4s ease-in-out infinite 2s; }
+
+.pc-sub {
+  font-size: 9px;
+  color: var(--text-dim);
+  letter-spacing: 0.3px;
+}
+
+/* =====================================================
+   MARKET LIST
+   ===================================================== */
+
+.market-inner {
+  padding: 0 0 4px;
+  position: relative;
+  z-index: 1;
+}
+
+.market-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px 8px;
+}
+
+.market-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+
+.market-live {
+  font-size: 9px;
+  color: var(--cyan);
+  background: rgba(72,202,228,0.08);
+  border: 1px solid rgba(72,202,228,0.18);
+  border-radius: 8px;
+  padding: 1px 7px;
+  animation: bio-glow-cyan 3s ease-in-out infinite;
+}
+
+.market-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 18px;
+  border-top: 1px solid rgba(124,58,237,0.08);
+  transition: background 0.2s;
+}
+
+.market-item:hover { background: rgba(124,58,237,0.05); }
+
+.mi-sym {
+  width: 44px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-mid);
+}
+
+.mi-price {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.mi-chg {
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 52px;
+  text-align: right;
+}
+
+.mi-chg.up { color: var(--profit); animation: bio-glow-cyan 4s ease-in-out infinite; }
+.mi-chg.dn { color: var(--loss); animation: loss-pulse 3.5s ease-in-out infinite; }
+
+/* =====================================================
+   BOTTOM NAV
+   ===================================================== */
+
+.bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 375px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  background: rgba(2,0,16,0.90);
+  backdrop-filter: blur(32px);
+  -webkit-backdrop-filter: blur(32px);
+  border-top: 1px solid rgba(124,58,237,0.20);
+  box-shadow: 0 -4px 24px rgba(124,58,237,0.12);
+  padding-bottom: env(safe-area-inset-bottom);
+  z-index: 10;
+}
+
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 4px;
+  gap: 3px;
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 500;
+  transition: color 0.2s;
+}
+
+.nav-item.active {
+  color: var(--purple-soft);
+}
+
+.nav-item.active .nav-icon {
+  filter: drop-shadow(0 0 5px var(--purple));
+}
+
+.nav-icon { font-size: 17px; }
+</style>
+</head>
+<body>
+
+<!-- Background Layers -->
+<div class="bg-space"></div>
+<div class="stars"></div>
+<div class="bio-layer"></div>
+<div class="orb orb-purple"></div>
+<div class="orb orb-cyan"></div>
+<div class="orb orb-deep"></div>
+
+<div class="app">
+
+  <!-- ======================== HEADER ======================== -->
+  <div class="header">
+    <div class="logo-wrap">
+      <div class="orbit-container">
+        <div class="orbit-core"></div>
+        <div class="orbit-ring orbit-ring-1"><div class="orbit-dot"></div></div>
+        <div class="orbit-ring orbit-ring-2"><div class="orbit-dot"></div></div>
+        <div class="orbit-ring orbit-ring-3"><div class="orbit-dot"></div></div>
+      </div>
+      <div class="logo-text-area">
+        <div class="logo-name">QuantumTrade</div>
+        <div class="logo-tagline">Quantum Ocean · v10.12</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="autopilot-chip">
+        <div class="ap-dot"></div>
+        ⚛ Автопилот
+      </div>
+      <div class="score-badges">
+        <div class="score-badge">Q: <em>82</em></div>
+        <div class="score-badge danger">F&G: <em>12</em> 🔴</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Wave after header -->
+  <div class="wave-divider">
+    <svg viewBox="0 0 375 28" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+      <path d="M0,14 C70,26 140,2 210,14 C280,26 330,4 375,14 L375,28 L0,28 Z"
+            fill="rgba(2,0,16,0.55)" stroke="rgba(72,202,228,0.10)" stroke-width="0.8"/>
+    </svg>
+  </div>
+
+  <!-- ======================== BALANCE CARD ======================== -->
+  <div class="glass-card">
+    <div class="balance-card">
+      <div class="balance-label">Портфель</div>
+      <div class="balance-amount">$42.30 <span class="currency">USDT</span></div>
+      <div class="balance-change">
+        <span style="font-size:15px">↑</span> +$0.87 (+2.1%) сегодня
+      </div>
+      <div class="balance-meta">KuCoin · ByBit · обновлено 14:32</div>
+      <!-- Mini sparkline chart -->
+      <div class="mini-chart">
+        <svg class="chart-svg" viewBox="0 0 375 52" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="qoGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%"   stop-color="#48cae4" stop-opacity="0.28"/>
+              <stop offset="60%"  stop-color="#7c3aed" stop-opacity="0.12"/>
+              <stop offset="100%" stop-color="#7c3aed" stop-opacity="0"/>
+            </linearGradient>
+            <filter id="glow">
+              <feGaussianBlur stdDeviation="1.5" result="blur"/>
+              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+          </defs>
+          <!-- Area fill -->
+          <path d="M0,42 L30,39 L60,40 L90,34 L120,36 L150,29 L180,31 L210,24 L240,21 L265,23 L295,17 L325,13 L355,9 L375,7 L375,52 L0,52 Z"
+                fill="url(#qoGrad)"/>
+          <!-- Cyan line with glow -->
+          <path d="M0,42 L30,39 L60,40 L90,34 L120,36 L150,29 L180,31 L210,24 L240,21 L265,23 L295,17 L325,13 L355,9 L375,7"
+                fill="none" stroke="rgba(72,202,228,0.4)" stroke-width="3.5"
+                stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
+          <path d="M0,42 L30,39 L60,40 L90,34 L120,36 L150,29 L180,31 L210,24 L240,21 L265,23 L295,17 L325,13 L355,9 L375,7"
+                fill="none" stroke="#48cae4" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+          <!-- Current price dot -->
+          <circle cx="375" cy="7" r="3.5" fill="var(--cyan)" filter="url(#glow)"/>
+        </svg>
+      </div>
+    </div>
+    <!-- Stats row -->
+    <div class="balance-stats">
+      <div class="bstat">
+        <div class="bstat-label">Win Rate</div>
+        <div class="bstat-val cyan">68.4%</div>
+        <div class="bstat-sub">30 дней</div>
+      </div>
+      <div class="bstat">
+        <div class="bstat-label">Сделок</div>
+        <div class="bstat-val gold">34</div>
+        <div class="bstat-sub">всего</div>
+      </div>
+      <div class="bstat">
+        <div class="bstat-label">Позиций</div>
+        <div class="bstat-val purple">1 / 2</div>
+        <div class="bstat-sub">открыто</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================== Q-SCORE CARD ======================== -->
+  <div class="glass-card">
+    <div class="qscore-card">
+      <div class="qscore-orb">
+        <div class="qscore-ring"></div>
+        <div class="qscore-val">
+          <div class="qscore-num">82</div>
+          <div class="qscore-label">Q-SCORE</div>
+        </div>
+      </div>
+      <div class="qscore-info">
+        <div class="qscore-title">Квантовое состояние</div>
+        <div class="qscore-desc">
+          <span>Сильный сигнал</span> · Экстремальный страх F&G:12 · Объём <span>×1.32</span> норм · 4h тренд <span>↑ бычий</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Wave between sections -->
+  <div class="wave-divider" style="transform:scaleX(-1); margin: 2px 0;">
+    <svg viewBox="0 0 375 28" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+      <path d="M0,14 C80,4 160,24 240,14 C300,6 340,22 375,14 L375,0 L0,0 Z"
+            fill="rgba(0,10,30,0.25)" stroke="rgba(124,58,237,0.09)" stroke-width="0.8"/>
+    </svg>
+  </div>
+
+  <!-- ======================== POSITIONS ======================== -->
+  <div class="section-label">Позиции</div>
+  <div class="glass-card">
+    <div class="pos-inner">
+      <div class="pos-header-row">
+        <div class="pos-title">Активные</div>
+        <div class="pos-count-badge">1 live</div>
+      </div>
+      <div class="position-item">
+        <div class="pi-top">
+          <div class="pi-sym">BTC-USDT</div>
+          <div class="pi-pnl">+1.8%</div>
+        </div>
+        <div class="pi-row">
+          <div class="pi-side-badge">BUY</div>
+          <div class="pi-size">$5.00</div>
+        </div>
+        <div class="pi-tpsl">
+          <div class="tpsl-box">
+            <div class="tpsl-lbl">Take Profit</div>
+            <div class="tpsl-v tp">+4%</div>
+          </div>
+          <div class="tpsl-box">
+            <div class="tpsl-lbl">Stop Loss</div>
+            <div class="tpsl-v sl">−2%</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================== PASSIVE INCOME ======================== -->
+  <div class="section-label">Пассивный доход</div>
+  <div class="glass-card">
+    <div class="passive-grid">
+      <div class="pcard">
+        <div class="pc-label">DCI Стратегия</div>
+        <div class="pc-apy dci">854%</div>
+        <div class="pc-sub">APY · ByBit DCI</div>
+      </div>
+      <div class="pcard">
+        <div class="pc-label">Earn / Flexible</div>
+        <div class="pc-apy earn">5.2%</div>
+        <div class="pc-sub">APR · KuCoin+BB</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Wave before market -->
+  <div class="wave-divider" style="margin: 2px 0;">
+    <svg viewBox="0 0 375 28" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+      <path d="M0,14 C60,24 140,4 200,18 C260,28 320,8 375,14 L375,28 L0,28 Z"
+            fill="rgba(0,5,20,0.35)" stroke="rgba(72,202,228,0.08)" stroke-width="0.8"/>
+    </svg>
+  </div>
+
+  <!-- ======================== MARKET PRICES ======================== -->
+  <div class="section-label">Рынок</div>
+  <div class="glass-card">
+    <div class="market-inner">
+      <div class="market-header">
+        <div class="market-title">Топ монеты</div>
+        <div class="market-live">● Live</div>
+      </div>
+      <div class="market-item">
+        <div class="mi-sym">BTC</div>
+        <div class="mi-price">$83,241</div>
+        <div class="mi-chg up">+1.2%</div>
+      </div>
+      <div class="market-item">
+        <div class="mi-sym">ETH</div>
+        <div class="mi-price">$1,892</div>
+        <div class="mi-chg dn">−0.8%</div>
+      </div>
+      <div class="market-item">
+        <div class="mi-sym">SOL</div>
+        <div class="mi-price">$128.40</div>
+        <div class="mi-chg up">+3.4%</div>
+      </div>
+      <div class="market-item">
+        <div class="mi-sym">BNB</div>
+        <div class="mi-price">$598.10</div>
+        <div class="mi-chg dn">−1.1%</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="height: 16px;"></div>
+
+  <!-- ======================== BOTTOM NAV ======================== -->
+  <nav class="bottom-nav">
+    <div class="nav-item active">
+      <div class="nav-icon">📊</div>
+      <div>Дашборд</div>
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">💼</div>
+      <div>Позиции</div>
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">💰</div>
+      <div>Earn</div>
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">⚙️</div>
+      <div>Настройки</div>
+    </div>
+  </nav>
+
+</div>
+</body>
+</html>

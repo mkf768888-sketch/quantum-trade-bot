@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>QuantumTrade — Matrix Terminal</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #000000;
+  --bg2: #030a03;
+  --bg3: #060f06;
+  --green: #00ff41;
+  --green-dim: #00aa2b;
+  --green-faint: #003310;
+  --green-glow: rgba(0,255,65,0.4);
+  --red: #ff0040;
+  --red-glow: rgba(255,0,64,0.4);
+  --text: #00cc33;
+  --text-mid: #008822;
+  --text-dim: #004410;
+  --font: 'Courier New', 'Lucida Console', monospace;
+}
+
+html, body {
+  width: 375px;
+  max-width: 375px;
+  min-height: 100vh;
+  margin: 0 auto;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 12px;
+  overflow-x: hidden;
+}
+
+/* Matrix rain canvas */
+#matrix-canvas {
+  position: fixed;
+  top: 0; left: 0;
+  width: 375px;
+  height: 100vh;
+  z-index: 0;
+  opacity: 0.15;
+  pointer-events: none;
+}
+
+.app {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding-bottom: 70px;
+}
+
+/* CRT effect overlay */
+.crt-overlay {
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.12) 2px,
+    rgba(0,0,0,0.12) 4px
+  );
+  pointer-events: none;
+  z-index: 200;
+}
+
+/* Vignette */
+.vignette {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.7) 100%);
+  pointer-events: none;
+  z-index: 199;
+}
+
+/* ASCII LOGO */
+.ascii-logo {
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--green-faint);
+  background: rgba(0,20,0,0.7);
+}
+
+.ascii-art {
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--green);
+  text-shadow: 0 0 8px var(--green-glow);
+  white-space: pre;
+  letter-spacing: 0.5px;
+}
+
+.logo-sub-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--text-mid);
+}
+
+.ver-badge {
+  border: 1px solid var(--green-dim);
+  padding: 1px 6px;
+  color: var(--green);
+  font-size: 9px;
+}
+
+/* STATUS ROW */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  border-bottom: 1px solid var(--green-faint);
+  background: rgba(0,20,0,0.5);
+  padding: 6px 14px;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.sb-item {
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sb-key { color: var(--text-dim); }
+.sb-val { color: var(--green); text-shadow: 0 0 4px var(--green-glow); }
+.sb-val.on { color: var(--green); }
+.sb-val.warn { color: #aaff00; text-shadow: 0 0 4px rgba(170,255,0,0.4); }
+.sb-val.danger { color: var(--red); text-shadow: 0 0 4px var(--red-glow); }
+
+.sb-sep { color: var(--text-dim); }
+
+/* SECTION */
+.section {
+  margin: 10px 14px;
+  border: 1px solid var(--green-faint);
+  background: rgba(0,15,0,0.7);
+  position: relative;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--green-faint);
+  background: rgba(0,25,0,0.5);
+}
+
+.sh-title {
+  font-size: 10px;
+  color: var(--green);
+  text-shadow: 0 0 5px var(--green-glow);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.sh-title::before { content: '> '; color: var(--green-dim); }
+
+.sh-badge {
+  font-size: 9px;
+  border: 1px solid var(--green-dim);
+  color: var(--green-dim);
+  padding: 1px 6px;
+}
+
+.section-body {
+  padding: 10px;
+}
+
+/* BALANCE */
+.balance-block {
+  padding: 14px 10px;
+}
+
+.bal-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 11px;
+}
+
+.bal-key { color: var(--text-dim); }
+.bal-val { color: var(--green); font-weight: 700; text-shadow: 0 0 6px var(--green-glow); }
+
+.balance-main-display {
+  text-align: center;
+  padding: 14px 0 10px;
+  border-top: 1px solid var(--green-faint);
+  border-bottom: 1px solid var(--green-faint);
+  margin: 10px 0;
+}
+
+.bmd-label {
+  font-size: 9px;
+  color: var(--text-dim);
+  letter-spacing: 2px;
+  margin-bottom: 6px;
+}
+
+.bmd-amount {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--green);
+  text-shadow: 0 0 10px var(--green-glow), 0 0 25px rgba(0,255,65,0.3);
+  letter-spacing: 3px;
+  animation: matrix-flicker 8s ease-in-out infinite;
+}
+
+@keyframes matrix-flicker {
+  0%, 88%, 100% { opacity: 1; }
+  89% { opacity: 0.4; }
+  90% { opacity: 1; }
+  95% { opacity: 0.7; }
+  96% { opacity: 1; }
+}
+
+.bmd-change {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--green);
+  text-shadow: 0 0 8px var(--green-glow);
+  margin-top: 6px;
+  animation: pulse-green 2s ease-in-out infinite;
+}
+
+@keyframes pulse-green {
+  0%, 100% { text-shadow: 0 0 8px var(--green-glow); }
+  50% { text-shadow: 0 0 15px var(--green-glow), 0 0 30px rgba(0,255,65,0.3); }
+}
+
+/* DATA TABLE */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.data-table tr {
+  border-bottom: 1px solid rgba(0,40,0,0.8);
+}
+
+.data-table tr:last-child { border-bottom: none; }
+
+.data-table td {
+  padding: 5px 4px;
+  font-size: 11px;
+}
+
+.data-table .key { color: var(--text-dim); }
+.data-table .val { color: var(--green); text-align: right; font-weight: 700; }
+.data-table .val.ok { color: var(--green); text-shadow: 0 0 4px var(--green-glow); }
+.data-table .val.warn { color: #aaff00; }
+.data-table .val.danger { color: var(--red); text-shadow: 0 0 4px var(--red-glow); }
+
+/* POSITION */
+.pos-block {
+  padding: 10px;
+}
+
+.pos-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.pos-symbol {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--green);
+  text-shadow: 0 0 8px var(--green-glow);
+  letter-spacing: 2px;
+}
+
+.pos-side {
+  font-size: 11px;
+  color: #000;
+  background: var(--green);
+  padding: 2px 8px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.pos-pnl {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--green);
+  text-shadow: 0 0 8px var(--green-glow);
+  margin-bottom: 10px;
+  animation: pulse-green 2.5s ease-in-out infinite;
+}
+
+.pos-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.pm-item {
+  border: 1px solid var(--green-faint);
+  padding: 6px;
+  text-align: center;
+}
+
+.pm-label { font-size: 8px; color: var(--text-dim); margin-bottom: 3px; letter-spacing: 1px; }
+.pm-val { font-size: 12px; color: var(--green); font-weight: 700; }
+.pm-val.tp { color: var(--green); }
+.pm-val.sl { color: var(--red); text-shadow: 0 0 4px var(--red-glow); }
+
+/* LOG */
+.log-block {
+  padding: 8px 10px;
+}
+
+.log-line {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 10px;
+  align-items: baseline;
+}
+
+.ll-time { color: var(--text-dim); min-width: 40px; flex-shrink: 0; }
+.ll-type { min-width: 60px; flex-shrink: 0; }
+.ll-type.ok { color: var(--green); }
+.ll-type.warn { color: #aaff00; }
+.ll-type.error { color: var(--red); }
+.ll-msg { color: var(--text-mid); flex: 1; }
+
+/* PASSIVE */
+.passive-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 10px;
+}
+
+.pg-item {
+  border: 1px solid var(--green-faint);
+  padding: 10px;
+  text-align: center;
+  background: rgba(0,10,0,0.5);
+}
+
+.pg-label {
+  font-size: 9px;
+  color: var(--text-dim);
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.pg-val {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--green);
+  text-shadow: 0 0 10px var(--green-glow);
+}
+
+.pg-sub {
+  font-size: 8px;
+  color: var(--text-dim);
+  margin-top: 3px;
+  letter-spacing: 1px;
+}
+
+/* COMMAND PROMPT */
+.cmd-prompt-bar {
+  margin: 0 14px 10px;
+  border: 1px solid var(--green-dim);
+  padding: 8px 10px;
+  background: rgba(0,20,0,0.8);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cmd-ps { color: var(--green); font-weight: 700; font-size: 12px; }
+.cmd-path { color: var(--text-dim); font-size: 11px; }
+.cmd-text { color: var(--text-mid); font-size: 11px; }
+.cmd-cursor {
+  display: inline-block;
+  width: 8px; height: 14px;
+  background: var(--green);
+  animation: blink 1s step-end infinite;
+  vertical-align: middle;
+}
+
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+/* BOTTOM NAV */
+.bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 375px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  background: rgba(0,0,0,0.95);
+  border-top: 1px solid var(--green-dim);
+  box-shadow: 0 -3px 15px rgba(0,255,65,0.1);
+  z-index: 300;
+}
+
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 4px;
+  gap: 3px;
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  font-family: var(--font);
+  transition: color 0.15s;
+}
+
+.nav-item.active { color: var(--green); text-shadow: 0 0 6px var(--green-glow); }
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 10%; right: 10%;
+  height: 1px;
+  background: var(--green);
+  box-shadow: 0 0 5px var(--green);
+}
+
+.nav-icon { font-size: 16px; }
+</style>
+</head>
+<body>
+<canvas id="matrix-canvas"></canvas>
+<div class="crt-overlay"></div>
+<div class="vignette"></div>
+
+<div class="app">
+
+  <!-- ASCII LOGO -->
+  <div class="ascii-logo">
+    <pre class="ascii-art">┌─┐ ┬ ┬ ┌─┐ ┌┐┌ ┌┬┐ ┬ ┬ ┌┬┐
+│─┼ │ │ ├─┤ │││  │  │ │ │││
+└─┘ └─┘ ┴ ┴ ┘└┘  ┴  └─┘ ┴ ┴
+╔════════════════════════════╗
+║  T R A D E  ·  A I  v10.1 ║
+╚════════════════════════════╝</pre>
+    <div class="logo-sub-row">
+      <span style="color:var(--text-dim)">SYSTEM ONLINE · 04/05/2026 14:32:05</span>
+      <span class="ver-badge">BUILD 10.1.0</span>
+    </div>
+  </div>
+
+  <!-- STATUS BAR -->
+  <div class="status-bar">
+    <div class="sb-item">
+      <span class="sb-key">AUTOPILOT:</span>
+      <span class="sb-val on">ACTIVE</span>
+    </div>
+    <div class="sb-item">
+      <span class="sb-key">Q:</span>
+      <span class="sb-val">82</span>
+    </div>
+    <div class="sb-item">
+      <span class="sb-key">F&G:</span>
+      <span class="sb-val danger">12</span>
+    </div>
+    <div class="sb-item">
+      <span class="sb-key">POS:</span>
+      <span class="sb-val">1/2</span>
+    </div>
+  </div>
+
+  <!-- BALANCE SECTION -->
+  <div class="section">
+    <div class="section-header">
+      <div class="sh-title">Portfolio Matrix</div>
+      <div class="sh-badge">LIVE</div>
+    </div>
+    <div class="balance-block">
+      <div class="balance-main-display">
+        <div class="bmd-label">// TOTAL BALANCE //</div>
+        <div class="bmd-amount">$42.30</div>
+        <div class="bmd-change">[ +$0.87 | +2.1% ] TODAY</div>
+      </div>
+      <table class="data-table">
+        <tr>
+          <td class="key">EXCHANGE</td>
+          <td class="val ok">KuCoin + ByBit</td>
+        </tr>
+        <tr>
+          <td class="key">WIN_RATE</td>
+          <td class="val ok">68.4% (23/34)</td>
+        </tr>
+        <tr>
+          <td class="key">Q_THRESHOLD</td>
+          <td class="val">77 → current: 82</td>
+        </tr>
+        <tr>
+          <td class="key">FEAR_GREED</td>
+          <td class="val danger">12 [EXTREME FEAR]</td>
+        </tr>
+        <tr>
+          <td class="key">RISK_PER_TRADE</td>
+          <td class="val">8.00%</td>
+        </tr>
+        <tr>
+          <td class="key">MIROFISH</td>
+          <td class="val warn">11/15 BEARISH</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- POSITION -->
+  <div class="section">
+    <div class="section-header">
+      <div class="sh-title">Open Positions</div>
+      <div class="sh-badge">1 LIVE</div>
+    </div>
+    <div class="pos-block">
+      <div class="pos-header">
+        <div class="pos-symbol">BTC-USDT</div>
+        <div class="pos-side">BUY</div>
+      </div>
+      <div class="pos-pnl">[ PnL: +1.8% ] [ RUNNING: 00:42:17 ]</div>
+      <div class="pos-metrics">
+        <div class="pm-item">
+          <div class="pm-label">SIZE</div>
+          <div class="pm-val">$5.00</div>
+        </div>
+        <div class="pm-item">
+          <div class="pm-label">TP</div>
+          <div class="pm-val tp">+4%</div>
+        </div>
+        <div class="pm-item">
+          <div class="pm-label">SL</div>
+          <div class="pm-val sl">-2%</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PASSIVE -->
+  <div class="section">
+    <div class="section-header">
+      <div class="sh-title">Passive Income</div>
+      <div class="sh-badge">ACTIVE</div>
+    </div>
+    <div class="passive-grid">
+      <div class="pg-item">
+        <div class="pg-label">DCI YIELD</div>
+        <div class="pg-val">854%</div>
+        <div class="pg-sub">APY · DUAL INVEST</div>
+      </div>
+      <div class="pg-item">
+        <div class="pg-label">EARN APR</div>
+        <div class="pg-val">5.2%</div>
+        <div class="pg-sub">APR · FLEXIBLE</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SYSTEM LOG -->
+  <div class="section">
+    <div class="section-header">
+      <div class="sh-title">System Log</div>
+      <div class="sh-badge">TAIL -F</div>
+    </div>
+    <div class="log-block">
+      <div class="log-line">
+        <span class="ll-time">14:32</span>
+        <span class="ll-type ok">[TRADE]</span>
+        <span class="ll-msg">BTC-USDT BUY $5.00 — executed OK</span>
+      </div>
+      <div class="log-line">
+        <span class="ll-time">14:31</span>
+        <span class="ll-type ok">[QSCORE]</span>
+        <span class="ll-msg">Signal 82 &gt; threshold 77 — PASS</span>
+      </div>
+      <div class="log-line">
+        <span class="ll-time">14:30</span>
+        <span class="ll-type warn">[MIROFISH]</span>
+        <span class="ll-msg">Sentiment 11/15 bearish — CAUTION</span>
+      </div>
+      <div class="log-line">
+        <span class="ll-time">14:15</span>
+        <span class="ll-type ok">[DCI]</span>
+        <span class="ll-msg">Order placed 854% APY — OK</span>
+      </div>
+      <div class="log-line">
+        <span class="ll-time">13:50</span>
+        <span class="ll-type warn">[TA]</span>
+        <span class="ll-msg">RSI(14)=34 oversold zone detected</span>
+      </div>
+      <div class="log-line">
+        <span class="ll-time">13:20</span>
+        <span class="ll-type ok">[WHALE]</span>
+        <span class="ll-msg">No large transactions detected</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- CMD -->
+  <div class="cmd-prompt-bar">
+    <span class="cmd-ps">root@quantum</span>
+    <span class="cmd-path">:/trade$</span>
+    <span class="cmd-text">_</span>
+    <span class="cmd-cursor"></span>
+  </div>
+
+  <!-- BOTTOM NAV -->
+  <nav class="bottom-nav">
+    <div class="nav-item active">
+      <div class="nav-icon">📊</div>
+      <div>Дашборд</div>
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">💼</div>
+      <div>Позиции</div>
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">💰</div>
+      <div>Earn</div>
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">⚙️</div>
+      <div>Настройки</div>
+    </div>
+  </nav>
+
+</div>
+
+<script>
+// Matrix rain - lightweight canvas animation
+const canvas = document.getElementById('matrix-canvas');
+const ctx = canvas.getContext('2d');
+canvas.width = 375;
+canvas.height = window.innerHeight;
+
+const cols = Math.floor(375 / 14);
+const drops = Array(cols).fill(1);
+const chars = 'アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン0123456789ABCDEF';
+
+function drawMatrix() {
+  ctx.fillStyle = 'rgba(0,0,0,0.05)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#00ff41';
+  ctx.font = '13px Courier New';
+  for (let i = 0; i < drops.length; i++) {
+    const char = chars[Math.floor(Math.random() * chars.length)];
+    ctx.fillText(char, i * 14, drops[i] * 14);
+    if (drops[i] * 14 > canvas.height && Math.random() > 0.975) {
+      drops[i] = 0;
+    }
+    drops[i]++;
+  }
+}
+
+setInterval(drawMatrix, 50);
+</script>
+</body>
+</html>

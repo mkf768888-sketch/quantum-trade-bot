@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>QuantumTrade — Quantum Cosmos</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #020010;
+  --bg2: #0a0520;
+  --bg-card: #0d0925;
+  --bg-card2: rgba(13,9,37,0.8);
+  --purple: #7c3aed;
+  --purple-mid: #8b5cf6;
+  --purple-light: #a78bfa;
+  --gold: #fbbf24;
+  --gold-dim: #d97706;
+  --purple-glow: rgba(124,58,237,0.4);
+  --purple-glow2: rgba(139,92,246,0.3);
+  --gold-glow: rgba(251,191,36,0.35);
+  --profit: #fbbf24;
+  --loss: #f87171;
+  --text: rgba(230,220,255,0.95);
+  --text-mid: rgba(180,160,230,0.8);
+  --text-dim: rgba(120,100,180,0.6);
+  --border: rgba(124,58,237,0.2);
+  --border-glow: rgba(124,58,237,0.35);
+  --font: 'Inter', -apple-system, system-ui, sans-serif;
+}
+
+html, body {
+  width: 375px;
+  max-width: 375px;
+  min-height: 100vh;
+  margin: 0 auto;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* DEEP SPACE BACKGROUND */
+.space-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background: radial-gradient(ellipse at 20% 30%, rgba(60,0,120,0.4) 0%, transparent 60%),
+              radial-gradient(ellipse at 80% 70%, rgba(40,0,100,0.3) 0%, transparent 50%),
+              radial-gradient(ellipse at 50% 50%, rgba(20,0,60,0.2) 0%, transparent 80%),
+              #020010;
+}
+
+/* STAR FIELD */
+.stars {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.stars::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  /* Generated star field using box-shadow on pseudo-elements */
+  background-image:
+    radial-gradient(1px 1px at 5% 8%, rgba(255,255,255,0.9) 0%, transparent 100%),
+    radial-gradient(1px 1px at 12% 32%, rgba(200,180,255,0.7) 0%, transparent 100%),
+    radial-gradient(1px 1px at 18% 55%, rgba(255,255,255,0.6) 0%, transparent 100%),
+    radial-gradient(2px 2px at 25% 15%, rgba(255,255,255,0.8) 0%, transparent 100%),
+    radial-gradient(1px 1px at 32% 72%, rgba(200,180,255,0.5) 0%, transparent 100%),
+    radial-gradient(1px 1px at 40% 40%, rgba(255,255,255,0.7) 0%, transparent 100%),
+    radial-gradient(1px 1px at 45% 88%, rgba(255,255,255,0.6) 0%, transparent 100%),
+    radial-gradient(2px 2px at 52% 25%, rgba(180,140,255,0.8) 0%, transparent 100%),
+    radial-gradient(1px 1px at 60% 60%, rgba(255,255,255,0.5) 0%, transparent 100%),
+    radial-gradient(1px 1px at 68% 10%, rgba(255,255,255,0.9) 0%, transparent 100%),
+    radial-gradient(1px 1px at 72% 45%, rgba(200,180,255,0.6) 0%, transparent 100%),
+    radial-gradient(1px 1px at 78% 78%, rgba(255,255,255,0.7) 0%, transparent 100%),
+    radial-gradient(2px 2px at 85% 22%, rgba(251,191,36,0.6) 0%, transparent 100%),
+    radial-gradient(1px 1px at 90% 55%, rgba(255,255,255,0.6) 0%, transparent 100%),
+    radial-gradient(1px 1px at 95% 85%, rgba(200,180,255,0.5) 0%, transparent 100%),
+    radial-gradient(1px 1px at 8% 92%, rgba(255,255,255,0.6) 0%, transparent 100%),
+    radial-gradient(1px 1px at 35% 5%, rgba(255,255,255,0.8) 0%, transparent 100%),
+    radial-gradient(1px 1px at 55% 95%, rgba(255,255,255,0.4) 0%, transparent 100%),
+    radial-gradient(2px 2px at 70% 35%, rgba(124,58,237,0.7) 0%, transparent 100%),
+    radial-gradient(1px 1px at 88% 68%, rgba(255,255,255,0.7) 0%, transparent 100%),
+    radial-gradient(1px 1px at 15% 78%, rgba(255,255,255,0.5) 0%, transparent 100%),
+    radial-gradient(1px 1px at 48% 50%, rgba(180,140,255,0.4) 0%, transparent 100%),
+    radial-gradient(2px 2px at 3% 45%, rgba(255,255,255,0.8) 0%, transparent 100%),
+    radial-gradient(1px 1px at 62% 82%, rgba(200,180,255,0.6) 0%, transparent 100%),
+    radial-gradient(1px 1px at 93% 12%, rgba(255,255,255,0.7) 0%, transparent 100%);
+  animation: star-twinkle 8s ease-in-out infinite;
+}
+
+.stars::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(1px 1px at 7% 20%, rgba(255,255,255,0.5) 0%, transparent 100%),
+    radial-gradient(1px 1px at 22% 65%, rgba(200,180,255,0.6) 0%, transparent 100%),
+    radial-gradient(1px 1px at 38% 90%, rgba(255,255,255,0.7) 0%, transparent 100%),
+    radial-gradient(1px 1px at 55% 15%, rgba(251,191,36,0.5) 0%, transparent 100%),
+    radial-gradient(1px 1px at 73% 52%, rgba(255,255,255,0.6) 0%, transparent 100%),
+    radial-gradient(2px 2px at 88% 38%, rgba(180,140,255,0.7) 0%, transparent 100%),
+    radial-gradient(1px 1px at 16% 44%, rgba(255,255,255,0.5) 0%, transparent 100%),
+    radial-gradient(1px 1px at 44% 70%, rgba(200,180,255,0.4) 0%, transparent 100%),
+    radial-gradient(1px 1px at 80% 90%, rgba(255,255,255,0.6) 0%, transparent 100%);
+  animation: star-twinkle 12s ease-in-out infinite reverse;
+}
+
+@keyframes star-twinkle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* ORBIT LOGO */
+.orbit-container {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  margin: 0 auto;
+}
+
+.orbit-core {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--gold) 0%, var(--gold-dim) 100%);
+  box-shadow: 0 0 10px var(--gold-glow), 0 0 25px rgba(251,191,36,0.2);
+  animation: core-pulse 2s ease-in-out infinite;
+}
+
+@keyframes core-pulse {
+  0%, 100% { box-shadow: 0 0 10px var(--gold-glow), 0 0 25px rgba(251,191,36,0.2); }
+  50% { box-shadow: 0 0 20px var(--gold-glow), 0 0 40px rgba(251,191,36,0.3), 0 0 60px rgba(251,191,36,0.1); }
+}
+
+.orbit-ring {
+  position: absolute;
+  top: 50%; left: 50%;
+  border-radius: 50%;
+  border: 1px solid;
+  transform-origin: center;
+}
+
+.orbit-ring-1 {
+  width: 40px; height: 40px;
+  margin-top: -20px; margin-left: -20px;
+  border-color: rgba(124,58,237,0.6);
+  box-shadow: 0 0 5px rgba(124,58,237,0.3);
+  animation: orbit-1 3s linear infinite;
+}
+
+.orbit-ring-2 {
+  width: 60px; height: 60px;
+  margin-top: -30px; margin-left: -30px;
+  border-color: rgba(139,92,246,0.4);
+  box-shadow: 0 0 5px rgba(139,92,246,0.2);
+  animation: orbit-2 5s linear infinite reverse;
+  transform: rotate(45deg);
+}
+
+.orbit-ring-3 {
+  width: 78px; height: 78px;
+  margin-top: -39px; margin-left: -39px;
+  border-color: rgba(167,139,250,0.25);
+  animation: orbit-3 8s linear infinite;
+  transform: rotate(20deg);
+}
+
+/* Orbital dots */
+.orbit-dot {
+  position: absolute;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  top: -3px; left: 50%; margin-left: -3px;
+}
+
+.orbit-ring-1 .orbit-dot {
+  background: var(--purple-mid);
+  box-shadow: 0 0 6px var(--purple-glow);
+}
+
+.orbit-ring-2 .orbit-dot {
+  background: var(--purple-light);
+  box-shadow: 0 0 6px var(--purple-glow2);
+}
+
+.orbit-ring-3 .orbit-dot {
+  background: var(--gold);
+  box-shadow: 0 0 6px var(--gold-glow);
+  width: 5px; height: 5px;
+  margin-left: -2.5px;
+}
+
+@keyframes orbit-1 { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes orbit-2 { from { transform: rotate(45deg); } to { transform: rotate(-315deg); } }
+@keyframes orbit-3 { from { transform: rotate(20deg); } to { transform: rotate(380deg); } }
+
+/* ANIMATIONS */
+@keyframes card-glow {
+  0%, 100% { box-shadow: 0 0 15px rgba(124,58,237,0.15), 0 0 30px rgba(124,58,237,0.05); }
+  50% { box-shadow: 0 0 25px rgba(124,58,237,0.25), 0 0 50px rgba(124,58,237,0.1); }
+}
+
+@keyframes gold-pulse {
+  0%, 100% { text-shadow: 0 0 8px var(--gold-glow); }
+  50% { text-shadow: 0 0 15px var(--gold-glow), 0 0 30px rgba(251,191,36,0.2); }
+}
+
+@keyframes purple-glow-anim {
+  0%, 100% { text-shadow: 0 0 8px var(--purple-glow); }
+  50% { text-shadow: 0 0 15px var(--purple-glow), 0 0 30px rgba(124,58,237,0.2); }
+}
+
+/* APP */
+.app {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding-bottom: 75px;
+}
+
+/* HEADER */
+.header {
+  padding: 20px 20px 16px;
+  text-align: center;
+  background: rgba(2,0,16,0.5);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+
+.orbit-wrap {
+  margin-bottom: 12px;
+}
+
+.logo-name {
+  font-size: 20px;
+  font-weight: 800;
+  background: linear-gradient(135deg, var(--purple-light), var(--gold));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  letter-spacing: -0.5px;
+  margin-bottom: 3px;
+  filter: drop-shadow(0 0 8px rgba(124,58,237,0.3));
+}
+
+.logo-tagline {
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.header-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.quantum-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(124,58,237,0.1);
+  border: 1px solid rgba(124,58,237,0.25);
+  border-radius: 20px;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--purple-light);
+  animation: card-glow 4s ease-in-out infinite;
+}
+
+.qc-dot {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--purple-light);
+  animation: purple-glow-anim 2s ease-in-out infinite;
+  box-shadow: 0 0 4px var(--purple-glow);
+}
+
+.info-chip {
+  font-size: 10px;
+  color: var(--text-dim);
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 20px;
+  padding: 3px 10px;
+}
+
+.info-chip em { color: var(--gold); font-style: normal; font-weight: 600; }
+.info-chip.danger em { color: var(--loss); }
+
+/* GLASS CARD */
+.glass-card {
+  margin: 10px 14px;
+  background: var(--bg-card2);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  backdrop-filter: blur(20px);
+  overflow: hidden;
+  animation: card-glow 5s ease-in-out infinite;
+}
+
+/* Q-SCORE CHARGE INDICATOR */
+.qscore-panel {
+  padding: 18px 20px;
+}
+
+.qp-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+
+.qp-display {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.q-orb {
+  position: relative;
+  width: 70px; height: 70px;
+  flex-shrink: 0;
+}
+
+.q-orb-bg {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(124,58,237,0.15) 0%, transparent 70%);
+  border: 1px solid rgba(124,58,237,0.3);
+  animation: core-pulse 3s ease-in-out infinite;
+}
+
+.q-orb-ring {
+  position: absolute;
+  inset: 6px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: conic-gradient(var(--purple-mid) 0%, var(--gold) 82%, rgba(255,255,255,0.05) 82%, rgba(255,255,255,0.05) 100%) border-box;
+  -webkit-mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: destination-out;
+  mask-composite: exclude;
+  animation: orbit-1 6s linear infinite;
+}
+
+.q-orb-value {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--gold);
+  animation: gold-pulse 2s ease-in-out infinite;
+}
+
+.q-info {
+  flex: 1;
+}
+
+.q-charge-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  letter-spacing: 0.5px;
+}
+
+.q-charge-bar {
+  height: 6px;
+  background: rgba(124,58,237,0.15);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 8px;
+  border: 1px solid rgba(124,58,237,0.2);
+}
+
+.q-charge-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--purple), var(--gold));
+  box-shadow: 0 0 8px var(--purple-glow);
+}
+
+.q-status {
+  font-size: 11px;
+  color: var(--purple-light);
+  font-weight: 500;
+}
+
+.q-threshold {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+/* BALANCE SECTION */
+.balance-inner {
+  padding: 18px 20px;
+  border-top: 1px solid rgba(124,58,237,0.1);
+}
+
+.bi-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.bi-amount {
+  font-size: 36px;
+  font-weight: 800;
+  color: var(--text);
+  letter-spacing: -2px;
+  line-height: 1;
+  margin-bottom: 8px;
+}
+
+.bi-change {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(251,191,36,0.08);
+  border: 1px solid rgba(251,191,36,0.2);
+  border-radius: 20px;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gold);
+  animation: gold-pulse 3s ease-in-out infinite;
+}
+
+.bi-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 8px;
+}
+
+/* STATS */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1px;
+  background: rgba(124,58,237,0.1);
+  border-top: 1px solid rgba(124,58,237,0.1);
+}
+
+.sg-cell {
+  background: var(--bg-card2);
+  padding: 14px 16px;
+}
+
+.sgc-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-bottom: 5px;
+  letter-spacing: 0.3px;
+}
+
+.sgc-val {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.sgc-val.gold { color: var(--gold); animation: gold-pulse 3s ease-in-out infinite; }
+.sgc-val.purple { color: var(--purple-light); animation: purple-glow-anim 3s ease-in-out infinite; }
+.sgc-val.loss { color: var(--loss); }
+
+.sgc-sub { font-size: 9px; color: var(--text-dim); margin-top: 2px; }
+
+/* SECTION LABEL */
+.section-label {
+  padding: 6px 20px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+/* POSITION CARD */
+.pos-inner {
+  padding: 16px 20px;
+}
+
+.pi-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.pi-sym {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.3px;
+}
+
+.pi-pnl {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--gold);
+  animation: gold-pulse 2s ease-in-out infinite;
+}
+
+.pi-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.pi-badge {
+  background: rgba(251,191,36,0.1);
+  border: 1px solid rgba(251,191,36,0.25);
+  border-radius: 8px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--gold);
+}
+
+.pi-size {
+  font-size: 13px;
+  color: var(--text-mid);
+}
+
+.pi-tpsl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.pts-item {
+  background: rgba(13,9,37,0.8);
+  border: 1px solid rgba(124,58,237,0.15);
+  border-radius: 12px;
+  padding: 10px 14px;
+}
+
+.pts-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.pts-val {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.pts-val.tp { color: var(--gold); }
+.pts-val.sl { color: var(--loss); }
+
+/* PASSIVE */
+.passive-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 14px;
+}
+
+.pcard {
+  background: rgba(13,9,37,0.8);
+  border: 1px solid rgba(124,58,237,0.2);
+  border-radius: 16px;
+  padding: 16px;
+  text-align: center;
+  animation: card-glow 5s ease-in-out infinite;
+}
+
+.pcard:nth-child(2) { animation-delay: 2.5s; }
+
+.pc-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+.pc-val {
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--purple-light);
+  letter-spacing: -1px;
+  animation: purple-glow-anim 4s ease-in-out infinite;
+}
+
+.pc-val.gold { color: var(--gold); animation: gold-pulse 4s ease-in-out infinite; }
+
+.pc-sub {
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+/* BOTTOM NAV */
+.bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 375px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  background: rgba(2,0,16,0.92);
+  backdrop-filter: blur(30px);
+  border-top: 1px solid rgba(124,58,237,0.2);
+  box-shadow: 0 -5px 20px rgba(124,58,237,0.1);
+  z-index: 10;
+}
+
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 4px;
+  gap: 3px;
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 500;
+  transition: color 0.2s;
+}
+
+.nav-item.active { color: var(--purple-light); }
+.nav-item.active .nav-icon { filter: drop-shadow(0 0 5px var(--purple-glow)); }
+
+.nav-icon { font-size: 17px; }
+</style>
+</head>
+<body>
+<div class="space-bg"></div>
+<div class="stars"></div>
+
+<div class="app">
+
+  <!-- HEADER -->
+  <div class="header">
+    <div class="orbit-wrap">
+      <div class="orbit-container">
+        <div class="orbit-core"></div>
+        <div class="orbit-ring orbit-ring-1">
+          <div class="orbit-dot"></div>
+        </div>
+        <div class="orbit-ring orbit-ring-2">
+          <div class="orbit-dot"></div>
+        </div>
+        <div class="orbit-ring orbit-ring-3">
+          <div class="orbit-dot"></div>
+        </div>
+      </div>
+    </div>
+    <div class="logo-name">QuantumTrade AI</div>
+    <div class="logo-tagline">Quantum Trading System · v10.1</div>
+    <div class="header-status">
+      <div class="quantum-chip">
+        <div class="qc-dot"></div>
+        Автопилот активен
+      </div>
+      <div class="info-chip">Q: <em>82</em></div>
+      <div class="info-chip danger">F&G: <em>12</em></div>
+    </div>
+  </div>
+
+  <!-- QUANTUM CHARGE CARD -->
+  <div class="glass-card">
+    <div class="qscore-panel">
+      <div class="qp-label">// Квантовый заряд сигнала</div>
+      <div class="qp-display">
+        <div class="q-orb">
+          <div class="q-orb-bg"></div>
+          <div class="q-orb-ring"></div>
+          <div class="q-orb-value">82</div>
+        </div>
+        <div class="q-info">
+          <div class="q-charge-label">Уровень заряда</div>
+          <div class="q-charge-bar">
+            <div class="q-charge-fill" style="width: 82%;"></div>
+          </div>
+          <div class="q-status">Высокая вероятность сделки</div>
+          <div class="q-threshold">Порог активации: 77/100</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="balance-inner">
+      <div class="bi-label">Квантовый портфель</div>
+      <div class="bi-amount">$42.30 <span style="font-size:16px; font-weight:400; color:var(--text-dim)">USDT</span></div>
+      <div class="bi-change">
+        <span>↑</span> +$0.87 (+2.1%) сегодня
+      </div>
+      <div class="bi-meta">KuCoin · ByBit · 14:32:05</div>
+    </div>
+
+    <div class="stats-grid">
+      <div class="sg-cell">
+        <div class="sgc-label">Win Rate</div>
+        <div class="sgc-val gold">68.4%</div>
+        <div class="sgc-sub">23 / 34 сделок</div>
+      </div>
+      <div class="sg-cell">
+        <div class="sgc-label">F&G Index</div>
+        <div class="sgc-val loss">12 🔴</div>
+        <div class="sgc-sub">Extreme Fear</div>
+      </div>
+      <div class="sg-cell">
+        <div class="sgc-label">Позиций</div>
+        <div class="sgc-val purple">1 / 2</div>
+        <div class="sgc-sub">открыто</div>
+      </div>
+      <div class="sg-cell">
+        <div class="sgc-label">Режим</div>
+        <div class="sgc-val purple">AUTO</div>
+        <div class="sgc-sub">DeepSeek V3</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- POSITION -->
+  <div class="section-label">Позиции</div>
+  <div class="glass-card">
+    <div class="pos-inner">
+      <div class="pi-top">
+        <div class="pi-sym">BTC-USDT</div>
+        <div class="pi-pnl">+1.8%</div>
+      </div>
+      <div class="pi-row">
+        <div class="pi-badge">BUY</div>
+        <div class="pi-size">$5.00 USDT</div>
+      </div>
+      <div class="pi-tpsl">
+        <div class="pts-item">
+          <div class="pts-label">Take Profit</div>
+          <div class="pts-val tp">+4%</div>
+        </div>
+        <div class="pts-item">
+          <div class="pts-label">Stop Loss</div>
+          <div class="pts-val sl">-2%</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PASSIVE -->
+  <div class="section-label">Пассивный доход</div>
+  <div class="glass-card">
+    <div class="passive-grid">
+      <div class="pcard">
+        <div class="pc-label">DCI Стратегия</div>
+        <div class="pc-val gold">854%</div>
+        <div class="pc-sub">APY · Dual Invest</div>
+      </div>
+      <div class="pcard">
+        <div class="pc-label">Earn / Stake</div>
+        <div class="pc-val">5.2%</div>
+        <div class="pc-sub">APR · Flexible</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BOTTOM NAV -->
+  <nav class="bottom-nav">
+    <div class="nav-item active">
+      <div class="nav-icon">📊</div>
+      <div>Дашборд</div>
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">💼</div>
+      <div>Позиции</div>
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">💰</div>
+      <div>Earn</div>
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">⚙️</div>
+      <div>Настройки</div>
+    </div>
+  </nav>
+
+</div>
+</body>
+</html>
