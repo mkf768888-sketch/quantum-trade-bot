@@ -5,6 +5,12 @@ advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.10.1: FIX — DCI place_order: Invalid parameter: order_direction
+          ByBit requires orderDirection="BuyLow"/"SellHigh" at top level of
+          the request body (separate from orderType="Stake"). The direction
+          parameter was received by bybit_dci_place_order() but never included
+          in the body dict. Added "orderDirection": direction to body.
+          This was the final missing field — DCI should now place orders.
 v10.10.0: FEATURE — Three upgrades:
           1. DXY + S&P500 in macro context via stooq.com (free, no key).
              Macro strategist agent now receives real traditional market data.
@@ -1635,6 +1641,7 @@ async def bybit_dci_place_order(
     v10.9.23: ByBit requires dualAssetsExtra nested object.
     Top-level: orderType="Stake", accountType="FUND".
     dualAssetsExtra: selectPrice + apyE8 (DCI-specific fields).
+    v10.10.1: orderDirection="BuyLow"/"SellHigh" is required at top level.
     Fallback FUND → UNIFIED."""
     import uuid
     order_link_id = f"dci_{uuid.uuid4().hex[:16]}"
@@ -1644,6 +1651,7 @@ async def bybit_dci_place_order(
         "coin": coin,
         "amount": str(round(amount, 8)),
         "orderType": "Stake",            # top-level, like FlexibleSaving
+        "orderDirection": direction,     # v10.10.1: "BuyLow" or "SellHigh" — required
         "accountType": "FUND",           # required
         "orderLinkId": order_link_id,
         "dualAssetsExtra": {             # v10.9.23: required nested object
