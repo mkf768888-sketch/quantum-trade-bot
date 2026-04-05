@@ -7204,11 +7204,15 @@ async def _tg_main_menu(chat_id: int):
         [{"text": f"⚡ Арбитраж {arb}", "callback_data": "menu_arb"},
          {"text": pause_btn_text, "callback_data": pause_btn_data}],
     ]}
+    # v10.11.5: Show chat_id hint if ADMIN_CHAT_IDS not configured (helps owner set up auth)
+    admin_hint = (f"\n⚠️ <b>Добавь в Railway:</b> <code>ADMIN_CHAT_IDS={chat_id}</code>"
+                  if not AUTHORIZED_CHAT_IDS else "")
     await _tg_send(chat_id,
         f"⚛ <b>QuantumTrade AI v{app.version}</b>\n"
         + ("⏸ <b>ПАУЗА АКТИВНА</b> — все процессы остановлены\n" if SYSTEM_PAUSED else "")
         + "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Выбери раздел:", kb)
+        + admin_hint + ("\n" if admin_hint else "")
+        + "Выбери раздел:", kb)
 
 async def _tg_stats(chat_id: int):
     """Отправляет карточку статистики трейдинга. v9.0: uses _perf_stats (closed trades only)."""
