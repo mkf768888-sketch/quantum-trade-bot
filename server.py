@@ -1,10 +1,14 @@
 """
-QuantumTrade AI - FastAPI Backend v10.10.0
+QuantumTrade AI - FastAPI Backend v10.11.0
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.10.3: FIX — DCI place_order: Invalid coin.
+          For BuyLow direction, ByBit expects the INVESTED coin (USDT), not the
+          base coin (ETH). Was passing best_option["coin"] (= "ETH").
+          Fixed to best_option["invest_coin"] (= "USDT" for BuyLow, base coin for SellHigh).
 v10.11.0: FEATURE — Inline Telegram Mini App (no external files):
           1. /app endpoint serves complete dashboard as inline Python string.
           2. Real-time dashboard: PnL, positions, DCI status, macro (DXY/S&P/F&G).
@@ -2164,7 +2168,7 @@ async def dci_auto_place_idle() -> dict:
                 product_id=best_option["product_id"],
                 direction=best_option["direction"],
                 amount=invest_amount,
-                coin=best_option["coin"],
+                coin=best_option["invest_coin"],  # v10.10.3: invest_coin not base coin (USDT for BuyLow)
                 select_price=best_option["select_price"],
                 apy_e8=best_option.get("apy_e8", "0"),
             )
