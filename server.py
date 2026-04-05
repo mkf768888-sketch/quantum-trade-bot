@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v10.11.0
+QuantumTrade AI - FastAPI Backend v10.11.1
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
@@ -9,6 +9,12 @@ v10.10.3: FIX — DCI place_order: Invalid coin.
           For BuyLow direction, ByBit expects the INVESTED coin (USDT), not the
           base coin (ETH). Was passing best_option["coin"] (= "ETH").
           Fixed to best_option["invest_coin"] (= "USDT" for BuyLow, base coin for SellHigh).
+v10.11.1: FIX — DCI priority over Earn in router (DCI runs FIRST, independently of EARN_ENABLED).
+          Error propagation: DCI API errors now shown in /dciplace response instead of silent swallow.
+          NEW: /balance command — full breakdown across KuCoin + ByBit (idle, earn, DCI).
+          NEW: DCI timer — shows "next auto-cycle in ~N min" in /dci.
+          NEW: Mini App Force DCI button wired to /api/dci/place + /api/dci/status endpoints.
+          Wave 2A: Multi-signal confirmation (≥2 TA indicators) + per-symbol 4h cooldown for BUY.
 v10.11.0: FEATURE — Inline Telegram Mini App (no external files):
           1. /app endpoint serves complete dashboard as inline Python string.
           2. Real-time dashboard: PnL, positions, DCI status, macro (DXY/S&P/F&G).
@@ -2184,8 +2190,13 @@ async def dci_auto_place_idle() -> dict:
                 "apy_pct": best_apy,
                 "order_id": res["order_id"],
             })
-
-        return {"placed": placed, "best_apy": best_apy, "skipped": len(products) - 1, "direction": direction, "fg_val": fg_val}
+            return {"placed": placed, "best_apy": best_apy, "skipped": len(products) - 1, "direction": direction, "fg_val": fg_val}
+        else:
+            # v10.11.1: propagate error to caller (was silently swallowed before)
+            err = res.get("error", "unknown API error")
+            log_activity(f"[dci] place_order failed for caller: {err}")
+            return {"placed": [], "best_apy": best_apy, "skipped": len(products) - 1,
+                    "reason": f"API error: {err}", "direction": direction, "fg_val": fg_val}
 
     except Exception as e:
         log_activity(f"[dci] dci_auto_place_idle error: {e}")
@@ -2681,6 +2692,86 @@ async def earn_monitor_loop():
             await asyncio.sleep(60)
             continue
         try:
+            # v10.11.1: DCI runs FIRST — before Earn, and independently of EARN_ENABLED.
+            # DCI yields 100-900%+ APY vs Earn 0.6-0.7% APR — DCI must get first dibs on idle USDT.
+            # Previously DCI was inside EARN_ENABLED block and ran AFTER Earn, losing all funds to Earn.
+            if DCI_ENABLED:
+                # Settlement check runs every cycle (every 15 min)
+                try:
+                    settled = await dci_check_settlements()
+                    for s in settled:
+                        direction = s.get("direction", "?")
+                        coin = s.get("coin", "?")
+                        amount = s.get("amount", 0)
+                        apy = s.get("apy_pct", 0)
+                        days = s.get("days_held", 0)
+                        earned = s.get("est_earnings_usdt", 0)
+                        # Telegram push notification on settlement
+                        if ALERT_CHAT_ID:
+                            await _tg_send(int(ALERT_CHAT_ID),
+                                f"🏁 <b>DCI позиция закрыта!</b>\n\n"
+                                f"<b>Тип:</b> {direction}\n"
+                                f"<b>Монета:</b> {coin}\n"
+                                f"<b>Вложено:</b> <code>${amount:.2f}</code>\n"
+                                f"<b>APY:</b> <code>{apy:.2f}%</code>\n"
+                                f"<b>Держали:</b> {days} дней\n"
+                                f"<b>Доход (оценка):</b> <code>${earned:.4f}</code>\n\n"
+                                f"📌 /dci — подробности"
+                            )
+                except Exception as settle_e:
+                    log_activity(f"[dci_mon] settlement check error: {settle_e}")
+
+                # Auto-placement every 4th cycle (~1 hour)
+                if _earn_stats.get("_dci_cycle", 0) % 4 == 0:
+                    try:
+                        dci_result = await dci_auto_place_idle()
+                        if dci_result.get("placed"):
+                            for p in dci_result["placed"]:
+                                fg_val = dci_result.get("fg_val", "?")
+                                log_activity(
+                                    f"[dci_mon] ✅ auto-placed {p['direction']} "
+                                    f"${p['amount']:.2f} {p['coin']} APY={p['apy_pct']:.2f}% F&G={fg_val}"
+                                )
+                        elif dci_result.get("reason"):
+                            log_activity(f"[dci_mon] skip: {dci_result['reason']}")
+                    except Exception as dci_e:
+                        log_activity(f"[dci_mon] auto-place error: {dci_e}")
+
+                # v10.10: Double Win — same hourly trigger as DCI
+                if DOUBLE_WIN_ENABLED and _earn_stats.get("_dci_cycle", 0) % 4 == 0:
+                    try:
+                        # Check available USDT on ByBit FUND/UNIFIED
+                        dw_bals = await _dci_get_fund_balances()
+                        dw_usdt = dw_bals.get("USDT", 0.0)
+                        if dw_usdt >= DOUBLE_WIN_MIN_INVEST:
+                            dw_result = await double_win_auto_place(dw_usdt)
+                            if dw_result.get("success"):
+                                log_activity(
+                                    f"[dw_mon] ✅ auto-placed ${dw_result['amount']:.2f} USDT "
+                                    f"APY={dw_result['apy_pct']:.2f}%"
+                                )
+                        else:
+                            log_activity(f"[dw_mon] skip — USDT=${dw_usdt:.2f} < min ${DOUBLE_WIN_MIN_INVEST}")
+                    except Exception as dw_e:
+                        log_activity(f"[dw_mon] auto-place error: {dw_e}")
+
+                _earn_stats["_dci_cycle"] = _earn_stats.get("_dci_cycle", 0) + 1
+
+                # v10.9.20: Hourly auto-report to Telegram (every 4th cycle = ~60 min)
+                if _earn_stats.get("_dci_cycle", 0) % 4 == 0 and ALERT_CHAT_ID:
+                    try:
+                        await send_hourly_report(int(ALERT_CHAT_ID))
+                    except Exception as report_e:
+                        log_activity(f"[health] hourly report error: {report_e}")
+
+                # v10.10: Q-Score auto-tune — every ~7 days (672 cycles = 4/hr * 24h * 7d)
+                if _earn_stats.get("_dci_cycle", 0) % 672 == 1:
+                    try:
+                        await auto_tune_q_threshold()
+                    except Exception as tune_e:
+                        log_activity(f"[autotune] trigger error: {tune_e}")
+
+            # v10.11.1: Earn runs AFTER DCI — gets whatever USDT DCI didn't use
             if EARN_ENABLED:
                 # Auto-place idle USDT
                 result = await earn_auto_place_idle("auto")
@@ -2700,7 +2791,6 @@ async def earn_monitor_loop():
                 _earn_stats["_multi_cycle"] = _earn_stats.get("_multi_cycle", 0) + 1
 
                 # v10.9.5: Sync _earn_positions list from actual exchange data
-                # Critical: after Railway restart _earn_positions=[] even if funds are in Earn
                 try:
                     kc_holds = await kucoin_earn_get_hold_assets("USDT")
                     bb_holds = await bybit_earn_get_positions("USDT")
@@ -2709,10 +2799,7 @@ async def earn_monitor_loop():
                     _earn_stats["kucoin_subscribed"] = round(total_kc, 2)
                     _earn_stats["bybit_subscribed"] = round(total_bb, 2)
 
-                    # Rebuild _earn_positions from real exchange data
-                    # Remove stale in-memory entries, add real ones
                     existing_exch = {p["exchange"] for p in _earn_positions}
-
                     if total_bb > 0 and "bybit" not in existing_exch:
                         for h in bb_holds:
                             amt = float(h.get("amount", h.get("holdAmount", 0)))
@@ -2749,81 +2836,6 @@ async def earn_monitor_loop():
                 best = await earn_get_best_rate("USDT")
                 if best["apr"] > 0:
                     log_activity(f"[earn_mon] best rate: {best['exchange']} {best['apr']}% APR")
-
-                # v10.9.8: DCI — settlement check every cycle + auto-placement every 4th
-                if DCI_ENABLED:
-                    # Settlement check runs every cycle (every 15 min)
-                    try:
-                        settled = await dci_check_settlements()
-                        for s in settled:
-                            direction = s.get("direction", "?")
-                            coin = s.get("coin", "?")
-                            amount = s.get("amount", 0)
-                            apy = s.get("apy_pct", 0)
-                            days = s.get("days_held", 0)
-                            earned = s.get("est_earnings_usdt", 0)
-                            # Telegram push notification on settlement
-                            if ALERT_CHAT_ID:
-                                await _tg_send(int(ALERT_CHAT_ID),
-                                    f"🏁 <b>DCI позиция закрыта!</b>\n\n"
-                                    f"<b>Тип:</b> {direction}\n"
-                                    f"<b>Монета:</b> {coin}\n"
-                                    f"<b>Вложено:</b> <code>${amount:.2f}</code>\n"
-                                    f"<b>APY:</b> <code>{apy:.2f}%</code>\n"
-                                    f"<b>Держали:</b> {days} дней\n"
-                                    f"<b>Доход (оценка):</b> <code>${earned:.4f}</code>\n\n"
-                                    f"📌 /dci — подробности"
-                                )
-                    except Exception as settle_e:
-                        log_activity(f"[dci_mon] settlement check error: {settle_e}")
-
-                    # Auto-placement every 4th cycle (~1 hour)
-                    if _earn_stats.get("_dci_cycle", 0) % 4 == 0:
-                        try:
-                            dci_result = await dci_auto_place_idle()
-                            if dci_result.get("placed"):
-                                for p in dci_result["placed"]:
-                                    fg_val = dci_result.get("fg_val", "?")
-                                    log_activity(
-                                        f"[dci_mon] ✅ auto-placed {p['direction']} "
-                                        f"${p['amount']:.2f} {p['coin']} APY={p['apy_pct']:.2f}% F&G={fg_val}"
-                                    )
-                        except Exception as dci_e:
-                            log_activity(f"[dci_mon] auto-place error: {dci_e}")
-
-                    # v10.10: Double Win — same hourly trigger as DCI
-                    if DOUBLE_WIN_ENABLED and _earn_stats.get("_dci_cycle", 0) % 4 == 0:
-                        try:
-                            # Check available USDT on ByBit FUND/UNIFIED
-                            dw_bals = await _dci_get_fund_balances()
-                            dw_usdt = dw_bals.get("USDT", 0.0)
-                            if dw_usdt >= DOUBLE_WIN_MIN_INVEST:
-                                dw_result = await double_win_auto_place(dw_usdt)
-                                if dw_result.get("success"):
-                                    log_activity(
-                                        f"[dw_mon] ✅ auto-placed ${dw_result['amount']:.2f} USDT "
-                                        f"APY={dw_result['apy_pct']:.2f}%"
-                                    )
-                            else:
-                                log_activity(f"[dw_mon] skip — USDT=${dw_usdt:.2f} < min ${DOUBLE_WIN_MIN_INVEST}")
-                        except Exception as dw_e:
-                            log_activity(f"[dw_mon] auto-place error: {dw_e}")
-
-                    _earn_stats["_dci_cycle"] = _earn_stats.get("_dci_cycle", 0) + 1
-
-                    # v10.9.20: Hourly auto-report to Telegram (every 4th cycle = ~60 min)
-                    if _earn_stats.get("_dci_cycle", 0) % 4 == 0 and ALERT_CHAT_ID:
-                        try:
-                            await send_hourly_report(int(ALERT_CHAT_ID))
-                        except Exception as report_e:
-                            log_activity(f"[health] hourly report error: {report_e}")
-
-                    # v10.10: Q-Score auto-tune — every ~7 days (672 cycles = 4/hr * 24h * 7d)
-                    if _earn_stats.get("_dci_cycle", 0) % 672 == 1:
-                        try:
-                            await auto_tune_q_threshold()
-                        except Exception as tune_e:
-                            log_activity(f"[autotune] trigger error: {tune_e}")
 
         except Exception as e:
             log_activity(f"[earn_mon] error: {e}")
@@ -6086,6 +6098,23 @@ async def auto_trade_cycle():
                              f"({mf_result['buy']}B/{mf_result['sell']}S/{mf_result['hold']}H) conf={mf_result['confidence']}%")
                 continue
 
+        # ── v10.11.1: Wave 2A — Multi-signal confirmation + per-symbol cooldown ──
+        if action == "BUY":
+            _ta_confs_trade = vision.get("ta_confirmations", 0)
+            if _ta_confs_trade < 2:
+                log_activity(f"[cycle] {symbol}: SKIP BUY — ta_confirmations={_ta_confs_trade}<2 (need ≥2 of MACD/BB/Stoch/ADX/OBV)")
+                continue
+            # Per-symbol cooldown: 4 hours between buys on same symbol
+            _last_buy_ts = 0
+            for _t in reversed(trade_log):
+                if _t.get("symbol") == symbol and _t.get("side") == "BUY":
+                    _last_buy_ts = _t.get("open_ts", 0)
+                    break
+            if _last_buy_ts > 0 and (time.time() - _last_buy_ts) < 14400:  # 4h = 14400s
+                _cd_left = int((14400 - (time.time() - _last_buy_ts)) / 60)
+                log_activity(f"[cycle] {symbol}: SKIP BUY — per-symbol cooldown ({_cd_left}min left of 4h)")
+                continue
+
         # ── Спот (BUY + SELL) v8.3 ──────────────────────────────────────────────
         if action == "BUY":
             # v8.3.4: Block buying during Extreme Fear — threshold lowered 15→8 (contrarian mode)
@@ -8246,13 +8275,23 @@ async def _tg_dci(chat_id: int):
 
     # Session stats
     total_earn_est = sum(h.get("est_earnings_usdt", 0) for h in history)
+    # v10.11.1: compute next DCI auto-cycle countdown
+    _dci_cycle_now = _earn_stats.get("_dci_cycle", 0)
+    _cycles_until_next = 4 - (_dci_cycle_now % 4)
+    if _cycles_until_next == 4:
+        _cycles_until_next = 0  # currently on a DCI cycle
+    _mins_until_next = max(_cycles_until_next, 1) * 15
+
     lines += [
         f"",
         f"<b>Итого:</b> {_dci_stats['subscriptions']} сделок · "
         f"${_dci_stats['total_invested']:.2f} вложено · "
         f"+${total_earn_est:.4f} доход",
         f"",
+        f"⏱ Следующий авто-цикл: через ~{_mins_until_next} мин",
+        f"",
         f"📌 /dciplace — разместить вручную",
+        f"📌 /balance — баланс аккаунтов",
         f"📌 /earn — Flexible Savings",
     ]
 
@@ -8385,6 +8424,53 @@ async def send_hourly_report(chat_id: int):
 
     await _tg_send(chat_id, "\n".join(lines))
     log_activity(f"[health] hourly report sent: errs={total_errs}, pos={len(open_pos)}, dci={dci_pos}")
+
+
+async def _tg_balance(chat_id: int):
+    """v10.11.1: Full balance breakdown across all exchanges."""
+    lines = ["💰 <b>Баланс аккаунтов</b>", "━━━━━━━━━━━━━━━━━━━━━━"]
+
+    # KuCoin
+    try:
+        kc_bal = await get_balance()
+        kc_usdt = kc_bal.get("total_usdt", 0) if kc_bal.get("success") else 0
+    except Exception:
+        kc_usdt = 0
+    kc_earn = _earn_stats.get("kucoin_subscribed", 0)
+    kc_idle = max(0, kc_usdt - ROUTER_ARB_RESERVE_USDT - ROUTER_TRADE_RESERVE_USDT)
+    lines.append(f"\n🟡 <b>KuCoin</b>")
+    lines.append(f"  Всего: <code>${kc_usdt:.2f}</code> USDT")
+    lines.append(f"  В Earn: <code>${kc_earn:.2f}</code> USDT")
+    lines.append(f"  Idle (доступно): <code>${kc_idle:.2f}</code> USDT")
+
+    # ByBit
+    bb_usdt = 0.0
+    if BYBIT_ENABLED:
+        try:
+            bb_bal = await bybit_get_balance()
+            bb_usdt = bb_bal.get("total_usdt", 0) if bb_bal.get("success") else 0
+        except Exception:
+            pass
+    bb_earn = _earn_stats.get("bybit_subscribed", 0)
+    dci_positions = _dci_stats.get("positions", [])
+    dci_invested = sum(p.get("amount", 0) for p in dci_positions)
+    dci_count = len(dci_positions)
+    bb_idle = max(0, bb_usdt - ROUTER_ARB_RESERVE_USDT - ROUTER_TRADE_RESERVE_USDT - bb_earn - dci_invested)
+    lines.append(f"\n🔵 <b>ByBit</b>")
+    lines.append(f"  Всего: <code>${bb_usdt:.2f}</code> USDT")
+    lines.append(f"  В Earn: <code>${bb_earn:.2f}</code> USDT")
+    lines.append(f"  В DCI: <code>${dci_invested:.2f}</code> USDT ({dci_count} поз.)")
+    lines.append(f"  Idle (доступно): <code>${bb_idle:.2f}</code> USDT")
+
+    # Total
+    total = kc_usdt + bb_usdt
+    working = kc_earn + bb_earn + dci_invested
+    working_pct = (working / total * 100) if total > 0 else 0
+    lines.append(f"\n📊 <b>Итого:</b> <code>${total:.2f}</code> USDT")
+    lines.append(f"  Работает на тебя: <code>{working_pct:.1f}%</code> (${working:.2f})")
+    lines.append(f"\n📌 /earn — Earn детали | /dci — DCI детали | /router — роутер")
+
+    await _tg_send(chat_id, "\n".join(lines))
 
 
 async def _tg_dci_place(chat_id: int):
@@ -9091,6 +9177,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd.startswith("/sentiment"):  await _tg_sentiment(chat_id, raw)
         elif cmd == "/bybit":               await _tg_bybit(chat_id)
         elif cmd == "/xarb":                await _tg_xarb(chat_id)
+        elif cmd == "/balance":             await _tg_balance(chat_id)
         elif cmd == "/earn":                await _tg_earn(chat_id)
         elif cmd == "/earnplace":           await _tg_earn_place(chat_id)
         elif cmd == "/earnall":             await _tg_earn_all(chat_id)
@@ -9723,6 +9810,31 @@ async def earn_place_api(_auth=Depends(verify_api_key)):
     return result
 
 
+@app.post("/api/dci/place")
+async def dci_place_api(_auth=Depends(verify_api_key)):
+    """v10.11.1: Manually trigger DCI auto-placement via API (for Mini App)."""
+    if not DCI_ENABLED:
+        return {"success": False, "error": "DCI disabled (DCI_ENABLED=false)"}
+    result = await dci_auto_place_idle()
+    return result
+
+
+@app.get("/api/dci/status")
+async def dci_status_api(_auth=Depends(verify_api_key)):
+    """v10.11.1: DCI status for Mini App."""
+    positions = _dci_stats.get("positions", [])
+    return {
+        "enabled": DCI_ENABLED,
+        "direction": DCI_DIRECTION,
+        "min_apy": DCI_MIN_APY_PCT,
+        "max_invest": DCI_MAX_INVEST_USDT,
+        "positions": len(positions),
+        "total_invested": round(_dci_stats.get("total_invested", 0), 2),
+        "subscriptions": _dci_stats.get("subscriptions", 0),
+        "next_cycle_mins": max(1, (4 - (_earn_stats.get("_dci_cycle", 0) % 4))) * 15,
+    }
+
+
 @app.post("/api/earn/redeem-all")
 async def earn_redeem_all_api(_auth=Depends(verify_api_key)):
     """v10.2: Redeem ALL Earn positions back to spot wallets."""
@@ -10138,7 +10250,7 @@ body {
 <div class="header">
   <div>
     <div class="header-title">QuantumTrade AI</div>
-    <div class="header-version" id="ver-label">v10.11.0</div>
+    <div class="header-version" id="ver-label">v10.11.1</div>
   </div>
   <div style="display:flex;gap:8px;align-items:center">
     <div id="health-dot" class="status-dot"></div>
@@ -10452,6 +10564,7 @@ body {
     };
     toast(labels[type] || "Running...");
     var endpoints = {
+      "force_dci": ["/api/dci/place", "POST", null],
       "redeem_all": ["/api/earn/redeem-all", "POST", null],
       "toggle_autopilot": ["/api/settings", "POST", JSON.stringify({autopilot: !(_data && _data.system && _data.system.autopilot)})],
       "toggle_pause": [(_data && _data.system && _data.system.paused) ? "/api/resume" : "/api/pause", "POST", null]
