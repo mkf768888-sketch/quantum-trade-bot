@@ -2258,6 +2258,22 @@ async def dci_auto_place_idle() -> dict:
         invest_amount = max(invest_amount, best_option["min_amount"])
         invest_amount = round(invest_amount, 8)
 
+        # v10.12.2: FIX — re-fetch fresh quote right before placing to avoid "Invalid select price"
+        # ByBit updates selectPrice every ~30s; scanning all products takes >30s → stale price.
+        if exch == "bybit":
+            try:
+                fresh_q = await bybit_dci_get_quote(best_option["product_id"])
+                opts_key = "buyLowPrice" if best_option["direction"] == "BuyLow" else "sellHighPrice"
+                fresh_opts = fresh_q.get(opts_key, [])
+                if fresh_opts:
+                    best_fresh = max(fresh_opts, key=lambda x: int(x.get("apyE8", 0)))
+                    best_option["select_price"] = str(best_fresh.get("selectPrice", best_option["select_price"]))
+                    best_option["apy_e8"] = str(best_fresh.get("apyE8", best_option.get("apy_e8", "0")))
+                    best_apy = int(best_option["apy_e8"]) / 1e8 * 100
+                    log_activity(f"[dci] ✅ fresh quote: selectPrice={best_option['select_price']} APY={best_apy:.2f}%")
+            except Exception as _fq_e:
+                log_activity(f"[dci] ⚠️ re-fetch quote failed ({_fq_e}), using cached price")
+
         log_activity(
             f"[dci] placing {best_option['direction']} ${invest_amount:.4f} {best_option['invest_coin']} "
             f"@ {best_option['select_price']} APY={best_apy:.2f}% via {exch.upper()}"
