@@ -1,104 +1,85 @@
 # STATE.md — Память между сессиями
 > Обновлять после каждой значимой сессии. AI-агент читает это первым.
-> Последнее обновление: 2026-04-02
+> Последнее обновление: 2026-04-05
 > Архитектура: GSD v2 Wave Execution
 
 ## Текущее состояние бота
-- **Версия:** 10.1.0 (deployed, dual-exchange + Earn Engine live)
-- **Автопилот:** включён, Q>77 (динамический порог через self-learning)
-- **Арбитраж:** межбиржевой KuCoin↔ByBit включён, треугольный включён
-- **Портфель:** ~$45.5 (KuCoin ~$7.5 спот + ByBit ~$38 спот)
+- **Версия:** 10.12.0 (deployed на Railway)
+- **Автопилот:** включён, Q≥77 (динамический через self-learning)
+- **Арбитраж:** ARB_EXEC_ENABLED=False (hardcoded off — баланс <$500), уведомления работают
+- **Биржи:** KuCoin Spot + ByBit Spot (dual-exchange routing)
 - **Фьючерсы:** неактивны (малый баланс)
-- **MAX_OPEN_POSITIONS:** 2 (защита от drain)
-- **Fear & Greed:** мониторится в реальном времени, блок при <15
+- **MAX_OPEN_POSITIONS:** 2
+
+## Параметры безопасности (v10.11.5+)
+- ADMIN_CHAT_IDS: настроен в Railway Variables ✅
+- AUTHORIZED_CHAT_IDS: работает, неавторизованные молча отклоняются
+- Webhook auth: использует RAILWAY_PUBLIC_DOMAIN, не Host header
+- /sell all + /reset_stats: требуют подтверждения inline keyboard
 
 ## Wave Execution Status (GSD v2)
 ```
-Current Wave: 1B + 3A (parallel: Earn Advanced + Telegram→CC)
-Wave Phase: PLANNING → обновлён ROADMAP с новыми направлениями
-In Progress: earn_monitor_loop running on Railway
-New Waves: 3 (Telegram→Claude Code), 5 (Design plugins)
-Blocked: DeepSeek PayPal, Binance/OKX keys (Wave 2)
-Next Wave: 2 (Multi-Exchange CCXT)
-Last Wave Completed: 1A (Earn Engine v10.1.0)
+Completed: Wave 1A (Earn Engine), Wave 1A+ (DCI ByBit), Security Audit, Wave 2A (Smart Filters)
+Current Wave: v10.12.0 — Wave 2A deployed + H-fixes (arb lock, fee)
+Next Wave: Wave 2B (backtesting + /winrate) → Wave 3A (CCXT) → Wave 5 (Design)
+Blocked: Binance/OKX API keys (Wave 3A multi-exchange)
 ```
 
-## Dual-Exchange Trading (v10.0)
-- BUY: маршрутизация на биржу с большим USDT (ByBit или KuCoin)
-- SELL: автоматическое определение биржи по account (spot / bybit_spot)
-- Monitor: spot_monitor_loop проверяет обе биржи для TP/SL/Trail/Stale
-- Fallback: если основная биржа даёт ошибку — автопереключение на вторую
+## Earn Engine (v10.11+)
+- KuCoin FlexSaving: работает, пробует 3 endpoint'а (DEMAND/SAVING/без фильтра)
+- ByBit Earn: Flexible Savings работает
+- DCI (Dual Currency Investment): исправлен precision error (round 8→2), исправлен auto-transfer ($41 в Funding)
+- Smart Money Router: авто-редим перед BUY, авто-инвест после SELL
 
-## Параметры малого счёта (v10.0)
-- ARB_RESERVE_USDT: $3 (было $15)
-- SPOT_BUY_MIN_USDT: $5 (было $20)
-- TP_PCT: 4% (было 6%)
-- SL_PCT: 2%
-- TRAIL_TRIGGER: 2% (было 2.5%)
-- TRAIL_PCT: 1% (было 1.5%)
-- Stale auto-sell: 12 часов без движения >1.5%
+## Торговая логика v10.12.0
+- **Фильтры BUY** (в порядке применения):
+  1. Q-Score ≥ MIN_Q_SCORE (динамический, self-learning)
+  2. TA confirmations ≥ 2 (MACD/BB/Stoch/ADX/OBV)
+  3. Volume filter: vol_ratio ≥ 0.65 (объём не упал >35%) ← NEW v10.12
+  4. 4h trend: EMA7 > EMA14 на 4h свечах (30min кэш) ← NEW v10.12
+  5. Per-symbol cooldown: 4h между покупками одного символа
+  6. F&G ≥ 8 (contrarian mode, блок при Extreme Fear)
+  7. MiroFish veto: <75% агентов SELL
+  8. Opus Gate: сделки >$15
+- **Выходы:**
+  - Partial Exit TP1: продаём 50% при первом TP (4%), трейлим остаток ← NEW v10.12
+  - TP2: 6% (после partial exit)
+  - Trail: TRAIL_TRIGGER=2%, TRAIL_PCT=1%
+  - SL: 2%, MaxLoss: 5%, Stale: 12h/48h
+- **Арбитраж:** asyncio.Lock (было bool, H-06 fix), FEE=0.999 (KC taker 0.1%, H-07 fix)
+- **ARB_MIN_PROFIT_PCT:** 0.35% (выше 3×fee=0.3%)
 
-## Активные направления (v10.1+)
-| Направление | Статус | Агент | Волна |
-|------------|--------|-------|-------|
-| Earn Engine | Phase A deployed, B pending | earn-strategist | Wave 1 |
-| Multi-Exchange | Ожидание API ключей | wave-orchestrator | Wave 2 |
-| Telegram→Claude Code | 🆕 Готов к запуску (бесплатно) | wave-orchestrator | Wave 3 |
-| Polymarket | Исследование | polymarket-trader | Wave 4 |
-| Design System | 🆕 + Design Toolkit plugins | design-system | Wave 5 |
-| AI/ML | Будущее (DeepSeek PayPal) | wave-orchestrator | Wave 5 |
-| Financial Ecosystem | Далёкое будущее | — | Wave 6 |
+## Railway Variables актуальные
+```
+KUCOIN_API_KEY / KUCOIN_SECRET / KUCOIN_PASSPHRASE
+BYBIT_API_KEY / BYBIT_API_SECRET
+BOT_TOKEN / API_SECRET / ANTHROPIC_API_KEY / DEEPSEEK_API_KEY
+RAILWAY_PUBLIC_DOMAIN / TG_WEBHOOK_SECRET
+ADMIN_CHAT_IDS=<твой_chat_id>
+RISK_PER_TRADE=0.08 / MIN_Q_SCORE=77 / MAX_OPEN_POSITIONS=2
+ARB_RESERVE_USDT=3 / SPOT_BUY_MIN_USDT=5
+DOUBLE_WIN_ENABLED=? (рекомендую включить после проверки DCI)
+```
 
-## Новые инструменты (обнаружены 2026-04-02)
-| Инструмент | Что делает | Использование |
-|-----------|-----------|---------------|
-| instar (JKHeadley) | Persistent Claude Code + Telegram + scheduling | Wave 3: автономное управление ботом |
-| Frontend Design Toolkit (wilwaldon) | 70+ tools, 240+ styles for Claude Code | Wave 5: Cyberpunk UI |
-| OhMySkills/design-style | Glassmorphism, Design Tokens (OKLCH) | Wave 5: стиль карточек |
-| anthropics/frontend-design | Официальный Anthropic design plugin | Wave 5: альтернатива/дополнение |
+## Активные направления
+| Направление | Статус | Версия |
+|------------|--------|--------|
+| Dual-Exchange торговля | ✅ Активно | v10.0+ |
+| Smart Trading v2 (фильтры) | ✅ Deployed | v10.12.0 |
+| Earn Engine (KC+BB) | ✅ Активно | v10.11+ |
+| DCI ByBit | ✅ Исправлен (precision, auto-transfer) | v10.11.4 |
+| Security Hardening | ✅ Complete (11 критических) | v10.11.5 |
+| Wave 3A CCXT | 🔒 Заблокировано (нет Binance keys) | — |
+| Wave 5 Design | ⏳ Ожидает | — |
 
-## Ключевые решения (не менять без обсуждения)
-1. **Один файл server.py** — сознательное решение, не дробить на модули
-2. **Q-Score порог 77** — высокий, self-learning корректирует ±5
-3. **MAX_OPEN_POSITIONS=2** — защита от drain всего USDT в монеты
-4. **RISK_PER_TRADE=0.08** — smart sizing для малых счетов (<$50: до 35%)
-5. **CORS: ["*"]** — упрощено после проблем с middleware (v10.0)
-6. **Без TG_WEBHOOK_SECRET** — удалён, блокировал все сообщения
-7. **GSD Wave Execution** — волновая модель, state on disk, crash recovery
+## Ближайшие задачи
+1. Проверить DCI placing (/dciplace — есть $41 в Funding)
+2. Включить DOUBLE_WIN_ENABLED=true в Railway
+3. Мониторить vol_ratio + 4h фильтры в логах (первые несколько часов)
+4. Wave 2B: backtesting + /winrate команда
+5. Wave 3A когда появятся API ключи Binance/OKX
 
-## История версий (краткая)
-| Версия | Дата | Ключевые изменения |
-|--------|------|---------------------|
-| 10.0.0 | 31.03 | ByBit spot orders, dual-exchange routing, small-account algo |
-| 10.1.0 | 01.04 | Earn Engine: KuCoin+ByBit Flexible Savings, Auto-Earn/Redeem |
-| 10.0.1 | 01.04 | GSD v2 architecture, 8 agents, 4 commands, ROADMAP.md, HOWTO.md |
-| 9.2.0 | 30.03 | MiroFish v3, cross-exchange arb, copy-trading, self-learning v2 |
-| 9.0.0 | 30.03 | 15 MiroFish agents, sentiment pipeline, macro dashboard |
-| 8.3.4 | 29.03 | Opus Gate, advanced TA, Reddit/LunarCrush sentiment |
-| 7.5.2 | 29.03 | Security hardening, XSS fix, auth on debug endpoints |
-
-## Известные проблемы
-- Trade log в /tmp/ — теряется при редеплое (нужен Railway Volume на /data/)
-- DeepSeek V3 API: 402 (бесплатный тир исчерпан), авто-fallback на Haiku
-- DeepSeek V3.2 вышел — платежи не проходят (нужен PayPal)
-- CORS: ["*"] — работает но не идеально для продакшена
-- CoinGecko API — periodic errors in autodiag
-
-## Блокеры
-- Binance/OKX API ключи — нужны для Wave 2
-- PayPal — нужен для DeepSeek V3.2
-- Polygon wallet — нужен для Polymarket (Wave 3)
-
-## Пользователь
-- Закинет ~$100 для тестов (ожидается)
-- Есть монеты на KuCoin: BTC, ETH (холд), мелочь продана
-- Хочет видеть работающую прибыльную систему перед масштабированием
-
-## Заметки для AI-агента
-- При Fear & Greed < 15 бот НЕ ДОЛЖЕН торговать — это правильно
-- Не понижать MIN_Q_SCORE ниже 65 — иначе будут убыточные сделки
-- ByBit: marketUnit=quoteCoin для market buy (USDT, не base coin)
-- bybit_sell_spot() возвращает {"success": bool, "error": str}
-- sell_spot_to_usdt() возвращает {"success": bool, "msg": str}
-- POST /api/setup-webhook (не GET!) — обновляет кнопку Mini App
-- Волна 1 (Earn) не требует участия пользователя — можно начинать
+## Obsidian vault
+- Vault: vault/ — 20+ заметок, wiki-ссылки
+- Текущие приоритеты: vault/00-home/текущие приоритеты.md
+- Решения: vault/knowledge/decisions/

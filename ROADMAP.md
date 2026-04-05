@@ -1,34 +1,32 @@
 # QuantumTrade AI — ROADMAP
-> Волновая дорожная карта · GSD v2 Architecture · Обновлено: 2026-04-03
+> Волновая дорожная карта · GSD v2 Architecture · Обновлено: 2026-04-05
 > Философия: Персональная финансовая экосистема с бешеной маржинальностью
-> Версия: v10.3.2 · Smart Money Router · Деньги НИКОГДА не простаивают
+> Версия: v10.12.0 · Smart Trading v2 + Security + DCI · Деньги НИКОГДА не простаивают
 
 ---
 
-## 📍 ГДЕ МЫ СЕЙЧАС (v10.3.2)
+## 📍 ГДЕ МЫ СЕЙЧАС (v10.12.0)
 
 **Работает:**
 - Dual-exchange торговля (KuCoin + ByBit) — 15 AI-агентов MiroFish
 - Smart Money Router — авто-распределение: Arb → Trade → Earn
-- Earn Engine — Flexible Savings (KuCoin 0.79% APR, ByBit ✅ работает)
+- Earn Engine — Flexible Savings (KuCoin + ByBit ✅)
+- DCI (Dual Currency Investment) — ByBit ~877-985% APY
 - Auto-Redeem перед BUY, auto-route в Earn после SELL
-- Trade cycle уважает Router резервы (max $2 за сделку)
-- Cross-exchange арбитраж (KuCoin ↔ ByBit спреды)
 - Q-Score торговля + Opus Gate + Self-Learning v2
-- PostgreSQL persistent storage (128 trades)
+- Security hardening: ADMIN_CHAT_IDS, webhook/WS auth, locks
+- Wave 2A Smart Filters: Volume + 4h MTF + Partial Exit
 
-**Портфель ~$310:**
-- KuCoin спот: ETH($130) + BTC($124) + DOT($12) + USDT($16)
-- ByBit: $3 USDT + $4.47 в позиции + $2 в Earn
-- Фьючерсы: $26.64 equity
-
-**Проблемы решённые за сессию (6 коммитов):**
-- [x] LunarCrush 429 death spiral → fail cache + exponential backoff
-- [x] Earn 0% APR → правильные field names (returnRate, estimateApr)
-- [x] ByBit "Empty order link ID" → orderLinkId fix
-- [x] Smart Money Router v10.3.0 → авто-распределение средств
-- [x] Пороги для малого счёта v10.3.1 → $1 reserves вместо $3-5
-- [x] Бот тратил ВСЕ USDT v10.3.2 → max $2 за сделку, резервы Router
+**Что сделано с v10.3.2 → v10.12.0:**
+- [x] ByBit Balance full display (FUNDING + UNIFIED + SPOT)
+- [x] DCI integration + precision fix + auto-transfer fix
+- [x] KuCoin Earn display fix (3-endpoint fallback)
+- [x] Full Opus security audit (237 functions, 75 issues found+fixed)
+- [x] ADMIN_CHAT_IDS authorization + confirmation dialogs
+- [x] asyncio.Lock for DCI + Earn + Arb (H-06 fix)
+- [x] Volume filter (vol_ratio ≥ 0.65) + 4h trend filter
+- [x] Partial Exit: 50% at TP1, trail to TP2
+- [x] /stats visual upgrade: win rate bar + top symbols
 
 ---
 
@@ -68,21 +66,21 @@
 ## 🌊 Wave 2 — Smart Trading v2 (Качество сделок)
 > Приоритет: КРИТИЧЕСКИЙ · Бот покупает слишком часто и теряет деньги
 
-### Phase A: Улучшение входов
-- [ ] Минимум 2 подтверждающих индикатора для BUY (сейчас хватает одного)
-- [ ] Volume filter: не покупать на низких объёмах
-- [ ] Multi-timeframe: 15m + 1h + 4h согласованность тренда
-- [ ] Cooldown per-symbol: 4 часа между покупками одного актива
+### Phase A: Улучшение входов ✅ v10.12.0
+- [x] Минимум 2 подтверждающих индикатора для BUY — v10.11.1
+- [x] Volume filter: не покупать при vol_ratio < 0.65 — v10.12.0
+- [x] Multi-timeframe: 1h + 4h согласованность тренда — v10.12.0
+- [x] Cooldown per-symbol: 4 часа между покупками — v10.11.1
 - [ ] Max portfolio allocation: не более 30% в одну монету
 
-### Phase B: Улучшение выходов
+### Phase B: Улучшение выходов (частично готово)
 - [ ] Trailing stop v2: динамический trail по ATR (не фиксированный 1%)
-- [ ] Partial exit: продавать 50% при +3%, остальное на trail
+- [x] Partial exit: продаём 50% при TP1, трейлим до TP2 — v10.12.0
 - [ ] Stale position analyzer: позиции без движения 24h+ → уведомление
-- [ ] Time-based exit: позиция не в прибыли 48h → auto-sell
+- [ ] Time-based exit: позиция не в прибыли 48h → auto-sell (есть 48h stale)
 
 ### Phase C: Analytics & Backtesting
-- [ ] Win rate по символам (в Telegram: /winrate)
+- [ ] Win rate по символам (в Telegram: /winrate) — приоритет!
 - [ ] PnL breakdown: какие монеты зарабатывают, какие теряют
 - [ ] Backtesting engine: проверка стратегий на истории
 - [ ] A/B testing: параллельное тестирование двух стратегий
@@ -177,29 +175,29 @@
 
 ## 🎯 Что делать дальше (по приоритету)
 
-### 🔴 СРОЧНО (сегодня-завтра):
-1. **Аудит торговли** — проверить win rate, PnL всех 128 сделок → понять где теряем
-2. **Проверить Router** — после деплоя v10.3.2 убедиться что USDT не утекает
-3. **ETH+BTC HOLD** — не продавать, мониторить через /positions
+### 🔴 СРОЧНО (сегодня):
+1. **Проверить DCI** — /dciplace с $41 в ByBit Funding (precision fix v10.11.4)
+2. **DOUBLE_WIN_ENABLED=true** — Railway Variables, следующий поток пассивного дохода
+3. **Мониторинг логов** — убедиться что vol_ratio + 4h фильтры работают корректно
 
 ### 🟡 СКОРО (неделя):
-4. **Wave 2A: Smart Trading v2** — фильтры входов, multi-timeframe, volume
-5. **Wave 1B: Multi-asset Earn** — ETH/BTC в Flexible Savings (не только USDT)
-6. **Claude Code CLI** — установка на MacBook (Phase 0 чеклист готов)
+4. **Wave 2C: /winrate команда** — топ символы по win rate в Telegram
+5. **Wave 1B: KuCoin Lending Pro** — автоматическое размещение когда rate > 10% APR
+6. **Max portfolio allocation** — не более 30% баланса в одну монету
 
 ### 🟢 ПОТОМ (месяц):
-7. **Wave 3: CCXT + Binance** — больше бирж = больше ликвидности
-8. **Wave 4: Telegram→Claude Code** — instar + автономия
-9. **Wave 5: Design + AI upgrades** — красивый UI + ML модели
+7. **Wave 3A: CCXT + Binance/OKX** — нужны API ключи, больше бирж = больше возможностей
+8. **Wave 5: Cyberpunk+Glassmorphism UI** — красивый Mini App (index.html redesign)
+9. **Wave 5B: AI upgrades** — DeepSeek V3.2, ML price prediction (LSTM)
 
 ---
 
 ## 🔄 Wave Status
 ```
-Current: v10.3.2 — Smart Money Router + Trade Size Fix
-Active:  Wave 1A ✅ (Earn Engine), Wave 2A (Smart Trading — в планах)
-Next:    Аудит торговли → Wave 2A (качество сделок)
-Blocked: Binance/OKX API keys (Wave 3), DeepSeek PayPal (AI quality)
-Ready:   Wave 5 Phase 0 (чеклист готов, ждёт Claude Code CLI)
-Last Updated: 2026-04-03 · 6 commits this session
+Current: v10.12.0 — Wave 2A Smart Trading + Security Hardening
+Active:  Wave 1A ✅ (Earn + DCI), Wave 2A ✅ (Smart Filters deployed)
+Next:    Wave 2B (backtesting + /winrate) → Wave 3A (CCXT) → Wave 5 (Design)
+Blocked: Binance/OKX API keys (Wave 3A multi-exchange)
+Quick wins: /dciplace test + DOUBLE_WIN_ENABLED=true
+Last Updated: 2026-04-05 · v10.11.4→v10.12.0 (5 commits this session)
 ```

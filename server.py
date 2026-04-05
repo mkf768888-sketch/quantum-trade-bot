@@ -210,7 +210,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.11.5")
+app = FastAPI(title="QuantumTrade AI", version="10.12.0")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -4097,6 +4097,30 @@ async def analyze_chart_with_vision(symbol: str, candles: list) -> dict:
                 "error": str(e), "vision_bonus": 0.0, "vision_ocr": ""}
 
 
+# ── v10.12.0: Wave 2A — 4h Multi-Timeframe Trend Check ───────────────────────
+_4h_trend_cache: dict = {}  # symbol → {"bull": bool, "ts": float} — 30min TTL
+
+async def get_4h_trend(symbol: str) -> bool:
+    """Returns True if 4h trend is bullish (EMA7 > EMA14 on 4h candles).
+    Cached 30 min to avoid extra API calls. On error returns True (don't block signal)."""
+    cached = _4h_trend_cache.get(symbol)
+    if cached and (time.time() - cached["ts"]) < 1800:  # 30 min cache
+        return cached["bull"]
+    try:
+        candles_4h = await asyncio.wait_for(get_kucoin_chart(symbol, "4hour"), timeout=5.0)
+        if candles_4h and len(candles_4h) >= 14:
+            chron = list(reversed(candles_4h))
+            closes = [float(c[2]) for c in chron]
+            ema_f = _ema(closes, min(7, len(closes)))
+            ema_s = _ema(closes, min(14, len(closes)))
+            bull = ema_f > ema_s * 0.9990  # slight tolerance for flat markets
+            _4h_trend_cache[symbol] = {"bull": bull, "ts": time.time()}
+            return bull
+    except Exception:
+        pass
+    return True  # on error, don't block BUY signal
+
+
 # ── Phase 5: Claude Vision — нативный AI-анализ свечного графика ──────────────
 async def _analyze_chart_claude_vision(img_b64: str, symbol: str, tech: dict) -> dict:
     """
@@ -6243,6 +6267,16 @@ async def auto_trade_cycle():
             if _ta_confs_trade < 2:
                 log_activity(f"[cycle] {symbol}: SKIP BUY — ta_confirmations={_ta_confs_trade}<2 (need ≥2 of MACD/BB/Stoch/ADX/OBV)")
                 continue
+            # v10.12.0: Volume filter — skip BUY if recent volume dropped >35% vs older period
+            _vol_ratio = vision.get("vol_ratio", 1.0)
+            if _vol_ratio < 0.65:
+                log_activity(f"[cycle] {symbol}: SKIP BUY — vol_ratio={_vol_ratio:.2f} (<0.65, weak volume confirming nothing)")
+                continue
+            # v10.12.0: 4h trend filter — skip BUY if 4h EMA is bearish (wrong direction on higher TF)
+            _4h_bull = await get_4h_trend(symbol)
+            if not _4h_bull:
+                log_activity(f"[cycle] {symbol}: SKIP BUY — 4h trend bearish (EMA7<EMA14 on 4h)")
+                continue
             # Per-symbol cooldown: 4 hours between buys on same symbol
             _last_buy_ts = 0
             for _t in reversed(trade_log):
@@ -6683,7 +6717,7 @@ _arb_stats: dict   = {"total": 0, "success": 0, "failed": 0, "total_pnl": 0.0,
                        "opportunities_found": 0, "best_spread": 0.0, "last_opp_ts": 0}
 _arb_history: list = []  # last 50 arb events [{ts, path, spread, executed, pnl}]
 _arb_last_exec: dict = {}   # path_key → timestamp
-_arb_executing: bool = False  # global lock — only ONE arb at a time
+_arb_lock = asyncio.Lock()  # v10.12.0: H-06 — asyncio.Lock (atomic, covers triangle + cross-exchange arb)
 
 def _order_ok(r: dict) -> bool:
     """True if KuCoin returned a valid orderId (order accepted)."""
@@ -6720,15 +6754,13 @@ async def execute_triangular_arb(opp: dict) -> dict:
         leg3: sell a_sym  (sell A back to USDT)
 
     Abort logic: if leg2 or leg3 fails → emergency sell-back of intermediate crypto.
-    Global lock: only one triangle executes at a time.
+    Global lock: only one triangle/cross-exchange arb executes at a time (asyncio.Lock).
     """
-    global _arb_executing
-
     if not ARB_EXEC_ENABLED:
         return {"executed": False, "reason": "ARB_EXEC_ENABLED=false"}
 
-    # Global lock — prevent concurrent arb executions
-    if _arb_executing:
+    # v10.12.0: H-06 — asyncio.Lock prevents concurrent arb (triangle + cross-exchange share lock)
+    if _arb_lock.locked():
         return {"executed": False, "reason": "another arb in progress"}
 
     path_key = opp.get("path", "")
@@ -6754,108 +6786,106 @@ async def execute_triangular_arb(opp: dict) -> dict:
     if not bal.get("success") or arb_amount < 3.0:
         return {"executed": False, "reason": f"low spot USDT {spot_usdt:.2f} (reserve ${ARB_RESERVE_USDT:.0f}, need ≥$3)"}
 
-    _arb_executing = True
-    _arb_last_exec[path_key] = now
+    async with _arb_lock:  # v10.12.0: H-06 — atomic lock, auto-releases on exception too
+        _arb_last_exec[path_key] = now
 
-    a_sym   = opp["a_sym"]      # e.g. ETH-USDT
-    b_sym   = opp["b_sym"]      # e.g. BTC-USDT
-    cross   = opp["cross_sym"]  # e.g. ETH-BTC
-    d       = opp["direction"]
-    price_a = opp["price_a"]
-    price_b = opp["price_b"]
-    actual  = opp["actual"]     # actual cross rate (A/B or B/A)
+        a_sym   = opp["a_sym"]      # e.g. ETH-USDT
+        b_sym   = opp["b_sym"]      # e.g. BTC-USDT
+        cross   = opp["cross_sym"]  # e.g. ETH-BTC
+        d       = opp["direction"]
+        price_a = opp["price_a"]
+        price_b = opp["price_b"]
+        actual  = opp["actual"]     # actual cross rate (A/B or B/A)
 
-    FEE = 0.997  # 0.3% KuCoin taker fee buffer per leg
+        FEE = 0.999  # v10.12.0: H-07 — 0.1% KuCoin taker fee (was 0.3%, actual KC fee is 0.1%)
 
-    try:
-        if d == 1:
-            # ── Leg 1: spend USDT, get A (ETH/XRP/etc) ──────────────────
-            r1 = await _spot_buy_funds(a_sym, arb_amount)
-            if not _order_ok(r1):
-                log_activity(f"[arb] leg1 FAILED {a_sym}: {r1.get('msg','?')}")
-                _arb_stats["failed"] += 1
-                return {"executed": False, "reason": f"leg1 failed: {r1.get('msg')}"}
+        try:
+            if d == 1:
+                # ── Leg 1: spend USDT, get A (ETH/XRP/etc) ──────────────────
+                r1 = await _spot_buy_funds(a_sym, arb_amount)
+                if not _order_ok(r1):
+                    log_activity(f"[arb] leg1 FAILED {a_sym}: {r1.get('msg','?')}")
+                    _arb_stats["failed"] += 1
+                    return {"executed": False, "reason": f"leg1 failed: {r1.get('msg')}"}
 
-            size_a = round((arb_amount / price_a) * FEE, 6)  # conservative A received
-            await asyncio.sleep(0.5)
+                size_a = round((arb_amount / price_a) * FEE, 6)  # conservative A received
+                await asyncio.sleep(0.5)
 
-            # ── Leg 2: sell A for BTC via cross pair ──────────────────────
-            r2 = await place_spot_order(cross, "sell", size_a)
-            if not _order_ok(r2):
-                log_activity(f"[arb] leg2 FAILED {cross} — emergency sell {a_sym}")
-                await place_spot_order(a_sym, "sell", size_a)  # sell A back to USDT
-                _arb_stats["failed"] += 1
-                await notify(f"⚠️ Арб {path_key}: leg2 провалился, {a_sym} продан обратно")
-                return {"executed": False, "reason": "leg2 failed, emergency sell done"}
+                # ── Leg 2: sell A for BTC via cross pair ──────────────────────
+                r2 = await place_spot_order(cross, "sell", size_a)
+                if not _order_ok(r2):
+                    log_activity(f"[arb] leg2 FAILED {cross} — emergency sell {a_sym}")
+                    await place_spot_order(a_sym, "sell", size_a)  # sell A back to USDT
+                    _arb_stats["failed"] += 1
+                    await notify(f"⚠️ Арб {path_key}: leg2 провалился, {a_sym} продан обратно")
+                    return {"executed": False, "reason": "leg2 failed, emergency sell done"}
 
-            btc_received = round(size_a * actual * FEE, 8)  # conservative BTC received
-            await asyncio.sleep(0.5)
+                btc_received = round(size_a * actual * FEE, 8)  # conservative BTC received
+                await asyncio.sleep(0.5)
 
-            # ── Leg 3: sell BTC → USDT ────────────────────────────────────
-            r3 = await place_spot_order(b_sym, "sell", btc_received)
-            if not _order_ok(r3):
-                log_activity(f"[arb] leg3 FAILED {b_sym} — BTC {btc_received} stuck in spot")
-                _arb_stats["failed"] += 1
-                await notify(f"⚠️ Арб {path_key}: leg3 провалился, {btc_received} BTC на споте")
-                return {"executed": False, "reason": "leg3 failed, BTC in spot account"}
+                # ── Leg 3: sell BTC → USDT ────────────────────────────────────
+                r3 = await place_spot_order(b_sym, "sell", btc_received)
+                if not _order_ok(r3):
+                    log_activity(f"[arb] leg3 FAILED {b_sym} — BTC {btc_received} stuck in spot")
+                    _arb_stats["failed"] += 1
+                    await notify(f"⚠️ Арб {path_key}: leg3 провалился, {btc_received} BTC на споте")
+                    return {"executed": False, "reason": "leg3 failed, BTC in spot account"}
 
-        else:
-            # ── Leg 1: spend USDT, get BTC ───────────────────────────────
-            r1 = await _spot_buy_funds(b_sym, arb_amount)
-            if not _order_ok(r1):
-                log_activity(f"[arb] leg1 FAILED {b_sym}: {r1.get('msg','?')}")
-                _arb_stats["failed"] += 1
-                return {"executed": False, "reason": f"leg1 failed: {r1.get('msg')}"}
+            else:
+                # ── Leg 1: spend USDT, get BTC ───────────────────────────────
+                r1 = await _spot_buy_funds(b_sym, arb_amount)
+                if not _order_ok(r1):
+                    log_activity(f"[arb] leg1 FAILED {b_sym}: {r1.get('msg','?')}")
+                    _arb_stats["failed"] += 1
+                    return {"executed": False, "reason": f"leg1 failed: {r1.get('msg')}"}
 
-            size_b = round((arb_amount / price_b) * FEE, 8)
-            await asyncio.sleep(0.5)
+                size_b = round((arb_amount / price_b) * FEE, 8)
+                await asyncio.sleep(0.5)
 
-            # ── Leg 2: buy A with BTC via cross pair ──────────────────────
-            size_a = round(size_b * actual * FEE, 6)
-            r2 = await place_spot_order(cross, "buy", size_a)
-            if not _order_ok(r2):
-                log_activity(f"[arb] leg2 FAILED {cross} — emergency sell {b_sym}")
-                await place_spot_order(b_sym, "sell", size_b)
-                _arb_stats["failed"] += 1
-                await notify(f"⚠️ Арб {path_key}: leg2 провалился, {b_sym} продан обратно")
-                return {"executed": False, "reason": "leg2 failed, emergency sell done"}
+                # ── Leg 2: buy A with BTC via cross pair ──────────────────────
+                size_a = round(size_b * actual * FEE, 6)
+                r2 = await place_spot_order(cross, "buy", size_a)
+                if not _order_ok(r2):
+                    log_activity(f"[arb] leg2 FAILED {cross} — emergency sell {b_sym}")
+                    await place_spot_order(b_sym, "sell", size_b)
+                    _arb_stats["failed"] += 1
+                    await notify(f"⚠️ Арб {path_key}: leg2 провалился, {b_sym} продан обратно")
+                    return {"executed": False, "reason": "leg2 failed, emergency sell done"}
 
-            await asyncio.sleep(0.5)
+                await asyncio.sleep(0.5)
 
-            # ── Leg 3: sell A → USDT ─────────────────────────────────────
-            r3 = await place_spot_order(a_sym, "sell", size_a)
-            if not _order_ok(r3):
-                log_activity(f"[arb] leg3 FAILED {a_sym} — {size_a} stuck in spot")
-                _arb_stats["failed"] += 1
-                await notify(f"⚠️ Арб {path_key}: leg3 провалился, {size_a} {a_sym} на споте")
-                return {"executed": False, "reason": "leg3 failed"}
+                # ── Leg 3: sell A → USDT ─────────────────────────────────────
+                r3 = await place_spot_order(a_sym, "sell", size_a)
+                if not _order_ok(r3):
+                    log_activity(f"[arb] leg3 FAILED {a_sym} — {size_a} stuck in spot")
+                    _arb_stats["failed"] += 1
+                    await notify(f"⚠️ Арб {path_key}: leg3 провалился, {size_a} {a_sym} на споте")
+                    return {"executed": False, "reason": "leg3 failed"}
 
-        # ── All 3 legs OK ─────────────────────────────────────────────────
-        estimated_pnl = round(arb_amount * profit_pct / 100, 4)
-        _arb_stats["total"] += 1
-        _arb_stats["success"] += 1
-        _arb_stats["total_pnl"] = round(_arb_stats["total_pnl"] + estimated_pnl, 4)
-        log_activity(f"[arb] ✅ {path_key} profit≈{estimated_pnl:+.4f} USDT")
+            # ── All 3 legs OK ─────────────────────────────────────────────────
+            estimated_pnl = round(arb_amount * profit_pct / 100, 4)
+            _arb_stats["total"] += 1
+            _arb_stats["success"] += 1
+            _arb_stats["total_pnl"] = round(_arb_stats["total_pnl"] + estimated_pnl, 4)
+            log_activity(f"[arb] ✅ {path_key} profit≈{estimated_pnl:+.4f} USDT")
 
-        msg = (
-            f"✅ <b>Арбитраж завершён!</b>\n"
-            f"<code>{path_key}</code>\n\n"
-            f"💰 Прибыль ≈ <code>{estimated_pnl:+.4f} USDT</code>\n"
-            f"📊 Успешных: {_arb_stats['success']} | "
-            f"Ошибок: {_arb_stats['failed']} | "
-            f"PnL: {_arb_stats['total_pnl']:+.4f} USDT"
-        )
-        await notify(msg)
-        return {"executed": True, "success": True, "pnl": estimated_pnl}
+            msg = (
+                f"✅ <b>Арбитраж завершён!</b>\n"
+                f"<code>{path_key}</code>\n\n"
+                f"💰 Прибыль ≈ <code>{estimated_pnl:+.4f} USDT</code>\n"
+                f"📊 Успешных: {_arb_stats['success']} | "
+                f"Ошибок: {_arb_stats['failed']} | "
+                f"PnL: {_arb_stats['total_pnl']:+.4f} USDT"
+            )
+            await notify(msg)
+            return {"executed": True, "success": True, "pnl": estimated_pnl}
 
-    except Exception as e:
-        log_activity(f"[arb_exec] EXCEPTION {path_key}: {e}")
-        _arb_stats["failed"] += 1
-        await notify(f"❌ <b>Арбитраж ошибка</b>: {e}\n<code>{path_key}</code>")
-        return {"executed": False, "reason": str(e)}
-
-    finally:
-        _arb_executing = False  # always release lock
+        except Exception as e:
+            log_activity(f"[arb_exec] EXCEPTION {path_key}: {e}")
+            _arb_stats["failed"] += 1
+            await notify(f"❌ <b>Арбитраж ошибка</b>: {e}\n<code>{path_key}</code>")
+            return {"executed": False, "reason": str(e)}
+        # lock releases automatically when async with block exits
 
 
 async def position_monitor_loop():
@@ -7059,10 +7089,41 @@ async def spot_monitor_loop():
                     should_close = False
                     reason = ""
 
-                    # TP hit
+                    # v10.12.0: Partial Exit — TP1 sells 50%, trails the other 50% to TP2
+                    if side == "buy" and price_now >= tp * 0.998 and not trade.get("partial_exit_done"):
+                        # ── Первый TP: фиксируем 50%, трейлим остаток ────────────
+                        half_size = round(min(trade_size * 0.5, bal_info["available"] * 0.5), 6)
+                        if half_size > 0.0001:  # sanity check
+                            _exch_label_p = "ByBit" if _trade_acct == "bybit_spot" else "KuCoin"
+                            if _trade_acct == "bybit_spot":
+                                half_res = await bybit_sell_spot(symbol, half_size)
+                            else:
+                                half_res = await sell_spot_to_usdt(symbol, half_size)
+                            if half_res.get("success"):
+                                half_pnl = round(pnl_pct * entry * half_size, 4)
+                                trade["size"] = round(trade_size - half_size, 6)
+                                trade["partial_exit_done"] = True
+                                trade["partial_pnl"] = half_pnl
+                                trade["tp"] = round(entry * (1 + TP_PCT * 1.5), 6)   # TP2 = 6%
+                                trade["peak_pct"] = pnl_pct   # reset peak for trailing
+                                _save_trades_to_disk()
+                                # Route freed funds to Earn
+                                asyncio.ensure_future(smart_money_post_sell(
+                                    "bybit" if _trade_acct == "bybit_spot" else "kucoin"))
+                                await notify(
+                                    f"📊 <b>Частичная фиксация TP1!</b>\n"
+                                    f"<code>{symbol}</code> ({_exch_label_p})\n"
+                                    f"Продано 50%: <code>{half_size}</code> по ${price_now:,.4f}\n"
+                                    f"Зафиксировано: <code>${half_pnl:+.4f}</code>\n"
+                                    f"Остаток трейлится до TP2 ({TP_PCT*150:.0f}%)"
+                                )
+                                log_activity(f"[spot_mon] {symbol} partial TP1 sold {half_size} PnL=${half_pnl:+.4f}")
+                        continue  # остаток продолжает трейлиться
+
+                    # TP hit (full close or TP2 after partial)
                     if side == "buy" and price_now >= tp * 0.998:
                         should_close = True
-                        reason = "🎯 TP"
+                        reason = "🎯 TP2" if trade.get("partial_exit_done") else "🎯 TP"
                     # SL hit
                     elif side == "buy" and price_now <= sl * 1.002:
                         should_close = True
@@ -7098,33 +7159,36 @@ async def spot_monitor_loop():
                         else:
                             sell_result = await sell_spot_to_usdt(symbol, sell_size)
                         if sell_result.get("success"):
+                            # v10.12.0: account for partial_pnl if TP2
+                            total_pnl = pnl_usdt + trade.get("partial_pnl", 0.0)
                             trade["status"] = "closed"
-                            trade["pnl"] = pnl_usdt
+                            trade["pnl"] = round(total_pnl, 4)
                             trade["close_price"] = price_now
                             trade["close_reason"] = reason
                             _save_trades_to_disk()
                             duration_min = round((time.time() - open_ts) / 60, 1)
-                            emoji = "✅" if pnl_usdt >= 0 else "❌"
+                            emoji = "✅" if total_pnl >= 0 else "❌"
                             _update_perf_on_trade({
-                                "pnl_usdt": pnl_usdt, "strategy": "spot",
+                                "pnl_usdt": total_pnl, "strategy": "spot",
                                 "symbol": symbol, "q_score": trade.get("q_score", 0),
                             })
                             if db.is_ready():
                                 asyncio.ensure_future(db.close_trade(
-                                    symbol=symbol, pnl_usdt=pnl_usdt, pnl_pct=round(pnl_pct, 6),
+                                    symbol=symbol, pnl_usdt=total_pnl, pnl_pct=round(pnl_pct, 6),
                                     close_price=price_now, close_reason=reason, strategy="spot",
                                     duration_sec=round(time.time() - open_ts, 1)
                                 ))
                                 asyncio.ensure_future(db.save_perf_stats(_perf_stats))
                             _exch_label = "ByBit" if _trade_acct == "bybit_spot" else "KuCoin"
+                            _partial_note = f"\n💡 TP1 зафиксировано: ${trade.get('partial_pnl',0):+.4f}" if trade.get("partial_exit_done") else ""
                             await notify(
                                 f"{emoji} <b>Спот закрыта — {reason}</b>\n"
                                 f"<code>{symbol}</code> {side.upper()} ({_exch_label})\n"
                                 f"Вход: <code>${entry:,.4f}</code> → Выход: <code>${price_now:,.4f}</code>\n"
-                                f"PnL: <code>${pnl_usdt:+.4f}</code> ({pnl_pct*100:+.2f}%)\n"
+                                f"PnL: <code>${total_pnl:+.4f}</code> ({pnl_pct*100:+.2f}%){_partial_note}\n"
                                 f"Длительность: {duration_min}м"
                             )
-                            log_activity(f"[spot_mon] {symbol} ({_exch_label}) {reason} SOLD PnL=${pnl_usdt:+.4f}")
+                            log_activity(f"[spot_mon] {symbol} ({_exch_label}) {reason} SOLD PnL=${total_pnl:+.4f}")
                             # v10.7: Capital protection — set rest timer so bot doesn't re-buy immediately
                             _last_sell_ts = time.time()
                             log_activity(f"[capital] post-sell rest started ({POST_SELL_REST_SEC}s before next BUY)")
@@ -7215,19 +7279,48 @@ async def _tg_main_menu(chat_id: int):
         + "Выбери раздел:", kb)
 
 async def _tg_stats(chat_id: int):
-    """Отправляет карточку статистики трейдинга. v9.0: uses _perf_stats (closed trades only)."""
-    # v9.0: Use _perf_stats for accurate WR (only closed trades)
-    total = _perf_stats.get("total_trades", 0)
-    wins  = _perf_stats.get("wins", 0)
+    """Отправляет карточку статистики трейдинга. v10.12.0: emoji progress bar + top symbols."""
+    total  = _perf_stats.get("total_trades", 0)
+    wins   = _perf_stats.get("wins", 0)
     losses = _perf_stats.get("losses", 0)
-    pnl   = round(_perf_stats.get("total_pnl", 0.0), 2)
-    wr    = round(wins / total * 100, 1) if total else 0
-    open_ = sum(1 for t in trade_log if t.get("status", "") == "open")
+    pnl    = round(_perf_stats.get("total_pnl", 0.0), 2)
+    wr     = round(wins / total * 100, 1) if total else 0
+    open_  = sum(1 for t in trade_log if t.get("status", "") == "open")
     streak = _perf_stats.get("streak", 0)
     last_q = round(last_q_score, 1) if last_q_score else "—"
-    pnl_emoji = "✅" if pnl >= 0 else "❌"
+    pnl_emoji    = "✅" if pnl >= 0 else "❌"
     streak_emoji = "🔥" if streak > 0 else "❄️" if streak < 0 else "➖"
-    chip  = "Wukong 180 ⚛️" if _qcloud_ready else "CPU симулятор"
+    chip = "Wukong 180 ⚛️" if _qcloud_ready else "CPU симулятор"
+
+    # v10.12.0: Win rate progress bar (10 chars)
+    def _wr_bar(rate: float) -> str:
+        filled = round(rate / 10)
+        bar    = "█" * filled + "░" * (10 - filled)
+        color  = "🟢" if rate >= 60 else "🟡" if rate >= 45 else "🔴"
+        return f"{color} <code>{bar}</code> {rate:.0f}%"
+
+    # v10.12.0: Top-3 symbols by PnL
+    sym_stats = _perf_stats.get("by_symbol", {})
+    top_syms = sorted(
+        [(s, d) for s, d in sym_stats.items() if d.get("trades", 0) >= 2],
+        key=lambda x: x[1].get("pnl", 0), reverse=True
+    )[:3]
+    top_txt = ""
+    if top_syms:
+        lines = []
+        for sym, d in top_syms:
+            sym_wr = round(d["wins"] / d["trades"] * 100) if d["trades"] else 0
+            sym_pnl = d.get("pnl", 0)
+            sym_e = "✅" if sym_pnl >= 0 else "❌"
+            lines.append(f"  {sym_e} <code>{sym.replace('-USDT','')}</code>: {d['trades']}сд WR{sym_wr}% ${sym_pnl:+.2f}")
+        top_txt = "\n🏆 <b>Топ символы:</b>\n" + "\n".join(lines)
+
+    # v10.12.0: Wave 2A filter stats
+    filters_txt = ""
+    _4h_cached = len(_4h_trend_cache)
+    if _4h_cached > 0:
+        filters_txt = f"\n🔍 <b>Фильтры v10.12:</b> 4h-кэш: {_4h_cached} пар"
+
     # MiroFish stats
     mf_txt = ""
     if MIROFISH_ENABLED:
@@ -7235,21 +7328,22 @@ async def _tg_stats(chat_id: int):
     # ByBit stats
     bb_txt = ""
     if BYBIT_ENABLED:
-        bb_txt = f"\n🟡 ByBit: <code>{_bybit_stats['calls']}</code> calls · X-Arb checks: <code>{_xarb_stats['checks']}</code>"
+        bb_txt = f"\n🟡 ByBit: <code>{_bybit_stats['calls']}</code> calls · X-Arb: <code>{_xarb_stats['checks']}</code> checks"
+
     kb = {"inline_keyboard": [[{"text": "◀️ Меню", "callback_data": "menu_main"}]]}
     await _tg_send(chat_id,
         f"📊 <b>Статистика трейдинга v{app.version}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Закрытых сделок: <code>{total}</code> (открыто: <code>{open_}</code>)\n"
-        f"Побед: <code>{wins}</code> / Потерь: <code>{losses}</code>\n"
-        f"Win Rate: <code>{wr}%</code>\n"
+        f"Сделок: <code>{total}</code> закрыто · <code>{open_}</code> открыто\n"
+        f"Победы/Потери: <code>{wins}</code> / <code>{losses}</code>\n"
+        f"Win Rate: {_wr_bar(wr)}\n"
         f"Итог PnL: {pnl_emoji} <code>${pnl:+.2f}</code>\n"
-        f"{streak_emoji} Streak: <code>{streak:+d}</code>\n"
-        f"Последний Q-Score: <code>{last_q}</code>\n"
-        f"Автопилот: <code>{'ВКЛ' if AUTOPILOT else 'ВЫКЛ'}</code>\n"
+        f"{streak_emoji} Серия: <code>{streak:+d}</code> · Q-Score: <code>{last_q}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Автопилот: <code>{'ВКЛ ✅' if AUTOPILOT else 'ВЫКЛ ⏸'}</code>\n"
         f"Min Q: <code>{MIN_Q_SCORE}</code> · Cooldown: <code>{COOLDOWN}s</code>\n"
-        f"Квантовый чип: {chip}"
-        f"{mf_txt}{bb_txt}", kb)
+        f"Чип: {chip}"
+        f"{top_txt}{filters_txt}{mf_txt}{bb_txt}", kb)
 
 _pending_reset_confirm: dict = {}  # v10.11.5 H-16: {chat_id: timestamp} pending confirmations
 
