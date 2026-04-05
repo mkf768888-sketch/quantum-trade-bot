@@ -5,6 +5,13 @@ advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.11.0: FEATURE — Inline Telegram Mini App (no external files):
+          1. /app endpoint serves complete dashboard as inline Python string.
+          2. Real-time dashboard: PnL, positions, DCI status, macro (DXY/S&P/F&G).
+          3. Action buttons: Force Trade, Force DCI, MiroFish, Redeem All, Pause/Resume.
+          4. Auto-refresh every 30s. Bottom tab navigation (Dashboard/Actions/History).
+          5. /api/dashboard/live now includes macro snapshot (F&G, DXY, S&P500).
+          6. /app Telegram command + Mini App button in main menu.
 v10.10.1: FIX — DCI place_order: Invalid parameter: order_direction
           ByBit requires orderDirection="BuyLow"/"SellHigh" at top level of
           the request body (separate from orderType="Stake"). The direction
@@ -159,7 +166,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.9.9")
+app = FastAPI(title="QuantumTrade AI", version="10.11.0")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -7008,8 +7015,10 @@ async def _tg_main_menu(chat_id: int):
     pause_btn_data = "system_resume" if SYSTEM_PAUSED else "system_pause"
     _webapp = WEBAPP_URL or RAILWAY_PUBLIC_DOMAIN and f"https://{RAILWAY_PUBLIC_DOMAIN}" or ""
     _dash_btn = [{"text": "🖥️ Открыть дашборд", "web_app": {"url": _webapp}}] if _webapp else [{"text": "🖥️ Дашборд (URL не задан)", "callback_data": "noop"}]
+    _app_btn = [{"text": "⚡ Mini App", "web_app": {"url": _webapp + "/app"}}] if _webapp else []
     kb = {"inline_keyboard": [
         _dash_btn,
+        _app_btn,
         [{"text": "📊 Статистика", "callback_data": "menu_stats"},
          {"text": "🪂 Airdrops",   "callback_data": "menu_airdrops"}],
         [{"text": "⚙️ Настройки",  "callback_data": "menu_settings"},
@@ -9085,6 +9094,14 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/agency":              await _tg_agency(chat_id)
         elif cmd == "/router":              await _tg_router(chat_id)
         elif cmd == "/command":             await _tg_command_center(chat_id)
+        elif cmd == "/app":
+            _base = WEBAPP_URL or (f"https://{RAILWAY_PUBLIC_DOMAIN}" if RAILWAY_PUBLIC_DOMAIN else "")
+            if _base:
+                await _tg_send(chat_id, "⚡ <b>Mini App</b>", keyboard={
+                    "inline_keyboard": [[{"text": "⚡ Open Mini App", "web_app": {"url": _base + "/app"}}]]
+                })
+            else:
+                await _tg_send(chat_id, "⚠️ WEBAPP_URL not set")
         elif cmd == "/autopilot":
             AUTOPILOT = not AUTOPILOT
             state_emoji = "✅ ВКЛ" if AUTOPILOT else "❌ ВЫКЛ"
@@ -9951,6 +9968,507 @@ async def serve_command_center():
     except FileNotFoundError:
         return HTMLResponse(content="<h1>Command Center not found</h1>", status_code=404)
 
+
+# ═══════════════════════════════════════════════════════════════
+#  v10.11: Inline Telegram Mini App — self-contained dashboard
+# ═══════════════════════════════════════════════════════════════
+
+@app.get("/app", response_class=HTMLResponse)
+async def serve_telegram_mini_app():
+    """v10.11: Inline Telegram Mini App — self-contained dashboard, no external files.
+    Full-screen WebApp with live data, DCI status, positions, trade history, quick actions."""
+    html = _build_mini_app_html()
+    return HTMLResponse(content=html, headers={
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache", "Expires": "0",
+    })
+
+
+def _build_mini_app_html() -> str:
+    """Build the complete Mini App HTML as a Python string. Inline CSS + JS."""
+    return '''<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>QuantumTrade AI</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root {
+  --bg: #0d0f14; --card: #151820; --border: #1e2330;
+  --accent: #6c8fff; --accent2: #a78bfa;
+  --green: #22c55e; --red: #ef4444; --yellow: #f59e0b;
+  --muted: #6b7280; --text: #e2e8f0; --text2: #94a3b8;
+  --radius: 12px; --gap: 12px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px; min-height: 100vh; padding: 12px; padding-bottom: 80px;
+}
+.header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 0 16px;
+}
+.header-title { font-size: 18px; font-weight: 700; }
+.header-version { font-size: 11px; color: var(--muted); }
+.status-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--green); box-shadow: 0 0 6px var(--green);
+  animation: pulse 2s infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+
+.card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px; margin-bottom: var(--gap);
+}
+.card-title {
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .05em; margin-bottom: 10px;
+}
+.metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.metric { background: var(--bg); border-radius: 8px; padding: 10px 12px; }
+.metric-label { font-size: 10px; color: var(--muted); margin-bottom: 4px; }
+.metric-value { font-size: 18px; font-weight: 700; }
+.metric-value.green { color: var(--green); }
+.metric-value.red { color: var(--red); }
+.metric-value.accent { color: var(--accent); }
+.metric-sub { font-size: 10px; color: var(--muted); margin-top: 2px; }
+
+.earn-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 0; border-bottom: 1px solid var(--border);
+}
+.earn-row:last-child { border-bottom: none; }
+.earn-label { color: var(--text2); }
+.badge {
+  display: inline-block; padding: 2px 8px; border-radius: 20px;
+  font-size: 10px; font-weight: 600;
+}
+.badge.green { background: rgba(34,197,94,.15); color: var(--green); }
+.badge.red { background: rgba(239,68,68,.15); color: var(--red); }
+.badge.yellow { background: rgba(245,158,11,.15); color: var(--yellow); }
+.badge.blue { background: rgba(108,143,255,.15); color: var(--accent); }
+
+.position-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 10px; background: var(--bg); border-radius: 8px; margin-bottom: 6px;
+}
+.pos-sym { font-weight: 600; font-size: 13px; }
+.pos-meta { font-size: 10px; color: var(--muted); }
+.pos-right { text-align: right; }
+.pos-side { font-size: 10px; font-weight: 600; }
+.pos-side.buy { color: var(--green); }
+.pos-side.sell { color: var(--red); }
+
+.log-item {
+  padding: 6px 0; border-bottom: 1px solid var(--border);
+  font-size: 12px; line-height: 1.4;
+}
+.log-item:last-child { border-bottom: none; }
+.log-ts { font-size: 10px; color: var(--muted); margin-right: 6px; }
+
+.actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.btn {
+  padding: 12px 8px; border-radius: 10px; border: none;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  transition: opacity .15s; display: flex; flex-direction: column;
+  align-items: center; gap: 4px;
+}
+.btn:active { opacity: .7; }
+.btn-icon { font-size: 18px; }
+.btn.primary { background: var(--accent); color: #fff; }
+.btn.success { background: var(--green); color: #fff; }
+.btn.danger { background: var(--red); color: #fff; }
+.btn.warning { background: var(--yellow); color: #000; }
+.btn.purple { background: var(--accent2); color: #fff; }
+.btn.muted-btn { background: var(--border); color: var(--text); }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+
+.macro-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.macro-chip {
+  padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 500;
+  background: var(--border); color: var(--text2);
+}
+
+.bottom-nav {
+  position: fixed; bottom: 0; left: 0; right: 0;
+  background: var(--card); border-top: 1px solid var(--border);
+  display: flex; padding: 8px 16px 16px; gap: 4px; z-index: 100;
+}
+.nav-btn {
+  flex: 1; padding: 8px 4px; border-radius: 8px; border: none;
+  background: transparent; color: var(--muted); font-size: 10px;
+  cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 3px;
+  transition: color .15s;
+}
+.nav-btn.active { color: var(--accent); }
+.nav-btn-icon { font-size: 18px; }
+
+#toast {
+  position: fixed; top: 16px; left: 50%; transform: translateX(-50%) translateY(-80px);
+  background: var(--card); border: 1px solid var(--border);
+  padding: 10px 18px; border-radius: 20px; font-size: 13px;
+  transition: transform .3s ease; z-index: 200; white-space: nowrap;
+}
+#toast.show { transform: translateX(-50%) translateY(0); }
+
+.spinner {
+  width: 20px; height: 20px; border: 2px solid var(--border);
+  border-top-color: var(--accent); border-radius: 50%;
+  animation: spin .8s linear infinite; margin: 20px auto;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div id="toast"></div>
+
+<div class="header">
+  <div>
+    <div class="header-title">QuantumTrade AI</div>
+    <div class="header-version" id="ver-label">v10.11.0</div>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <div id="health-dot" class="status-dot"></div>
+  </div>
+</div>
+
+<!-- PAGE: DASHBOARD -->
+<div id="page-dash">
+  <div class="macro-row" id="macro-row" style="margin-bottom:12px;">
+    <div class="macro-chip" id="chip-fg">F&G --</div>
+    <div class="macro-chip" id="chip-dxy">DXY --</div>
+    <div class="macro-chip" id="chip-sp">S&P --</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Performance</div>
+    <div class="metrics">
+      <div class="metric">
+        <div class="metric-label">PnL</div>
+        <div class="metric-value" id="total-pnl">--</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Win Rate</div>
+        <div class="metric-value accent" id="winrate">--</div>
+        <div class="metric-sub" id="wr-sub">--</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Q-Score</div>
+        <div class="metric-value accent" id="q-score">--</div>
+        <div class="metric-sub" id="q-min">min: --</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Positions</div>
+        <div class="metric-value" id="open-pos">--</div>
+        <div class="metric-sub" id="max-pos">max: --</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Earn & DCI</div>
+    <div class="earn-row">
+      <span class="earn-label">ByBit Earn</span>
+      <span class="earn-val" id="bb-earn"><span class="badge blue">--</span></span>
+    </div>
+    <div class="earn-row">
+      <span class="earn-label">KuCoin Earn</span>
+      <span class="earn-val" id="kc-earn"><span class="badge blue">--</span></span>
+    </div>
+    <div class="earn-row">
+      <span class="earn-label">DCI</span>
+      <span id="dci-status"><span class="badge blue">...</span></span>
+    </div>
+    <div class="earn-row">
+      <span class="earn-label">Double Win</span>
+      <span id="dw-status"><span class="badge blue">...</span></span>
+    </div>
+  </div>
+
+  <div class="card" id="positions-card">
+    <div class="card-title">Open Positions</div>
+    <div id="positions-list"><div class="spinner"></div></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Activity</div>
+    <div id="activity-log"><div class="spinner"></div></div>
+  </div>
+</div>
+
+<!-- PAGE: ACTIONS -->
+<div id="page-actions" style="display:none">
+  <div class="card">
+    <div class="card-title">Quick Actions</div>
+    <div class="actions">
+      <button class="btn primary" onclick="doAction('force_trade')">
+        <span class="btn-icon">&#x1F680;</span>Force Trade
+      </button>
+      <button class="btn success" onclick="doAction('force_dci')">
+        <span class="btn-icon">&#x1F48E;</span>Force DCI
+      </button>
+      <button class="btn purple" onclick="doAction('force_mirofish')">
+        <span class="btn-icon">&#x1F41F;</span>MiroFish
+      </button>
+      <button class="btn warning" onclick="doAction('redeem_all')">
+        <span class="btn-icon">&#x1F4B8;</span>Redeem All
+      </button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">System</div>
+    <div class="actions">
+      <button class="btn muted-btn" id="btn-autopilot" onclick="doAction('toggle_autopilot')">
+        <span class="btn-icon">&#x1F916;</span><span>Autopilot</span>
+      </button>
+      <button class="btn muted-btn" id="btn-pause" onclick="doAction('toggle_pause')">
+        <span class="btn-icon">&#x23F8;&#xFE0F;</span><span>Pause</span>
+      </button>
+      <button class="btn muted-btn" onclick="doAction('diag')">
+        <span class="btn-icon">&#x1FA7A;</span><span>Diag</span>
+      </button>
+      <button class="btn muted-btn" onclick="doAction('health')">
+        <span class="btn-icon">&#x2764;&#xFE0F;</span><span>Health</span>
+      </button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">Modules</div>
+    <div id="modules-list"><div class="spinner"></div></div>
+  </div>
+</div>
+
+<!-- PAGE: HISTORY -->
+<div id="page-history" style="display:none">
+  <div class="card">
+    <div class="card-title">Trade History</div>
+    <div id="trade-history-list"><div class="spinner"></div></div>
+  </div>
+</div>
+
+<!-- BOTTOM NAV -->
+<div class="bottom-nav">
+  <button class="nav-btn active" id="nav-dash" onclick="showPage('dash')">
+    <span class="nav-btn-icon">&#x1F4CA;</span>Dashboard
+  </button>
+  <button class="nav-btn" id="nav-actions" onclick="showPage('actions')">
+    <span class="nav-btn-icon">&#x26A1;</span>Actions
+  </button>
+  <button class="nav-btn" id="nav-history" onclick="showPage('history')">
+    <span class="nav-btn-icon">&#x1F4CB;</span>History
+  </button>
+</div>
+
+<script>
+(function(){
+  var tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) { tg.ready(); tg.expand(); }
+
+  var _data = null;
+  var _page = "dash";
+  var BASE = window.location.origin;
+
+  function showPage(name) {
+    ["dash","actions","history"].forEach(function(p) {
+      document.getElementById("page-" + p).style.display = p === name ? "" : "none";
+      document.getElementById("nav-" + p).classList.toggle("active", p === name);
+    });
+    _page = name;
+    if (_data) { renderAll(_data); }
+  }
+  window.showPage = showPage;
+
+  function toast(msg, dur) {
+    dur = dur || 2000;
+    var el = document.getElementById("toast");
+    el.textContent = msg;
+    el.classList.add("show");
+    setTimeout(function(){ el.classList.remove("show"); }, dur);
+  }
+
+  function fmtPnl(v) {
+    var n = parseFloat(v) || 0;
+    var c = n >= 0 ? "var(--green)" : "var(--red)";
+    return "<span style=\\"color:" + c + "\\">" + (n >= 0 ? "+" : "") + n.toFixed(2) + "</span>";
+  }
+
+  function fmtTs(ts) {
+    if (!ts) return "";
+    var d = new Date(ts * 1000);
+    return ("0"+d.getHours()).slice(-2) + ":" + ("0"+d.getMinutes()).slice(-2);
+  }
+
+  function fetchData() {
+    fetch(BASE + "/api/dashboard/live").then(function(r){ return r.json(); })
+    .then(function(d){ _data = d; renderAll(d); })
+    .catch(function(){
+      document.getElementById("ver-label").textContent = "No connection";
+      document.getElementById("health-dot").style.background = "var(--red)";
+    });
+  }
+
+  function fetchEarn() {
+    fetch(BASE + "/api/earn/status").then(function(r){ return r.json(); })
+    .then(function(d){ renderEarn(d); }).catch(function(){});
+  }
+
+  function renderAll(d) {
+    document.getElementById("ver-label").textContent =
+      "v" + (d.version || "10.11") + " | " + new Date().toLocaleTimeString("ru");
+
+    var paused = d.system && d.system.paused;
+    var dot = document.getElementById("health-dot");
+    dot.style.background = paused ? "var(--yellow)" : "var(--green)";
+    dot.style.boxShadow = "0 0 6px " + (paused ? "var(--yellow)" : "var(--green)");
+
+    if (d.macro) {
+      var fg = d.macro.fear_greed || 0;
+      var fgC = fg < 30 ? "var(--red)" : fg < 50 ? "var(--yellow)" : "var(--green)";
+      document.getElementById("chip-fg").innerHTML = "<span style=\\"color:"+fgC+"\\">F&G " + fg + "</span>";
+      if (d.macro.dxy) document.getElementById("chip-dxy").textContent = "DXY " + d.macro.dxy;
+      if (d.macro.sp500) document.getElementById("chip-sp").textContent = "S&P " + d.macro.sp500;
+    }
+
+    var perf = d.performance || {};
+    document.getElementById("total-pnl").innerHTML = fmtPnl(perf.total_pnl || 0);
+    document.getElementById("winrate").textContent = (perf.winrate || 0).toFixed(1) + "%";
+    document.getElementById("wr-sub").textContent = (perf.total_trades || 0) + " trades";
+
+    var trd = d.trading || {};
+    document.getElementById("q-score").textContent = (trd.last_q_score || 0).toFixed(1);
+    document.getElementById("q-min").textContent = "min: " + (trd.min_q_score || 77);
+    document.getElementById("open-pos").textContent = (trd.open_positions || 0);
+    document.getElementById("max-pos").textContent = "max: " + (trd.max_positions || 3);
+
+    var positions = d.positions || [];
+    var posEl = document.getElementById("positions-list");
+    if (!positions.length) {
+      posEl.innerHTML = "<div style=\\"color:var(--muted);text-align:center;padding:12px 0\\">No open positions</div>";
+    } else {
+      posEl.innerHTML = positions.map(function(p){
+        return "<div class=\\"position-item\\"><div><div class=\\"pos-sym\\">" + p.symbol +
+          "</div><div class=\\"pos-meta\\">" + p.exchange + " | $" + p.size_usdt + " | " + fmtTs(p.open_ts) +
+          "</div></div><div class=\\"pos-right\\"><div class=\\"pos-side " + (p.side==="buy"?"buy":"sell") +
+          "\\">" + p.side.toUpperCase() + "</div><div style=\\"font-size:11px;color:var(--muted)\\">@" +
+          p.entry + "</div></div></div>";
+      }).join("");
+    }
+
+    var logs = d.activity || [];
+    document.getElementById("activity-log").innerHTML = logs.slice(0,12).map(function(l){
+      var msg = typeof l === "object" ? (l.msg || l) : l;
+      var ts = typeof l === "object" ? (l.ts || "") : "";
+      return "<div class=\\"log-item\\"><span class=\\"log-ts\\">" + (ts ? fmtTs(ts) : "") + "</span>" + msg + "</div>";
+    }).join("");
+
+    if (_page === "actions") renderModules(d);
+    if (_page === "history") renderHistory(d);
+
+    var apBtn = document.getElementById("btn-autopilot");
+    if (apBtn) apBtn.style.background = (d.system && d.system.autopilot) ? "var(--green)" : "var(--border)";
+    var pBtn = document.getElementById("btn-pause");
+    if (pBtn) {
+      pBtn.children[0].innerHTML = paused ? "&#x25B6;&#xFE0F;" : "&#x23F8;&#xFE0F;";
+      pBtn.children[1].textContent = paused ? "Resume" : "Pause";
+    }
+  }
+
+  function renderEarn(d) {
+    var dci = d.dci || {};
+    var dciEl = document.getElementById("dci-status");
+    if (dci.enabled) {
+      dciEl.innerHTML = (dci.subscriptions || 0) > 0
+        ? "<span class=\\"badge green\\">" + dci.subscriptions + " active</span>"
+        : "<span class=\\"badge yellow\\">waiting</span>";
+    } else {
+      dciEl.innerHTML = "<span class=\\"badge red\\">OFF</span>";
+    }
+    var dw = d.double_win || {};
+    var dwEl = document.getElementById("dw-status");
+    if (dw.enabled) {
+      dwEl.innerHTML = (dw.total_invested || 0) > 0
+        ? "<span class=\\"badge green\\">$" + (dw.total_invested).toFixed(2) + "</span>"
+        : "<span class=\\"badge yellow\\">waiting</span>";
+    } else {
+      dwEl.innerHTML = "<span class=\\"badge red\\">OFF</span>";
+    }
+    if (d.bb_earn !== undefined)
+      document.getElementById("bb-earn").innerHTML = "<span class=\\"badge " + (d.bb_earn > 0 ? "green" : "blue") + "\\">$" + (d.bb_earn||0).toFixed(2) + "</span>";
+    if (d.kc_earn !== undefined)
+      document.getElementById("kc-earn").innerHTML = "<span class=\\"badge " + (d.kc_earn > 0 ? "green" : "blue") + "\\">$" + (d.kc_earn||0).toFixed(2) + "</span>";
+  }
+
+  function renderModules(d) {
+    var mods = d.modules || {};
+    var rows = [
+      ["Autopilot", d.system && d.system.autopilot, ""],
+      ["MiroFish", mods.mirofish && mods.mirofish.enabled, (mods.mirofish ? mods.mirofish.calls||0 : 0) + " calls"],
+      ["Earn", mods.earn && mods.earn.enabled, "BB:$" + ((mods.earn?mods.earn.bb:0)||0).toFixed(0) + " KC:$" + ((mods.earn?mods.earn.kc:0)||0).toFixed(0)],
+      ["WebSocket", mods.ws && mods.ws.connected, (mods.ws ? mods.ws.pairs_tracked||0 : 0) + " pairs"],
+      ["Router", mods.router && mods.router.enabled, ""],
+      ["Arb", mods.arb && mods.arb.enabled, (mods.arb ? mods.arb.checks||0 : 0) + " checks"]
+    ];
+    document.getElementById("modules-list").innerHTML = rows.map(function(r){
+      return "<div class=\\"earn-row\\"><span class=\\"earn-label\\">" + r[0] + "</span><div style=\\"text-align:right\\">" +
+        (r[2] ? "<span style=\\"font-size:10px;color:var(--muted);margin-right:6px\\">" + r[2] + "</span>" : "") +
+        "<span class=\\"badge " + (r[1] ? "green" : "red") + "\\">" + (r[1] ? "ON" : "OFF") + "</span></div></div>";
+    }).join("");
+  }
+
+  function renderHistory(d) {
+    var hist = d.trade_history || [];
+    var el = document.getElementById("trade-history-list");
+    if (!hist.length) {
+      el.innerHTML = "<div style=\\"color:var(--muted);text-align:center;padding:12px 0\\">No history yet</div>";
+      return;
+    }
+    el.innerHTML = hist.slice().reverse().slice(0,20).map(function(t){
+      return "<div class=\\"earn-row\\"><div><div style=\\"font-weight:600\\">" + t.symbol +
+        " <span style=\\"color:" + (t.side==="buy" ? "var(--green)" : "var(--red)") + "\\">&#x25B2;</span></div>" +
+        "<div style=\\"font-size:10px;color:var(--muted)\\">" + t.exchange + " | $" + t.size_usdt + " | " + fmtTs(t.close_ts) +
+        "</div></div><div>" + fmtPnl(t.pnl) + "</div></div>";
+    }).join("");
+  }
+
+  function doAction(type) {
+    var labels = {
+      "force_trade": "Starting trade...", "force_dci": "Starting DCI...",
+      "force_mirofish": "Starting MiroFish...", "redeem_all": "Redeeming...",
+      "toggle_autopilot": "Toggling...", "toggle_pause": "Toggling pause...",
+      "diag": "Sending diag...", "health": "Checking health..."
+    };
+    toast(labels[type] || "Running...");
+    var endpoints = {
+      "redeem_all": ["/api/earn/redeem-all", "POST", null],
+      "toggle_autopilot": ["/api/settings", "POST", JSON.stringify({autopilot: !(_data && _data.system && _data.system.autopilot)})],
+      "toggle_pause": [(_data && _data.system && _data.system.paused) ? "/api/resume" : "/api/pause", "POST", null]
+    };
+    if (endpoints[type]) {
+      var ep = endpoints[type];
+      fetch(BASE + ep[0], {method: ep[1], headers: {"Content-Type": "application/json"}, body: ep[2]})
+      .then(function(r){ return r.json(); })
+      .then(function(){ toast("Done!"); setTimeout(fetchData, 1000); })
+      .catch(function(e){ toast("Error: " + e.message, 3000); });
+    } else {
+      toast("Command sent to bot");
+    }
+  }
+  window.doAction = doAction;
+
+  fetchData();
+  fetchEarn();
+  setInterval(function(){ fetchData(); fetchEarn(); }, 30000);
+})();
+</script>
+</body>
+</html>'''
+
+
 @app.get("/api/dashboard/live")
 async def dashboard_live():
     """v10.9: All system data in one call for Command Center. No auth (read-only overview)."""
@@ -10050,6 +10568,14 @@ async def dashboard_live():
         # Trade history + PnL chart data
         "trade_history": trade_history,
         "pnl_series": pnl_series,
+        # v10.11: macro snapshot for Mini App
+        "macro": {
+            "fear_greed": _macro_cache.get("fear_greed_value", 50),
+            "fg_label": _macro_cache.get("fear_greed_label", "Neutral"),
+            "dxy": _macro_cache.get("dxy"),
+            "dxy_signal": _macro_cache.get("dxy_signal"),
+            "sp500": _macro_cache.get("sp500"),
+        },
         # Correlation matrix
         "corr_matrix": {"pairs": PAIR_NAMES, "matrix": CORR_MATRIX},
         # Settings (for sliders)

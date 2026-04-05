@@ -1,7 +1,7 @@
 ---
 tags: [home, index]
 date: 2026-04-05
-version: v10.10.0
+version: v10.11.0
 ---
 # QuantumTrade AI — Knowledge Vault
 
@@ -38,8 +38,9 @@ version: v10.10.0
 - [[DeepSeek 402 вызывал fallback на Claude Haiku и стоил $20 в день]]
 - [[VISION_ENABLED false по умолчанию для экономии]]
 - [[Smart Money Router двойное резервирование tradeable=0]]
-- [[ByBit DCI orderType должен быть Stake а не BuyLow SellHigh]] ← NEW v10.9.23
-- [[KuCoin DCI endpoint 400100 официально недоступен]] ← NEW v10.9.22
+- [[ByBit DCI orderType должен быть Stake а не BuyLow SellHigh]] ← v10.9.23
+- [[KuCoin DCI endpoint 400100 официально недоступен]] ← v10.9.22
+- [[ByBit DCI orderDirection обязателен в теле запроса]] ← NEW v10.10.1
 
 ## Паттерны
 - [[earn monitor loop фоновая задача каждые 15 минут]]
