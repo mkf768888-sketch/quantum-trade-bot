@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v10.11.1
+QuantumTrade AI - FastAPI Backend v10.11.2
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
@@ -9,6 +9,9 @@ v10.10.3: FIX — DCI place_order: Invalid coin.
           For BuyLow direction, ByBit expects the INVESTED coin (USDT), not the
           base coin (ETH). Was passing best_option["coin"] (= "ETH").
           Fixed to best_option["invest_coin"] (= "USDT" for BuyLow, base coin for SellHigh).
+v10.11.2: FIX — Duplicate _tg_balance removed (old simple version overrode new full breakdown).
+          FIX — Dead elif cmd==/balance removed from command handler.
+          /balance now correctly shows full KuCoin + ByBit + Earn + DCI breakdown (v10.11.1 feature).
 v10.11.1: FIX — DCI priority over Earn in router (DCI runs FIRST, independently of EARN_ENABLED).
           Error propagation: DCI API errors now shown in /dciplace response instead of silent swallow.
           NEW: /balance command — full breakdown across KuCoin + ByBit (idle, earn, DCI).
@@ -8923,23 +8926,6 @@ async def _tg_universal_buy(chat_id: int, raw: str):
         await _tg_send(chat_id, f"❌ Ошибка покупки {coin}: {result.get('msg', '?')}")
 
 
-async def _tg_balance(chat_id: int):
-    """Текущие балансы спот + фьючерсы."""
-    try:
-        spot, fut = await asyncio.gather(get_balance(), get_futures_balance())
-        spot_usdt = spot.get("USDT", 0)
-        fut_eq    = fut.get("account_equity", 0)
-        fut_pnl   = fut.get("unrealised_pnl", 0)
-        kb = {"inline_keyboard": [[{"text": "◀️ Меню", "callback_data": "menu_main"}]]}
-        await _tg_send(chat_id,
-            f"💰 <b>Баланс</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"Спот USDT: <code>${spot_usdt:.2f}</code>\n"
-            f"Фьюч. equity: <code>${fut_eq:.2f}</code>\n"
-            f"Нереализ. PnL: <code>${fut_pnl:+.4f}</code>", kb)
-    except Exception as e:
-        await _tg_send(chat_id, f"❌ Ошибка получения баланса: {e}")
-
 async def _tg_positions(chat_id: int):
     """Открытые позиции."""
     open_trades = [t for t in trade_log if t.get("status", "") == "open"]
@@ -9177,7 +9163,6 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd.startswith("/sentiment"):  await _tg_sentiment(chat_id, raw)
         elif cmd == "/bybit":               await _tg_bybit(chat_id)
         elif cmd == "/xarb":                await _tg_xarb(chat_id)
-        elif cmd == "/balance":             await _tg_balance(chat_id)
         elif cmd == "/earn":                await _tg_earn(chat_id)
         elif cmd == "/earnplace":           await _tg_earn_place(chat_id)
         elif cmd == "/earnall":             await _tg_earn_all(chat_id)
@@ -10250,7 +10235,7 @@ body {
 <div class="header">
   <div>
     <div class="header-title">QuantumTrade AI</div>
-    <div class="header-version" id="ver-label">v10.11.1</div>
+    <div class="header-version" id="ver-label">v10.11.2</div>
   </div>
   <div style="display:flex;gap:8px;align-items:center">
     <div id="health-dot" class="status-dot"></div>
