@@ -1,5 +1,5 @@
 """
-QuantumTrade AI - FastAPI Backend v10.11.3
+QuantumTrade AI - FastAPI Backend v10.11.4
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
@@ -9,6 +9,12 @@ v10.10.3: FIX — DCI place_order: Invalid coin.
           For BuyLow direction, ByBit expects the INVESTED coin (USDT), not the
           base coin (ETH). Was passing best_option["coin"] (= "ETH").
           Fixed to best_option["invest_coin"] (= "USDT" for BuyLow, base coin for SellHigh).
+v10.11.4: FIX — DCI precision error: ByBit rejected amount with >2 decimal places (purchase_share_decimal
+          precision is illegal). Fixed: round(amount, 8) → round(amount, 2) in bybit_dci_place_order.
+          FIX — Auto-transfer condition: unified_usdt < DCI_MIN_APY_PCT/10 always False ($11 < $1.5).
+          Fixed: now checks available_for_dci = unified_usdt - trade_reserve - arb_reserve < DCI_MAX_INVEST.
+          FIX — KuCoin Earn $0: productCategory=SAVING may be wrong category. Now tries without filter
+          first (catches all), then DEMAND, then SAVING — uses first non-empty result.
 v10.11.3: FIX — ByBit Funding account ($41+) now visible and auto-transferred to Unified for DCI.
           NEW: bybit_get_funding_usdt() — reads FUND account balance via inter-transfer API.
           NEW: bybit_transfer_fund_to_unified(amount) — auto-moves idle Funding USDT to UNIFIED.
@@ -189,7 +195,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.11.0")
+app = FastAPI(title="QuantumTrade AI", version="10.11.4")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -1507,21 +1513,31 @@ async def kucoin_earn_redeem(order_id: str, amount: float) -> dict:
 
 
 async def kucoin_earn_get_hold_assets(coin: str = "USDT") -> list:
-    """KuCoin: GET /api/v1/earn/hold-assets — Current Earn positions."""
-    endpoint = f"/api/v1/earn/hold-assets?currency={coin}&productCategory=SAVING"
-    try:
-        headers = kucoin_headers("GET", endpoint)
-        async with aiohttp.ClientSession() as s:
-            r = await s.get(f"https://api.kucoin.com{endpoint}",
-                            headers=headers,
-                            timeout=aiohttp.ClientTimeout(total=10))
-            data = await r.json()
-            if data.get("code") == "200000":
-                return data.get("data", {}).get("items", [])
-            return []
-    except Exception as e:
-        log_activity(f"[earn/kc] hold assets error: {e}")
-        return []
+    """KuCoin: GET /api/v1/earn/hold-assets — Current Earn positions.
+    v10.11.4: Try without productCategory filter first (catches DEMAND/SAVING/FIXED).
+    KuCoin FlexSaving may use 'DEMAND' category, not 'SAVING' — omitting filter is safest."""
+    # Try without category filter first (broadest query)
+    endpoints_to_try = [
+        f"/api/v1/earn/hold-assets?currency={coin}",
+        f"/api/v1/earn/hold-assets?currency={coin}&productCategory=DEMAND",
+        f"/api/v1/earn/hold-assets?currency={coin}&productCategory=SAVING",
+    ]
+    for endpoint in endpoints_to_try:
+        try:
+            headers = kucoin_headers("GET", endpoint)
+            async with aiohttp.ClientSession() as s:
+                r = await s.get(f"https://api.kucoin.com{endpoint}",
+                                headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=10))
+                data = await r.json()
+                if data.get("code") == "200000":
+                    items = data.get("data", {}).get("items", [])
+                    if items:  # found something — use this
+                        log_activity(f"[earn/kc] hold_assets OK via {endpoint}: {len(items)} items")
+                        return items
+        except Exception as e:
+            log_activity(f"[earn/kc] hold assets error ({endpoint}): {e}")
+    return []
 
 
 async def bybit_earn_get_products(coin: str = "USDT") -> list:
@@ -1722,7 +1738,7 @@ async def bybit_dci_place_order(
         "category": "DualAssets",
         "productId": str(product_id),
         "coin": coin,
-        "amount": str(round(amount, 8)),
+        "amount": str(round(amount, 2)),  # v10.11.4: 2 decimal places — ByBit rejects >2 (purchase_share_decimal precision error)
         "orderType": "Stake",            # top-level, like FlexibleSaving
         "accountType": "FUND",           # required
         "orderLinkId": order_link_id,
@@ -2782,7 +2798,9 @@ async def earn_monitor_loop():
                         # Check how much is already in UNIFIED
                         unified_bals = await _dci_get_fund_balances()
                         unified_usdt = unified_bals.get("USDT", 0.0)
-                        if unified_usdt < DCI_MIN_APY_PCT / 10:  # heuristic: low unified
+                        # v10.11.4: correct condition — check available USDT after reserves
+                        available_for_dci = max(0.0, unified_usdt - ROUTER_TRADE_RESERVE_USDT - ROUTER_ARB_RESERVE_USDT)
+                        if available_for_dci < DCI_MAX_INVEST_USDT:  # need more USDT in UNIFIED for DCI
                             # Transfer most of Funding to Unified (keep $1 buffer in Funding)
                             xfer_amount = round(min(bb_funding_bal - 1.0, DCI_MAX_INVEST_USDT), 2)
                             if xfer_amount >= 5.0:
@@ -10345,7 +10363,7 @@ body {
 <div class="header">
   <div>
     <div class="header-title">QuantumTrade AI</div>
-    <div class="header-version" id="ver-label">v10.11.3</div>
+    <div class="header-version" id="ver-label">v10.11.4</div>
   </div>
   <div style="display:flex;gap:8px;align-items:center">
     <div id="health-dot" class="status-dot"></div>
