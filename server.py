@@ -12,6 +12,10 @@ v10.11.0: FEATURE — Inline Telegram Mini App (no external files):
           4. Auto-refresh every 30s. Bottom tab navigation (Dashboard/Actions/History).
           5. /api/dashboard/live now includes macro snapshot (F&G, DXY, S&P500).
           6. /app Telegram command + Mini App button in main menu.
+v10.10.2: FIX — DCI orderDirection must be INSIDE dualAssetsExtra, not top-level.
+          ByBit rejects orderDirection at top level with "Invalid parameter: order_direction".
+          Moved to dualAssetsExtra.orderDirection. Full working body:
+          {orderType:"Stake", accountType:"FUND", dualAssetsExtra:{orderDirection, selectPrice, apyE8}}
 v10.10.1: FIX — DCI place_order: Invalid parameter: order_direction
           ByBit requires orderDirection="BuyLow"/"SellHigh" at top level of
           the request body (separate from orderType="Stake"). The direction
@@ -1648,7 +1652,7 @@ async def bybit_dci_place_order(
     v10.9.23: ByBit requires dualAssetsExtra nested object.
     Top-level: orderType="Stake", accountType="FUND".
     dualAssetsExtra: selectPrice + apyE8 (DCI-specific fields).
-    v10.10.1: orderDirection="BuyLow"/"SellHigh" is required at top level.
+    v10.10.2: orderDirection moved INSIDE dualAssetsExtra — top-level rejected by ByBit.
     Fallback FUND → UNIFIED."""
     import uuid
     order_link_id = f"dci_{uuid.uuid4().hex[:16]}"
@@ -1658,10 +1662,10 @@ async def bybit_dci_place_order(
         "coin": coin,
         "amount": str(round(amount, 8)),
         "orderType": "Stake",            # top-level, like FlexibleSaving
-        "orderDirection": direction,     # v10.10.1: "BuyLow" or "SellHigh" — required
         "accountType": "FUND",           # required
         "orderLinkId": order_link_id,
         "dualAssetsExtra": {             # v10.9.23: required nested object
+            "orderDirection": direction, # v10.10.2: moved INSIDE dualAssetsExtra (top-level rejected)
             "selectPrice": str(select_price),
             "apyE8": str(apy_e8),
         },
