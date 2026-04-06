@@ -7192,9 +7192,9 @@ async def fetch_whale_movements() -> dict:
 
 
 async def send_whale_alert_to_channel(whale_data: dict) -> bool:
-    """v10.17.0: Send formatted whale alert to Telegram WHALE_CHANNEL_ID.
+    """v10.17.1: Send Duet-format whale alert to WHALE_CHANNEL_ID.
+    Two-layer format: simple explanation for beginners + pro data block.
     whale_data: {symbol, amount_usd, direction, type, ...}
-    Formats: 🐋 Whale Alert! | 💰 $2.5M BTC | 📤 Binance → Unknown | 🔴 Bearish signal
     """
     if not WHALE_CHANNEL_ID or not BOT_TOKEN:
         return False
@@ -7211,18 +7211,77 @@ async def send_whale_alert_to_channel(whale_data: dict) -> bool:
         if time.time() - last_alert < _whale_alert_cooldown_secs:
             return False
 
-        # Format emoji + sentiment
-        sentiment_emoji = "🔴" if direction == "SELL" else "🟢" if direction == "BUY" else "⚪"
-        sentiment_txt = "Медвежий сигнал (продажа)" if direction == "SELL" else "Бычий сигнал (покупка)" if direction == "BUY" else "Нейтральный"
+        # ── Human-readable coin name ──
+        coin_names = {
+            "BTC": "Bitcoin", "ETH": "Ethereum", "SOL": "Solana",
+            "XRP": "XRP (Ripple)", "BNB": "BNB", "ADA": "Cardano",
+            "DOGE": "Dogecoin", "AVAX": "Avalanche", "LINK": "Chainlink",
+        }
+        coin = symbol.replace("-USDT","").replace("USDT","")
+        coin_full = coin_names.get(coin, coin)
 
-        # Format message
+        # ── Analogies for amount ──
+        if amount_usd >= 10_000_000:
+            analogy = f"это как купить небольшой торговый центр"
+        elif amount_usd >= 1_000_000:
+            analogy = f"это как купить ~{int(amount_usd/150000)} квартир в Москве"
+        elif amount_usd >= 100_000:
+            analogy = f"это как купить {int(amount_usd/30000)} автомобиль(-я)"
+        else:
+            analogy = f"это серьёзная сумма для одной сделки"
+
+        # ── Sentiment blocks ──
+        if direction == "BUY":
+            sentiment_emoji = "🟢"
+            simple_sentiment = "Кто-то <b>покупает</b> — обычно хороший знак для цены"
+            pro_signal = "🟢 Бычий сигнал (BUY flow)"
+        elif direction == "SELL":
+            sentiment_emoji = "🔴"
+            simple_sentiment = "Кто-то <b>продаёт крупно</b> — цена может упасть"
+            pro_signal = "🔴 Медвежий сигнал (SELL pressure)"
+        else:
+            sentiment_emoji = "⚪"
+            simple_sentiment = "Крупный перевод — возможно готовятся к сделке"
+            pro_signal = "⚪ Нейтральный (transfer/internal)"
+
+        # ── Get current F&G for context ──
+        fg_ctx = ""
+        try:
+            fg_now = await get_fear_greed()
+            fg_v = fg_now.get("value", 0)
+            if fg_v <= 25:
+                fg_ctx = f"F&G: {fg_v} 😱 Extreme Fear (рынок в панике — киты часто покупают на дне)"
+            elif fg_v <= 45:
+                fg_ctx = f"F&G: {fg_v} 😟 Fear (осторожный рынок)"
+            elif fg_v <= 55:
+                fg_ctx = f"F&G: {fg_v} 😐 Neutral"
+            elif fg_v <= 75:
+                fg_ctx = f"F&G: {fg_v} 😄 Greed (рынок жадный)"
+            else:
+                fg_ctx = f"F&G: {fg_v} 🤑 Extreme Greed (перегрев!)"
+        except Exception:
+            fg_ctx = ""
+
+        # ── Duet format message ──
         msg = (
-            f"🐋 <b>Whale Alert!</b>\n\n"
-            f"💰 <b>${amount_usd:,.0f}</b> {symbol}\n"
-            f"📊 Тип: {move_type.replace('_', ' ').title()}\n"
-            f"{sentiment_emoji} <b>{sentiment_txt}</b>\n"
-            f"\n"
-            f"<i>Крупный капитал в движении. Следите за рынком.</i>"
+            f"🐳 <b>Кто-то переводит БОЛЬШИЕ деньги!</b>\n\n"
+            f"Только что прошла сделка на <b>${amount_usd:,.0f}</b> в {coin_full} — "
+            f"{analogy}.\n\n"
+            f"💡 <b>Что это значит?</b>\n"
+            f"Крупные инвесторы («киты») двигают рынок. "
+            f"{simple_sentiment}.\n"
+            f"Наш ИИ отслеживает такие движения в реальном времени.\n\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"📊 <b>Для профи:</b>\n"
+            f"• Актив: <code>{symbol}</code>  |  Объём: <code>${amount_usd:,.0f}</code>\n"
+            f"• Тип: <code>{move_type.replace('_',' ').title()}</code>\n"
+            f"• {pro_signal}\n"
+        )
+        if fg_ctx:
+            msg += f"• {fg_ctx}\n"
+        msg += (
+            f"━━━━━━━━━━━━━━\n"
+            f"<i>⚠️ Не является финансовым советом.</i>"
         )
 
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -7256,6 +7315,277 @@ async def send_whale_alert_to_channel(whale_data: dict) -> bool:
     except Exception as e:
         log_activity(f"[whale_alert] send error: {e}")
         return False
+
+
+# ── v10.17.1: Channel signal + educational posts ──────────────────────────────
+
+_channel_last_signal_ts: float = 0.0   # anti-spam for signal posts
+
+async def send_signal_to_channel(symbol: str, price: float, q_score: float,
+                                  confidence: float, fg_val: int,
+                                  pattern: str, side: str = "BUY") -> bool:
+    """v10.17.1: Send Duet-format BUY/SELL signal to WHALE_CHANNEL_ID.
+    Simple explanation for beginners + pro data block.
+    Anti-spam: max 1 signal post per 30 min."""
+    global _channel_last_signal_ts
+    if not WHALE_CHANNEL_ID or not BOT_TOKEN:
+        return False
+    if time.time() - _channel_last_signal_ts < 1800:   # 30 min cooldown
+        return False
+
+    coin = symbol.replace("-USDT", "").replace("USDT", "")
+    coin_names = {
+        "BTC": "Bitcoin", "ETH": "Ethereum", "SOL": "Solana",
+        "XRP": "XRP (Ripple)", "BNB": "BNB", "DOGE": "Dogecoin",
+        "AVAX": "Avalanche", "LINK": "Chainlink", "FIL": "Filecoin",
+    }
+    coin_full = coin_names.get(coin, coin)
+
+    # F&G simple explanation
+    if fg_val <= 25:
+        fg_simple = f"Рынок сейчас в страхе (F&G={fg_val}) — бот нашёл точку входа на «дне»"
+    elif fg_val <= 45:
+        fg_simple = f"Рынок осторожен (F&G={fg_val}) — сигнал против паники"
+    elif fg_val <= 75:
+        fg_simple = f"Рынок нейтральный/жадный (F&G={fg_val})"
+    else:
+        fg_simple = f"Рынок перегрет (F&G={fg_val}) — бот работает с повышенной осторожностью"
+
+    # Q-Score bar (visual)
+    filled = int(q_score / 10)
+    q_bar = "█" * filled + "░" * (10 - filled)
+
+    # Pattern to human
+    pattern_map = {
+        "uptrend_breakout": "прорыв вверх 📈",
+        "uptrend": "восходящий тренд 📈",
+        "oversold_bounce": "отскок от низов 🔄",
+        "consolidation": "боковик, готовится к движению ↔️",
+        "downtrend": "нисходящий тренд 📉",
+    }
+    pattern_human = pattern_map.get(pattern, pattern)
+
+    if side == "BUY":
+        headline = f"🚀 ИИ нашёл момент для покупки {coin_full}!"
+        simple_action = (
+            f"Наш алгоритм проанализировал 15+ источников данных и считает, "
+            f"что сейчас хороший момент чтобы <b>купить {coin_full}</b> по цене "
+            f"<b>${price:,.0f}</b>.\n\n"
+            f"💡 <b>Как это работает?</b>\n"
+            f"Бот оценивает монету по 100-балльной шкале. Минимум для сделки — 77 баллов. "
+            f"Сейчас {coin_full} набрал <b>{q_score:.0f}/100</b>. "
+            f"{fg_simple}."
+        )
+    else:
+        headline = f"⚠️ ИИ видит зону продажи {coin_full}"
+        simple_action = (
+            f"Алгоритм сигнализирует об ослаблении {coin_full}. "
+            f"Возможен откат цены от <b>${price:,.0f}</b>.\n\n"
+            f"💡 Это не значит «всё пропало» — рынок всегда движется волнами. "
+            f"{fg_simple}."
+        )
+
+    msg = (
+        f"{headline}\n\n"
+        f"{simple_action}\n\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"📊 <b>Для профи:</b>\n"
+        f"• {coin}/USDT: <code>${price:,.2f}</code>\n"
+        f"• Q-Score: <code>{q_score:.0f}/100</code>  [{q_bar}]\n"
+        f"• Уверенность: <code>{int(confidence*100)}%</code>  |  F&G: <code>{fg_val}</code>\n"
+        f"• Паттерн: {pattern_human}\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"<i>⚠️ Бот торгует автоматически. Это не финансовый совет.</i>"
+    )
+
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={"chat_id": WHALE_CHANNEL_ID, "text": msg,
+                      "parse_mode": "HTML", "disable_web_page_preview": True},
+                timeout=aiohttp.ClientTimeout(total=8)
+            )
+            data = await r.json()
+        if data.get("ok"):
+            _channel_last_signal_ts = time.time()
+            log_activity(f"[channel] ✅ signal post: {side} {symbol} Q={q_score:.0f}")
+            return True
+        log_activity(f"[channel] signal post error: {data.get('description','?')}")
+    except Exception as e:
+        log_activity(f"[channel] send_signal error: {e}")
+    return False
+
+
+# ── Daily educational posts — rotating 7 topics ─────────────────────────────
+
+_EDU_POSTS = [
+    # 0 — Monday
+    {
+        "title": "📖 Понедельник: Крипто для чайников — что такое Bitcoin?",
+        "simple": (
+            "Bitcoin — это цифровые деньги, которые существуют только в интернете. "
+            "Их нельзя потрогать, но ими можно платить и зарабатывать.\n\n"
+            "Представь: обычные деньги печатает государство и их можно напечатать сколько угодно. "
+            "Bitcoin никто не контролирует — их максимум 21 миллион штук. "
+            "Это как золото: чем меньше осталось, тем дороже."
+        ),
+        "pro": "Fixed supply 21M BTC. Halving каждые ~4 года → инфляция ~1.7%/год. Dominance index ~56%. Store of value narrative."
+    },
+    # 1 — Tuesday
+    {
+        "title": "😱 Вторник: Индекс Страха и Жадности — что это?",
+        "simple": (
+            "Каждый день мы публикуем цифру от 0 до 100. "
+            "Это «настроение» всего крипторынка прямо сейчас.\n\n"
+            "0-25 = все паникуют и продают (страх)\n"
+            "50 = спокойно, нейтрально\n"
+            "75-100 = все хотят купить и боятся пропустить (жадность)\n\n"
+            "Секрет профессионалов: лучшие сделки часто при крайнем страхе — "
+            "«покупай когда все продают»."
+        ),
+        "pro": "CNN Fear & Greed Index. Компоненты: volatility 25%, momentum 25%, social 15%, surveys 15%, dominance 10%, options 10%. Contrarian indicator."
+    },
+    # 2 — Wednesday
+    {
+        "title": "🐳 Среда: Кто такие «киты» и почему они важны?",
+        "simple": (
+            "«Кит» в крипте — это инвестор с очень большими деньгами. "
+            "Когда кит покупает или продаёт — рынок качается.\n\n"
+            "Представь бассейн (рынок) и кита. Когда кит прыгает — всех обдаёт волной. "
+            "Наш бот следит за движениями китов 24/7 и публикует алерты "
+            "как только что-то происходит."
+        ),
+        "pro": "On-chain analysis: wallets >1000 BTC = whale. Blockchair API. Mempool tracking. Exchange inflows = sell pressure. Exchange outflows = accumulation (bullish)."
+    },
+    # 3 — Thursday
+    {
+        "title": "💎 Четверг: DCI — как зарабатывать 100-900% годовых?",
+        "simple": (
+            "DCI (Dual Currency Investment) — это как вклад в банке, только в 50-100 раз выгоднее.\n\n"
+            "Ты кладёшь деньги на срок (1-7 дней). Если цена монеты упадёт — "
+            "ты купишь её дешевле и в плюсе. Если не упадёт — получишь обратно "
+            "деньги плюс огромный процент.\n\n"
+            "Звучит сложно? Наш бот делает это автоматически, пока ты спишь 😴"
+        ),
+        "pro": "ByBit Advanced Earn. DualAssets BuyLow/SellHigh. APY 100-900%. Principal-protected. Strike price = PUT option logic. Gamma scalping альтернатива."
+    },
+    # 4 — Friday
+    {
+        "title": "📊 Пятница: Итоги недели от QuantumTrade AI",
+        "simple": (
+            "Каждую пятницу подводим итоги — что произошло с рынком "
+            "и как отработал наш бот на этой неделе.\n\n"
+            "Данные обновляются автоматически из нашей торговой системы."
+        ),
+        "pro": "Weekly PnL snapshot. Win rate. Top performing signals. Market regime (trending/sideways/volatile)."
+    },
+    # 5 — Saturday
+    {
+        "title": "🤖 Суббота: Q-Score — как ИИ принимает решения?",
+        "simple": (
+            "Q-Score — это наша оценка от 0 до 100. Чем выше — тем лучше момент для покупки.\n\n"
+            "Что влияет на оценку:\n"
+            "• Технический анализ (графики цены) — 25%\n"
+            "• Настроение рынка и китов — 20%\n"
+            "• Что говорят в соцсетях о монете — 15%\n"
+            "• Индекс страха/жадности — 10%\n"
+            "• ИИ-анализ 15 агентов MiroFish — остальное\n\n"
+            "Бот покупает только при Q ≥ 77. Сейчас это правило защищает от убыточных сделок."
+        ),
+        "pro": "Q-Score = weighted ensemble: TA indicators 25%, macro context 20%, whale flow 10%, F&G 10%, MiroFish consensus 15 agents, Polymarket prediction markets, QAOA quantum bias. Min threshold 77/100."
+    },
+    # 6 — Sunday
+    {
+        "title": "🔒 Воскресенье: Безопасность в крипте — 5 правил",
+        "simple": (
+            "Крипта — это свобода, но и риск. Вот 5 простых правил:\n\n"
+            "1️⃣ Никому не давай свои приватные ключи или seed-фразу\n"
+            "2️⃣ Инвестируй только то, что не страшно потерять\n"
+            "3️⃣ Не верь обещаниям «гарантированной прибыли 1000%»\n"
+            "4️⃣ Диверсифицируй — не клади все яйца в одну корзину\n"
+            "5️⃣ Используй 2FA везде где возможно\n\n"
+            "Наш бот торгует автоматически с защитными стопами. "
+            "Максимальный риск на сделку — 8% от баланса."
+        ),
+        "pro": "Position sizing: RISK_PER_TRADE=0.08. Stop-loss 2%. Auto stop при -5% equity drawdown. Не используем >3x leverage. Never trade with borrowed money."
+    },
+]
+
+_edu_last_day: int = -1   # track last posted weekday
+
+async def send_daily_educational_post() -> bool:
+    """v10.17.1: Post daily educational content to WHALE_CHANNEL_ID.
+    Rotates through 7 topics (Mon–Sun). Fires once per day at ~06:00 UTC."""
+    global _edu_last_day
+    if not WHALE_CHANNEL_ID or not BOT_TOKEN:
+        return False
+    weekday = datetime.utcnow().weekday()   # 0=Mon, 6=Sun
+    if weekday == _edu_last_day:
+        return False   # already posted today
+
+    post = _EDU_POSTS[weekday % len(_EDU_POSTS)]
+
+    # For Friday — inject real bot stats
+    live_stats = ""
+    if weekday == 4:
+        try:
+            wins = _perf_stats.get("wins", 0)
+            losses = _perf_stats.get("losses", 0)
+            total_pnl = _perf_stats.get("total_pnl", 0)
+            winrate = wins / (wins + losses) * 100 if (wins + losses) > 0 else 0
+            earn_total = sum(p.get("amount", 0) for p in _earn_positions)
+            live_stats = (
+                f"\n\n📈 <b>Статистика бота за неделю:</b>\n"
+                f"• Сделок: <code>{wins + losses}</code>  |  "
+                f"Win rate: <code>{winrate:.0f}%</code>\n"
+                f"• PnL: <code>${total_pnl:+.2f}</code>\n"
+                f"• В Earn/DCI: <code>${earn_total:.2f}</code> работает пассивно"
+            )
+        except Exception:
+            pass
+
+    msg = (
+        f"{post['title']}\n\n"
+        f"{post['simple']}"
+        f"{live_stats}\n\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"🔬 <b>Для профи:</b>\n"
+        f"<i>{post['pro']}</i>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"📢 Подписывайся — публикуем сигналы и алерты 24/7"
+    )
+
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={"chat_id": WHALE_CHANNEL_ID, "text": msg,
+                      "parse_mode": "HTML", "disable_web_page_preview": True},
+                timeout=aiohttp.ClientTimeout(total=8)
+            )
+            data = await r.json()
+        if data.get("ok"):
+            _edu_last_day = weekday
+            log_activity(f"[channel] ✅ daily edu post: weekday={weekday}")
+            return True
+        log_activity(f"[channel] edu post error: {data.get('description','?')}")
+    except Exception as e:
+        log_activity(f"[channel] send_daily_edu error: {e}")
+    return False
+
+
+async def channel_edu_loop():
+    """v10.17.1: Daily educational post loop — fires at 06:00 UTC (09:00 Moscow)."""
+    await asyncio.sleep(60)   # wait for startup
+    while True:
+        try:
+            now = datetime.utcnow()
+            if now.hour == 6 and now.minute < 5:
+                await send_daily_educational_post()
+        except Exception as e:
+            log_activity(f"[channel_edu_loop] error: {e}")
+        await asyncio.sleep(300)   # check every 5 min
 
 
 # ── v9.2: Copy-Trading Intelligence (ByBit Leaderboard) ───────────────────────
@@ -8577,6 +8907,8 @@ async def auto_trade_cycle():
         sell_thresh = 100 - MIN_Q_SCORE  # v7.2.2: динамический порог
         if q >= MIN_Q_SCORE and last_q_score < MIN_Q_SCORE:
             await notify(f"🚀 <b>Q-Score {q:.0f} — сигнал BUY!</b> BTC <code>${btc_price:,.0f}</code> · <code>{int(conf*100)}%</code> · F&G={fg_val}")
+            if WHALE_CHANNEL_ID:
+                await send_signal_to_channel("BTC-USDT", btc_price, q, conf, fg_val, btc_signal.get("pattern", ""), "BUY")
         elif q <= sell_thresh and last_q_score > sell_thresh:
             # v7.2.2: антиспам — не чаще раза в 5 мин
             now = time.time()
@@ -12166,6 +12498,7 @@ async def startup():
     asyncio.create_task(airdrop_digest_loop())
     asyncio.create_task(crypto_digest_loop())      # v10.15.0: AI Content Factory
     asyncio.create_task(yield_router_v2_loop())    # v10.16.0: Yield Router авторотация
+    asyncio.create_task(channel_edu_loop())        # v10.17.0: Duet Channel — ежедневные образовательные посты
     asyncio.create_task(auto_scanner_loop())  # v7.4.4: health scanner
     asyncio.create_task(agency_agent_loop())  # v10.5.0: Agency Agents — 5 AI agents
     await get_airdrops()  # прогреваем кеш при старте
