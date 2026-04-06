@@ -2062,6 +2062,25 @@ async def dci_auto_place_idle() -> dict:
         usdt_free = fund_balances.get("USDT", 0.0)
         log_activity(f"[dci] auto check: {len(products)} products, USDT=${usdt_free:.2f}, direction={direction}, F&G={fg_val}")
 
+        # v10.12.4: check existing active DCI positions — report locked capital clearly
+        try:
+            _bb_active_pos = await bybit_dci_get_positions()
+            _active_buylows = [p for p in _bb_active_pos
+                               if str(p.get("status", "")).lower() in ("active", "processing", "subscribing")]
+            if _active_buylows:
+                _locked_usdt = sum(float(p.get("amount", p.get("qty", 0))) for p in _active_buylows)
+                log_activity(f"[dci] {len(_active_buylows)} active DCI position(s), ${_locked_usdt:.2f} locked")
+                # Only block if free capital is too low for any DCI (< $5 buffer)
+                if usdt_free < 5.0 and direction == "BuyLow":
+                    return {
+                        "placed": [], "skipped": len(products),
+                        "reason": f"capital_locked_in_active_dci: {len(_active_buylows)} position(s) (${_locked_usdt:.2f} locked), free=${usdt_free:.2f}",
+                        "direction": direction, "fg_val": fg_val,
+                        "active_positions": len(_active_buylows),
+                    }
+        except Exception as _ck_e:
+            log_activity(f"[dci] active-check error: {_ck_e}")
+
         # Step 3.5 (v10.9.13): If USDT in FUND is insufficient for BuyLow,
         # try to redeem from ByBit Flex Savings first.
         # All ByBit USDT may be locked in FlexibleSaving → FUND shows $0.
@@ -2271,6 +2290,15 @@ async def dci_auto_place_idle() -> dict:
             invest_amount = max(invest_amount, _attempt_opt["min_amount"])
             invest_amount = round(invest_amount, 8)
 
+            # v10.12.4: skip candidate if minimum investment exceeds available capital
+            if _attempt_opt["direction"] == "BuyLow" and invest_amount > capital + 0.5:
+                log_activity(
+                    f"[dci] ⏭ skipping {_attempt_opt['product_id']}: "
+                    f"need ${invest_amount:.2f} but only ${capital:.2f} free"
+                )
+                _last_err = f"insufficient_capital: need ${invest_amount:.2f}, have ${capital:.2f}"
+                continue
+
             # v10.12.2: re-fetch fresh quote right before placing (ByBit updates selectPrice every ~30s)
             _opt_apy = _attempt_opt.get("apy_pct", 0)
             if exch == "bybit":
@@ -2333,10 +2361,10 @@ async def dci_auto_place_idle() -> dict:
                 return {"placed": [], "best_apy": _opt_apy, "skipped": len(products) - 1,
                         "reason": f"API error: {_last_err}", "direction": direction, "fg_val": fg_val}
 
-        # All candidates exhausted (all VIP-restricted or no candidates)
+        # All candidates exhausted (VIP-restricted, insufficient capital, or no candidates)
         log_activity(f"[dci] all candidates exhausted. last_err={_last_err}")
         return {"placed": [], "best_apy": best_apy, "skipped": len(products),
-                "reason": f"all_candidates_vip_restricted: {_last_err}", "direction": direction, "fg_val": fg_val}
+                "reason": f"all_candidates_skipped: {_last_err}", "direction": direction, "fg_val": fg_val}
 
     except Exception as e:
         log_activity(f"[dci] dci_auto_place_idle error: {e}")
