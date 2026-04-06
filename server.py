@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.17.3")
+app = FastAPI(title="QuantumTrade AI", version="10.19.0")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -1454,6 +1454,7 @@ _earn_stats = {
 }
 _earn_positions: list = []   # [{exchange, product_id, coin, amount, apr, subscribed_at}]
 _earn_rates_cache = {"ts": 0, "data": {}}  # cache APR data for 10 min
+_bybit_fund_balance: float = 0.0  # v10.19.0: cached FUND account balance
 # v10.11.5 C-08: Locks for shared mutable state (earn_monitor_loop + dci_auto_place + Telegram handlers)
 _earn_lock = asyncio.Lock()
 _dci_lock  = asyncio.Lock()
@@ -2210,7 +2211,7 @@ async def bybit_earn_get_positions(coin: str = "USDT") -> list:
     """ByBit: GET /v5/earn/position — Current Earn positions.
     v10.11.5 H-15: ByBit returns totalAmount/claimableAmount, not just 'amount'.
     Try multiple field names to normalise."""
-    for cat in ["FlexibleSaving", "Flexible", "flexibleSaving"]:
+    for cat in ["FlexibleSaving", "Flexible", "flexibleSaving", "Simple", "simple", "FLEX"]:
         res = await bybit_request("GET", "/v5/earn/position", {
             "category": cat, "coin": coin
         })
@@ -3793,10 +3794,11 @@ async def earn_monitor_loop():
                 # Funds deposited via blockchain land in FUND, not UNIFIED.
                 # v10.17.1: 4h cooldown — prevents ping-pong when DCI (Step 3.6) moves UNIFIED→FUND
                 # and earn_monitor immediately moves it back.
-                global _last_fund_to_unified_ts
+                global _last_fund_to_unified_ts, _bybit_fund_balance
                 try:
                     _now_ts = time.time()
                     bb_funding_bal = await bybit_get_funding_usdt()
+                    _bybit_fund_balance = bb_funding_bal  # v10.19.0: cache for portfolio display
                     _fund_cooldown_ok = (_now_ts - _last_fund_to_unified_ts) > 14400  # 4 hours
                     if bb_funding_bal >= 5.0 and _fund_cooldown_ok:
                         # Check how much is already in UNIFIED
@@ -3951,6 +3953,17 @@ async def earn_monitor_loop():
                 try:
                     kc_holds = await kucoin_earn_get_hold_assets("USDT")
                     bb_holds = await bybit_earn_get_positions("USDT")
+                    # v10.19.0: fallback — query without category if all typed queries return empty
+                    if not bb_holds:
+                        _fb_res = await bybit_request("GET", "/v5/earn/position", {"coin": "USDT"})
+                        if _fb_res.get("success"):
+                            _fb_items = _fb_res["data"].get("list", [])
+                            for _it in _fb_items:
+                                if not _it.get("amount"):
+                                    _it["amount"] = (_it.get("totalAmount") or _it.get("claimableAmount") or _it.get("holdAmount") or 0)
+                            if _fb_items:
+                                bb_holds = _fb_items
+                                log_activity(f"[earn_mon] 🔍 BB Earn via no-category fallback: {len(_fb_items)} pos")
                     total_kc = sum(float(h.get("holdAmount", h.get("amount", 0))) for h in kc_holds)
                     total_bb = sum(float(h.get("amount", h.get("holdAmount", 0))) for h in bb_holds)
                     _earn_stats["kucoin_subscribed"] = round(total_kc, 2)
@@ -11841,6 +11854,9 @@ async def _tg_router(chat_id: int):
         except Exception:
             pass
 
+    bb_fund = await bybit_get_funding_usdt()  # v10.19.0: FUND balance
+    bb_total = round(bb_usdt + bb_fund, 2)
+
     # Earn positions
     earn_kc = sum(p["amount"] for p in _earn_positions if p["exchange"] == "kucoin")
     earn_bb = sum(p["amount"] for p in _earn_positions if p["exchange"] == "bybit")
@@ -11851,7 +11867,7 @@ async def _tg_router(chat_id: int):
     trades_value = sum(t.get("price", 0) * t.get("size", 0) for t in open_trades)
 
     # Calculate total portfolio
-    total_portfolio = kc_usdt + bb_usdt + earn_total + trades_value
+    total_portfolio = kc_usdt + bb_total + earn_total + trades_value
 
     # Last routing actions
     last_actions = ""
@@ -11876,7 +11892,7 @@ async def _tg_router(chat_id: int):
         f"{'═' * 30}\n\n"
         f"💰 <b>Портфель:</b> <code>${total_portfolio:.2f}</code>\n"
         f"  KuCoin USDT: <code>${kc_usdt:.2f}</code>\n"
-        f"  ByBit USDT: <code>${bb_usdt:.2f}</code>\n"
+        f"  ByBit USDT: <code>${bb_total:.2f}</code> (U=${bb_usdt:.2f}/F=${bb_fund:.2f})\n"
         f"  В Earn: <code>${earn_total:.2f}</code> (KC=${earn_kc:.2f} BB=${earn_bb:.2f})\n"
         f"  В сделках: <code>${trades_value:.2f}</code> ({len(open_trades)} позиций)\n\n"
         f"📊 <b>Статистика:</b>\n"
@@ -13635,6 +13651,8 @@ async def earn_status_api():
         "positions": _earn_positions,
         "best_rate": best,
         "diagnostics": diagnostics,
+        "bybit_fund_usdt": round(_bybit_fund_balance, 2),
+        "bybit_total_usdt": round(_earn_stats.get("bybit_subscribed", 0) + _bybit_fund_balance, 2),
         "config": {
             "min_idle_usdt": EARN_MIN_IDLE_USDT,
             "reserve_usdt": EARN_RESERVE_USDT,
@@ -14616,10 +14634,11 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.9.4",
+        "version": "10.19.0",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
+        "bybit_fund_usdt": round(_bybit_fund_balance, 2),
         "quantum_chip": "Wukong_180" if _qcloud_ready else "CPU_simulator",
         "timestamp": datetime.utcnow().isoformat(),
     }
@@ -15587,7 +15606,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.9.4",
+        "version": "10.19.0",
     }
 
 @app.get("/api/setup-webhook")
@@ -15605,6 +15624,27 @@ async def get_webhook_info():
 
 @app.get("/api/balance")
 async def api_balance(_auth=Depends(verify_api_key)): return await get_balance()  # v7.3.3: auth
+
+@app.get("/api/bybit/balance")
+async def api_bybit_balance(_auth=Depends(verify_api_key)):
+    """v10.19.0: ByBit full balance — FUND + UNIFIED + Earn + DCI."""
+    unified = await bybit_get_balance()
+    fund_usdt = await bybit_get_funding_usdt()
+    earn_pos = await bybit_earn_get_positions("USDT")
+    earn_amt = round(sum(float(p.get("amount", 0)) for p in earn_pos), 2)
+    dci_pos = _dci_stats.get("positions", [])
+    dci_amt = round(sum(float(p.get("amount", 0)) for p in dci_pos), 2)
+    return {
+        "unified_usdt": unified.get("total_usdt", 0),
+        "fund_usdt": round(fund_usdt, 2),
+        "earn_usdt": earn_amt,
+        "dci_usdt": dci_amt,
+        "total_usdt": round(unified.get("total_usdt", 0) + fund_usdt + earn_amt + dci_amt, 2),
+        "unified_balances": unified.get("balances", {}),
+        "earn_positions": earn_pos[:5],
+        "dci_count": len(dci_pos),
+        "success": unified.get("success", False),
+    }
 
 @app.get("/api/futures/balance")
 async def api_futures_balance(_auth=Depends(verify_api_key)): return await get_futures_balance()  # v7.3.3
@@ -15759,7 +15799,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.9.4",
+        "version": "10.19.0",
     }
 
 @app.get("/api/dashboard")
