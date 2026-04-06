@@ -160,6 +160,19 @@ async def _create_tables():
                 extra JSONB DEFAULT '{}'
             );
             CREATE INDEX IF NOT EXISTS idx_whale_ts ON whale_events(ts);
+
+            -- v10.12.7: Funding Rate Arbitrage open positions (survives server restart)
+            CREATE TABLE IF NOT EXISTS funding_arb_positions (
+                id SERIAL PRIMARY KEY,
+                symbol VARCHAR(32) UNIQUE NOT NULL,
+                perp_qty DOUBLE PRECISION NOT NULL,
+                spot_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+                entry_price DOUBLE PRECISION,
+                usdt_deployed DOUBLE PRECISION,
+                opened_at DOUBLE PRECISION,
+                funding_collected DOUBLE PRECISION DEFAULT 0,
+                last_funding_ts DOUBLE PRECISION DEFAULT 0
+            );
         """)
         print("[db] tables ready ✅")
 
@@ -937,3 +950,62 @@ async def get_table_sizes() -> dict:
     except Exception as e:
         print(f"[db] get_table_sizes error: {e}")
         return {}
+
+
+# ── v10.12.7: Funding Rate Arbitrage position persistence ─────────────────────
+
+async def save_funding_arb_position(pos: dict) -> bool:
+    """Upsert a funding arb position by symbol."""
+    if not is_ready():
+        return False
+    try:
+        async with _pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO funding_arb_positions
+                    (symbol, perp_qty, spot_qty, entry_price, usdt_deployed,
+                     opened_at, funding_collected, last_funding_ts)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                ON CONFLICT (symbol) DO UPDATE SET
+                    perp_qty         = EXCLUDED.perp_qty,
+                    spot_qty         = EXCLUDED.spot_qty,
+                    entry_price      = EXCLUDED.entry_price,
+                    usdt_deployed    = EXCLUDED.usdt_deployed,
+                    opened_at        = EXCLUDED.opened_at,
+                    funding_collected= EXCLUDED.funding_collected,
+                    last_funding_ts  = EXCLUDED.last_funding_ts
+            """,
+            pos["symbol"], pos["perp_qty"], pos.get("spot_qty", 0),
+            pos.get("entry_price", 0), pos.get("usdt_deployed", 0),
+            pos.get("opened_at", 0), pos.get("funding_collected", 0),
+            pos.get("last_funding_ts", 0))
+        return True
+    except Exception as e:
+        print(f"[db] save_funding_arb_position error: {e}")
+        return False
+
+
+async def load_funding_arb_positions() -> list:
+    """Load all open funding arb positions on startup."""
+    if not is_ready():
+        return []
+    try:
+        async with _pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM funding_arb_positions ORDER BY opened_at")
+            return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[db] load_funding_arb_positions error: {e}")
+        return []
+
+
+async def delete_funding_arb_position(symbol: str) -> bool:
+    """Remove closed position from DB."""
+    if not is_ready():
+        return False
+    try:
+        async with _pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM funding_arb_positions WHERE symbol = $1", symbol)
+        return True
+    except Exception as e:
+        print(f"[db] delete_funding_arb_position error: {e}")
+        return False

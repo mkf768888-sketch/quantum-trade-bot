@@ -3456,7 +3456,23 @@ FUNDING_ARB_MIN_RATE = float(os.getenv("FUNDING_ARB_MIN_RATE", "0.0001"))  # 0.0
 FUNDING_ARB_MAX_USDT = float(os.getenv("FUNDING_ARB_MAX_USDT", "30.0"))    # max USDT per position
 FUNDING_ARB_SYMBOLS  = ["ETH-USDT", "SOL-USDT", "BTC-USDT"]               # checked in priority order
 
-_funding_arb_positions: list = []  # [{symbol, perp_qty, usdt_deployed, entry_price, opened_at, funding_collected}]
+# v10.12.7: ByBit perpetual qty step sizes (base coin precision per symbol)
+_BYBIT_PERP_QTY_STEPS: dict = {
+    "ETHUSDT":  0.01,   "BTCUSDT":  0.001,  "SOLUSDT":  0.1,
+    "BNBUSDT":  0.01,   "XRPUSDT":  1.0,    "DOGEUSDT": 10.0,
+}
+
+import math as _math
+
+def _round_perp_qty(symbol: str, qty: float) -> float:
+    """v10.12.7: Round qty DOWN to the valid lot step for ByBit perpetual."""
+    bb_sym = symbol.replace("-", "")
+    step = _BYBIT_PERP_QTY_STEPS.get(bb_sym, 0.01)
+    rounded = _math.floor(qty / step) * step
+    # keep at most 6 decimal places to avoid float noise
+    return round(rounded, 6)
+
+_funding_arb_positions: list = []  # [{symbol, perp_qty, spot_qty, usdt_deployed, entry_price, opened_at, funding_collected}]
 _funding_arb_stats: dict = {
     "last_check": 0.0, "total_collected": 0.0,
     "open_positions": 0, "checks": 0, "errors": 0,
@@ -3506,7 +3522,10 @@ async def bybit_place_perp_short(symbol: str, usdt_amount: float) -> dict:
         mark_price = float(ticker["data"]["list"][0].get("markPrice", 0))
         if mark_price <= 0:
             return {"success": False, "error": "invalid mark price"}
-        qty = round(usdt_amount / mark_price, 6)
+        # v10.12.7: use correct lot step per symbol (not naive round-6)
+        qty = _round_perp_qty(symbol, usdt_amount / mark_price)
+        if qty <= 0:
+            return {"success": False, "error": f"qty too small after rounding (mark={mark_price}, usdt={usdt_amount})"}
         params = {
             "category": "linear", "symbol": bb_symbol,
             "side": "Sell", "orderType": "Market",
@@ -3541,37 +3560,63 @@ async def bybit_close_perp_short(symbol: str, qty: float) -> dict:
 
 
 async def funding_arb_open(symbol: str, usdt_amount: float) -> dict:
-    """v10.12.5: Open funding arb: buy spot + short perp = delta neutral."""
+    """v10.12.7: Open funding arb: buy spot + short perp = delta neutral.
+    Fixes vs v10.12.5:
+    - Rollback sells exact spot_qty bought, not all coin balance
+    - Records spot_qty in position dict
+    - Persists position to PostgreSQL immediately
+    """
     if not FUNDING_ARB_ENABLED:
         return {"success": False, "reason": "FUNDING_ARB_ENABLED=false"}
     if any(p["symbol"] == symbol for p in _funding_arb_positions):
         return {"success": False, "reason": f"position_already_open: {symbol}"}
     try:
         half = round(usdt_amount / 2, 2)
+        coin = symbol.replace("-USDT", "")
+
+        # v10.12.7: measure coin balance BEFORE buy to compute actual qty received
+        bal_before = await bybit_get_balance()
+        qty_before = float(bal_before.get("balances", {}).get(coin, {}).get("available", 0)) if bal_before.get("success") else 0.0
+
         # Step 1: buy spot
         spot_res = await bybit_place_spot_order(symbol, "Buy", half, "Market")
         if not spot_res["success"]:
             return {"success": False, "reason": f"spot_buy_failed: {spot_res.get('error')}"}
         await asyncio.sleep(2)
+
+        # Measure actual qty received
+        bal_after = await bybit_get_balance()
+        qty_after = float(bal_after.get("balances", {}).get(coin, {}).get("available", 0)) if bal_after.get("success") else 0.0
+        spot_qty_actual = round(qty_after - qty_before, 8)
+        if spot_qty_actual <= 0:
+            spot_qty_actual = round(half / (qty_before or 1), 8)  # fallback estimate
+
         # Step 2: short perpetual with same USDT value
         perp_res = await bybit_place_perp_short(symbol, half)
         if not perp_res["success"]:
-            # Rollback: sell spot immediately
-            await bybit_sell_spot(symbol)
+            # v10.12.7 Rollback: sell EXACTLY what we bought, not all coin
+            await bybit_sell_spot(symbol, spot_qty_actual)
             return {"success": False, "reason": f"perp_short_failed (spot rolled back): {perp_res.get('error')}"}
         pos = {
-            "symbol": symbol, "perp_qty": perp_res["qty"],
-            "entry_price": perp_res["mark_price"], "usdt_deployed": usdt_amount,
-            "opened_at": time.time(), "funding_collected": 0.0,
+            "symbol": symbol,
+            "perp_qty": perp_res["qty"],
+            "spot_qty": spot_qty_actual,            # v10.12.7: track spot qty
+            "entry_price": perp_res["mark_price"],
+            "usdt_deployed": usdt_amount,
+            "opened_at": time.time(),
+            "funding_collected": 0.0,
+            "last_funding_ts": 0.0,
         }
         _funding_arb_positions.append(pos)
         _funding_arb_stats["open_positions"] = len(_funding_arb_positions)
+        # v10.12.7: persist to DB so position survives server restart
+        await db.save_funding_arb_position(pos)
         log_activity(
             f"[fundarb] ✅ opened {symbol}: ${usdt_amount:.2f} USDT "
-            f"spot+short @{perp_res['mark_price']:.4f}"
+            f"spot_qty={spot_qty_actual} perp_qty={perp_res['qty']} @{perp_res['mark_price']:.4f}"
         )
         return {"success": True, "symbol": symbol, "usdt_deployed": usdt_amount,
-                "entry_price": perp_res["mark_price"]}
+                "entry_price": perp_res["mark_price"], "spot_qty": spot_qty_actual}
     except Exception as e:
         _funding_arb_stats["errors"] += 1
         return {"success": False, "reason": str(e)}
@@ -3588,12 +3633,16 @@ async def funding_arb_close(symbol: str, reason: str = "manual") -> dict:
         if not perp_close["success"]:
             errs.append(f"perp: {perp_close.get('error')}")
         await asyncio.sleep(1)
-        spot_close = await bybit_sell_spot(symbol)
+        # v10.12.7: use tracked spot_qty for precise sell (not qty=0/all)
+        spot_qty = pos.get("spot_qty", 0)
+        spot_close = await bybit_sell_spot(symbol, spot_qty)
         if not spot_close["success"]:
             errs.append(f"spot: {spot_close.get('error')}")
         _funding_arb_positions[:] = [p for p in _funding_arb_positions if p["symbol"] != symbol]
         _funding_arb_stats["open_positions"] = len(_funding_arb_positions)
         _funding_arb_stats["total_collected"] += pos["funding_collected"]
+        # v10.12.7: remove from PostgreSQL
+        await db.delete_funding_arb_position(symbol)
         log_activity(
             f"[fundarb] closed {symbol} reason={reason}, "
             f"collected=${pos['funding_collected']:.4f}"
@@ -3606,11 +3655,14 @@ async def funding_arb_close(symbol: str, reason: str = "manual") -> dict:
 
 
 async def funding_arb_auto_check() -> dict:
-    """v10.12.5: Hourly check — open arb if rate attractive, close if rate negative."""
+    """v10.12.7: Hourly check — open arb if rate attractive, close if rate negative.
+    Also updates funding_collected from ByBit transaction log."""
     if not FUNDING_ARB_ENABLED:
         return {"action": "disabled"}
     _funding_arb_stats["last_check"] = time.time()
     _funding_arb_stats["checks"] += 1
+    # v10.12.7: update funding collected from ByBit before doing anything else
+    await _funding_arb_update_collected()
     # Check open positions — close if rate turned negative
     for pos in list(_funding_arb_positions):
         fr = await bybit_get_live_funding_rate(pos["symbol"])
@@ -3657,6 +3709,68 @@ async def funding_arb_auto_check() -> dict:
         else:
             return {"action": "no_attractive_rate", "min_required": FUNDING_ARB_MIN_RATE}
     return {"action": "monitoring", "open": len(_funding_arb_positions)}
+
+
+async def _funding_arb_restore_positions():
+    """v10.12.7: Restore open funding arb positions from PostgreSQL on startup.
+    Prevents position tracking loss after Railway server restart."""
+    global _funding_arb_positions
+    rows = await db.load_funding_arb_positions()
+    if not rows:
+        return
+    restored = 0
+    for row in rows:
+        symbol = row["symbol"]
+        if not any(p["symbol"] == symbol for p in _funding_arb_positions):
+            _funding_arb_positions.append({
+                "symbol":           symbol,
+                "perp_qty":         float(row["perp_qty"]),
+                "spot_qty":         float(row.get("spot_qty") or 0),
+                "entry_price":      float(row.get("entry_price") or 0),
+                "usdt_deployed":    float(row.get("usdt_deployed") or 0),
+                "opened_at":        float(row.get("opened_at") or 0),
+                "funding_collected":float(row.get("funding_collected") or 0),
+                "last_funding_ts":  float(row.get("last_funding_ts") or 0),
+            })
+            restored += 1
+    _funding_arb_stats["open_positions"] = len(_funding_arb_positions)
+    if restored:
+        print(f"[fundarb] ♻️ restored {restored} open positions from DB", flush=True)
+
+
+async def _funding_arb_update_collected():
+    """v10.12.7: Fetch funding payments from ByBit transaction log and update pos records.
+    Called from funding_arb_auto_check. ByBit pays funding every 8h automatically."""
+    if not _funding_arb_positions:
+        return
+    try:
+        # Fetch settlement transactions from ByBit (funding payments are type SETTLEMENT)
+        since_ts = int(min(p["last_funding_ts"] or p["opened_at"] for p in _funding_arb_positions) * 1000)
+        res = await bybit_request("GET", "/v5/account/transaction-log", {
+            "accountType": "UNIFIED",
+            "category":    "linear",
+            "type":        "SETTLEMENT",
+            "startTime":   str(since_ts),
+            "limit":       "50",
+        })
+        if not res.get("success"):
+            return
+        entries = res.get("data", {}).get("list", [])
+        for entry in entries:
+            symbol_raw = entry.get("symbol", "")   # e.g. ETHUSDT
+            amount = float(entry.get("amount") or 0)
+            ts_ms  = int(entry.get("transactionTime") or 0)
+            ts_s   = ts_ms / 1000.0
+            # Match to position
+            for pos in _funding_arb_positions:
+                bb_sym = pos["symbol"].replace("-", "")
+                if symbol_raw == bb_sym and ts_s > pos.get("last_funding_ts", 0):
+                    pos["funding_collected"] = round(pos.get("funding_collected", 0) + amount, 6)
+                    pos["last_funding_ts"] = ts_s
+                    await db.save_funding_arb_position(pos)
+                    log_activity(f"[fundarb] funding +${amount:.4f} for {pos['symbol']} → total=${pos['funding_collected']:.4f}")
+    except Exception as e:
+        log_activity(f"[fundarb] _update_collected error: {e}")
 
 
 # ── KuCoin API ─────────────────────────────────────────────────────────────────
@@ -10306,6 +10420,13 @@ async def startup():
                 print(f"[startup] ⚡ exchange sync complete: {synced} positions restored, {open_now} open total", flush=True)
         except Exception as sync_err:
             print(f"[startup] exchange sync error (non-fatal): {sync_err}", flush=True)
+
+    # v10.12.7: restore funding arb positions from DB (must run after db.init_db)
+    if pg_ok:
+        try:
+            await _funding_arb_restore_positions()
+        except Exception as _fa_err:
+            print(f"[startup] funding_arb restore error (non-fatal): {_fa_err}", flush=True)
 
     asyncio.create_task(trading_loop())
     asyncio.create_task(position_monitor_loop())
