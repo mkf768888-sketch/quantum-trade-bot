@@ -887,7 +887,10 @@ function renderActivity(log, containerId){
   el.innerHTML = log.slice(0,15).map(e=>{
     const txt = typeof e==='string'?e:(e.msg||e.text||JSON.stringify(e));
     const cls = classify(txt);
-    const ts = e.ts ? new Date(e.ts*1000).toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'}) : '';
+    // e.ts may be Unix seconds (number) or ISO string — handle both
+    const tsRaw = e.ts;
+    const tsDate = tsRaw ? (typeof tsRaw==='number' ? new Date(tsRaw*1000) : new Date(tsRaw)) : null;
+    const ts = tsDate && !isNaN(tsDate) ? tsDate.toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'}) : '';
     return`<div class="event-row">
       <span class="event-dot event-${cls}"></span>
       <span class="event-text">${fmt(txt)}</span>
