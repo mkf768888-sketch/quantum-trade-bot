@@ -1562,6 +1562,239 @@ async def kucoin_earn_get_hold_assets(coin: str = "USDT") -> list:
     return []
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# v10.13.0: KuCoin Lending Pro — Margin Lending (20-50% APR peaks)
+# Lend USDT to margin traders. Rate spikes during volatile periods.
+# API: /api/v1/margin/lend (place), /api/v1/margin/market (rates),
+#      /api/v1/margin/lend/active-order (active), DELETE /api/v1/margin/lend (cancel)
+# ══════════════════════════════════════════════════════════════════════════════
+
+LENDING_ENABLED       = os.getenv("LENDING_ENABLED",     "false").lower() == "true"
+LENDING_MIN_APR       = float(os.getenv("LENDING_MIN_APR",  "10.0"))   # % APR threshold
+LENDING_MAX_USDT      = float(os.getenv("LENDING_MAX_USDT", "30.0"))   # max USDT to lend
+LENDING_TERM_DAYS     = int(os.getenv("LENDING_TERM_DAYS",  "7"))      # 7 or 14 days
+LENDING_AUTO_RENEW    = os.getenv("LENDING_AUTO_RENEW",  "true").lower() == "true"
+
+_lending_positions: list = []   # [{order_id, currency, size, daily_rate, apr, term, placed_at}]
+_lending_stats: dict = {
+    "total_interest": 0.0, "active_orders": 0,
+    "last_check": 0.0, "errors": 0,
+}
+
+
+async def kucoin_lending_get_market_rate(currency: str = "USDT") -> dict:
+    """v10.13.0: GET /api/v1/margin/market — current best lending rate for currency."""
+    endpoint = f"/api/v1/margin/market?currency={currency}"
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(
+                f"https://api.kucoin.com{endpoint}",
+                headers=kucoin_headers("GET", endpoint),
+                timeout=aiohttp.ClientTimeout(total=10)
+            )
+            data = await r.json()
+            if data.get("code") == "200000":
+                items = data.get("data", [])
+                if items:
+                    # items sorted by dailyIntRate asc — last item = best rate
+                    best = max(items, key=lambda x: float(x.get("dailyIntRate", 0)))
+                    daily = float(best.get("dailyIntRate", 0))
+                    apr = round(daily * 365 * 100, 2)
+                    return {
+                        "success": True, "currency": currency,
+                        "daily_rate": daily,
+                        "daily_rate_pct": round(daily * 100, 4),
+                        "apr": apr,
+                        "available_size": float(best.get("size", 0)),
+                    }
+    except Exception as e:
+        log_activity(f"[lending] get_market_rate error: {e}")
+    return {"success": False, "daily_rate": 0, "apr": 0, "currency": currency}
+
+
+async def kucoin_lending_place_order(currency: str, amount: float, daily_rate: float, term: int = 7) -> dict:
+    """v10.13.0: POST /api/v1/margin/lend — place a lending order.
+    daily_rate: e.g. 0.0003 = 0.03%/day ≈ 10.95% APR
+    term: 7 or 14 days (shortest = most flexible)
+    """
+    endpoint = "/api/v1/margin/lend"
+    body = {
+        "currency":    currency,
+        "size":        str(round(amount, 2)),
+        "dailyIntRate": str(round(daily_rate, 6)),
+        "term":        term,
+    }
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(
+                f"https://api.kucoin.com{endpoint}",
+                headers=kucoin_headers("POST", endpoint, body),
+                json=body,
+                timeout=aiohttp.ClientTimeout(total=10)
+            )
+            data = await r.json()
+            if data.get("code") == "200000":
+                order_id = data.get("data", {}).get("orderId", "")
+                apr = round(daily_rate * 365 * 100, 2)
+                pos = {
+                    "order_id": order_id, "currency": currency,
+                    "size": amount, "daily_rate": daily_rate,
+                    "apr": apr, "term": term,
+                    "placed_at": time.time(),
+                }
+                _lending_positions.append(pos)
+                _lending_stats["active_orders"] = len(_lending_positions)
+                log_activity(
+                    f"[lending] ✅ placed {currency} ${amount:.2f} "
+                    f"@ {daily_rate*100:.4f}%/day ({apr:.1f}% APR) {term}d"
+                )
+                return {"success": True, "order_id": order_id, "apr": apr}
+            err = data.get("msg", data.get("code", "unknown"))
+            log_activity(f"[lending] place_order failed: {err}")
+            return {"success": False, "error": err}
+    except Exception as e:
+        _lending_stats["errors"] += 1
+        return {"success": False, "error": str(e)}
+
+
+async def kucoin_lending_get_active_orders(currency: str = "USDT") -> list:
+    """v10.13.0: GET /api/v1/margin/lend/active-order — current active lending positions."""
+    endpoint = f"/api/v1/margin/lend/active-order?currency={currency}&currentPage=1&pageSize=20"
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(
+                f"https://api.kucoin.com{endpoint}",
+                headers=kucoin_headers("GET", endpoint),
+                timeout=aiohttp.ClientTimeout(total=10)
+            )
+            data = await r.json()
+            if data.get("code") == "200000":
+                return data.get("data", {}).get("items", [])
+    except Exception as e:
+        log_activity(f"[lending] get_active_orders error: {e}")
+    return []
+
+
+async def kucoin_lending_cancel_order(order_id: str, currency: str = "USDT") -> dict:
+    """v10.13.0: DELETE /api/v1/margin/lend — cancel/redeem lending order early."""
+    endpoint = f"/api/v1/margin/lend?orderId={order_id}&currency={currency}"
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.delete(
+                f"https://api.kucoin.com{endpoint}",
+                headers=kucoin_headers("DELETE", endpoint),
+                timeout=aiohttp.ClientTimeout(total=10)
+            )
+            data = await r.json()
+            if data.get("code") == "200000":
+                _lending_positions[:] = [p for p in _lending_positions if p["order_id"] != order_id]
+                _lending_stats["active_orders"] = len(_lending_positions)
+                log_activity(f"[lending] cancelled order {order_id}")
+                return {"success": True}
+            return {"success": False, "error": data.get("msg", "unknown")}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+async def kucoin_lending_auto_place() -> dict:
+    """v10.13.0: Auto-place lending order when rate > LENDING_MIN_APR.
+    Called from earn_monitor_loop every 4 cycles (~60 min).
+    Strategy: place at market rate, term=7d, auto-renew handled by re-placement.
+    """
+    if not LENDING_ENABLED:
+        return {"action": "disabled"}
+    _lending_stats["last_check"] = time.time()
+
+    # Check current lending rate
+    market = await kucoin_lending_get_market_rate("USDT")
+    if not market["success"]:
+        return {"action": "error", "reason": "could_not_fetch_rate"}
+
+    apr = market["apr"]
+    daily = market["daily_rate"]
+    log_activity(f"[lending] market rate: {daily*100:.4f}%/day ({apr:.1f}% APR)")
+
+    # Sync local positions list with exchange (clean expired orders)
+    active_exchange = await kucoin_lending_get_active_orders("USDT")
+    active_ids = {o.get("orderId") for o in active_exchange}
+    _lending_positions[:] = [p for p in _lending_positions if p["order_id"] in active_ids]
+    _lending_stats["active_orders"] = len(_lending_positions)
+
+    # Don't place if rate too low
+    if apr < LENDING_MIN_APR:
+        return {"action": "rate_too_low", "apr": apr, "min_required": LENDING_MIN_APR}
+
+    # Don't place if already have active orders
+    if _lending_positions:
+        return {"action": "already_active", "orders": len(_lending_positions), "apr": apr}
+
+    # Get KuCoin USDT balance
+    bal = await get_balance()
+    if not bal["success"]:
+        return {"action": "error", "reason": "balance_fetch_failed"}
+
+    kc_usdt = float(next(
+        (a.get("available", 0) for a in bal.get("accounts", [])
+         if a.get("currency") == "USDT" and a.get("type") == "main"),
+        0
+    ))
+    deploy = round(min(kc_usdt * 0.8, LENDING_MAX_USDT), 2)
+
+    if deploy < 5.0:
+        return {"action": "insufficient_capital", "available": kc_usdt, "need": 5.0}
+
+    # Place lending order at market rate (slight premium for faster fill)
+    place_rate = round(daily * 0.99, 6)   # 1% below best rate = priority fill
+    res = await kucoin_lending_place_order("USDT", deploy, place_rate, LENDING_TERM_DAYS)
+    if res["success"] and ALERT_CHAT_ID:
+        await _tg_send(int(ALERT_CHAT_ID),
+            f"🏦 <b>Lending Pro размещён!</b>\n\n"
+            f"Сумма: <code>${deploy:.2f}</code> USDT\n"
+            f"Ставка: <code>{place_rate*100:.4f}%</code>/день\n"
+            f"APR: <code>{res['apr']:.1f}%</code>\n"
+            f"Срок: <code>{LENDING_TERM_DAYS}</code> дней\n\n"
+            f"<i>Деньги работают у маржинальных трейдеров KuCoin</i>"
+        )
+    return {
+        "action": "placed" if res["success"] else "failed",
+        "apr": apr, "deploy": deploy,
+        "error": res.get("error"),
+    }
+
+
+async def _tg_lending(chat_id: int):
+    """v10.13.0: /lending — Lending Pro status and current rate."""
+    try:
+        market = await kucoin_lending_get_market_rate("USDT")
+        active = await kucoin_lending_get_active_orders("USDT")
+        rate_str = f"<code>{market['daily_rate_pct']:.4f}%</code>/день = <code>{market['apr']:.1f}%</code> APR" if market["success"] else "недоступна"
+        enabled_str = "✅ ВКЛ" if LENDING_ENABLED else "❌ ВЫКЛ (LENDING_ENABLED=true в Railway)"
+        lines = [
+            "🏦 <b>KuCoin Lending Pro</b>\n",
+            f"<b>Статус:</b> {enabled_str}",
+            f"<b>Рыночная ставка:</b> {rate_str}",
+            f"<b>Порог:</b> {LENDING_MIN_APR:.0f}% APR",
+            f"<b>Макс размещение:</b> ${LENDING_MAX_USDT:.0f}",
+            f"<b>Срок:</b> {LENDING_TERM_DAYS} дней\n",
+        ]
+        if active:
+            lines.append(f"📂 <b>Активные ордера ({len(active)}):</b>")
+            for o in active[:5]:
+                amt = float(o.get("size", 0))
+                dr = float(o.get("dailyIntRate", 0))
+                apr_o = round(dr * 365 * 100, 1)
+                lines.append(f"  • <code>${amt:.2f}</code> @ <code>{dr*100:.4f}%</code>/д ({apr_o}% APR)")
+        else:
+            lines.append("📂 Активных ордеров нет")
+        total_int = _lending_stats["total_interest"]
+        lines.append(f"\n💰 Всего заработано: <code>${total_int:.4f}</code>")
+        if not LENDING_ENABLED:
+            lines.append("\n💡 <i>Включи: LENDING_ENABLED=true в Railway Variables</i>")
+        await _tg_send(chat_id, "\n".join(lines))
+    except Exception as e:
+        await _tg_send(chat_id, f"❌ Ошибка lending: {e}")
+
+
 async def bybit_earn_get_products(coin: str = "USDT") -> list:
     """ByBit: GET /v5/earn/product — Flexible Savings products.
     v10.2.2: Enhanced with broader search — tries with and without coin filter,
@@ -3005,6 +3238,15 @@ async def earn_monitor_loop():
                             log_activity(f"[fundarb] auto_check: {fa_res}")
                     except Exception as fa_e:
                         log_activity(f"[fundarb] auto_check error: {fa_e}")
+
+                # v10.13.0: KuCoin Lending — every 4th cycle (~1 hour)
+                if LENDING_ENABLED and _earn_stats.get("_dci_cycle", 0) % 4 == 0:
+                    try:
+                        lend_res = await kucoin_lending_auto_place()
+                        if lend_res.get("placed") or lend_res.get("error"):
+                            log_activity(f"[lending] auto_place: {lend_res}")
+                    except Exception as lend_e:
+                        log_activity(f"[lending] auto_place error: {lend_e}")
 
                 # v10.10: Q-Score auto-tune — every ~7 days (672 cycles = 4/hr * 24h * 7d)
                 if _earn_stats.get("_dci_cycle", 0) % 672 == 1:
@@ -10108,6 +10350,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/health":              await _tg_health(chat_id)
         elif cmd == "/dci":                 await _tg_dci(chat_id)
         elif cmd == "/dciplace":            await _tg_dci_place(chat_id)
+        elif cmd == "/lending":             await _tg_lending(chat_id)
         elif cmd == "/audit":               await _tg_audit(chat_id)
         elif cmd == "/fills":               await _tg_fills(chat_id)
         elif cmd == "/agency":              await _tg_agency(chat_id)
