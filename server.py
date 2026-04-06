@@ -4380,6 +4380,9 @@ async def portfolio_full_snapshot() -> dict:
         deployed = await yield_router_v2_get_deployed()
         snap["usdt_earn"]    = deployed.get("earn_usdt", 0.0)
         snap["usdt_lending"] = deployed.get("lending_usdt", 0.0)
+        # DCI позиции (ByBit) — locked capital, учитываем отдельно
+        snap["usdt_dci"] = sum(float(p.get("amount", 0)) for p in _dci_stats.get("positions", []))
+        snap["dci_apy"]  = max((float(p.get("apy_pct", 0)) for p in _dci_stats.get("positions", [])), default=0)
 
         # ── 4. В торговых позициях ────────────────────────────────────────────
         for pos in snap["coins"].values():
@@ -4387,7 +4390,9 @@ async def portfolio_full_snapshot() -> dict:
 
         # ── 5. Итоги ──────────────────────────────────────────────────────────
         snap["total_usdt_idle"]    = round(sum(snap["usdt_free"].values()), 2)
-        snap["total_usdt_working"] = round(snap["usdt_earn"] + snap["usdt_lending"], 2)
+        snap["total_usdt_working"] = round(
+            snap["usdt_earn"] + snap["usdt_lending"] + snap.get("usdt_dci", 0), 2
+        )
         snap["total_usd"] = round(
             snap["total_usdt_idle"] +
             snap["total_usdt_working"] +
@@ -4398,10 +4403,11 @@ async def portfolio_full_snapshot() -> dict:
         # ── 6. % аллокация ────────────────────────────────────────────────────
         if snap["total_usd"] > 0:
             snap["allocation_pct"] = {
-                "coins_trading": round(snap["usdt_trading"]      / snap["total_usd"] * 100, 1),
-                "earn_lending":  round(snap["total_usdt_working"] / snap["total_usd"] * 100, 1),
-                "futures":       round(snap["usdt_futures"]       / snap["total_usd"] * 100, 1),
-                "idle":          round(snap["total_usdt_idle"]    / snap["total_usd"] * 100, 1),
+                "coins_trading": round(snap["usdt_trading"]           / snap["total_usd"] * 100, 1),
+                "dci":           round(snap.get("usdt_dci", 0)        / snap["total_usd"] * 100, 1),
+                "earn_lending":  round((snap["usdt_earn"] + snap["usdt_lending"]) / snap["total_usd"] * 100, 1),
+                "futures":       round(snap["usdt_futures"]            / snap["total_usd"] * 100, 1),
+                "idle":          round(snap["total_usdt_idle"]         / snap["total_usd"] * 100, 1),
             }
     except Exception as e:
         log_activity(f"[portfolio] snapshot error: {e}")
@@ -4409,46 +4415,118 @@ async def portfolio_full_snapshot() -> dict:
 
 
 async def portfolio_ai_analyze(snap: dict) -> str:
-    """v10.16.1: DeepSeek в роли крипто-фонд менеджера анализирует портфель.
-    Возвращает конкретные рекомендации по аллокации."""
+    """v10.16.2: DeepSeek как крипто-фонд менеджер — использует ВСЕХ квантовых агентов.
+    Контекст: MiroFish консенсус + Q-Score + Whale + DCI позиции + макро."""
     try:
         if not DEEPSEEK_API_KEY or time.time() < _deepseek_disabled_until:
             return _portfolio_rule_based_advice(snap)
 
-        fg_data = await get_fear_greed()
-        fg_val  = fg_data.get("value", 50)
-        macro   = _macro_cache
-        alloc   = snap.get("allocation_pct", {})
-        coins   = snap.get("coins", {})
-        total   = snap.get("total_usd", 0)
+        # ── 1. Собираем квантовый контекст параллельно ───────────────────────
+        fg_data, whale_data = await asyncio.gather(
+            asyncio.wait_for(get_fear_greed(), timeout=5.0),
+            asyncio.wait_for(get_whale_signal("BTC"), timeout=5.0),
+            return_exceptions=True,
+        )
+        fg_val     = fg_data.get("value", 50) if isinstance(fg_data, dict) else 50
+        fg_cls     = fg_data.get("classification", "Neutral") if isinstance(fg_data, dict) else "Neutral"
+        whale_sig  = whale_data.get("signal", "NEUTRAL") if isinstance(whale_data, dict) else "NEUTRAL"
+        macro      = _macro_cache
+        alloc      = snap.get("allocation_pct", {})
+        coins      = snap.get("coins", {})
+        total      = snap.get("total_usd", 0)
 
+        # ── 2. MiroFish консенсус (3 ключевых агента) ────────────────────────
+        mf_personas = [
+            next((p for p in MIROFISH_PERSONAS if p["id"] == "macro"),       MIROFISH_PERSONAS[0]),
+            next((p for p in MIROFISH_PERSONAS if p["id"] == "contrarian"),  MIROFISH_PERSONAS[1]),
+            next((p for p in MIROFISH_PERSONAS if p["id"] == "quant"),       MIROFISH_PERSONAS[2]),
+        ]
+        mf_opinions = []
+        btc_price = 0
+        for sym, info in coins.items():
+            if "BTC" in sym:
+                btc_price = info.get("price", 0)
+                break
+        mf_context = (
+            f"Портфель ${total:.0f}. BTC ${btc_price:,.0f}. "
+            f"F&G={fg_val}({fg_cls}). Whale={whale_sig}. "
+            f"DXY={macro.get('dxy','?')}, S&P={macro.get('sp500','?')}."
+        )
+        for persona in mf_personas:
+            try:
+                resp = await asyncio.wait_for(
+                    ai_call_deepseek(
+                        messages=[{"role": "user", "content":
+                            f"Ты {persona['name']}. Стиль: {persona['style'][:150]}\n"
+                            f"Ситуация: {mf_context}\n"
+                            f"Одно предложение: держать BTC или конвертировать в USDT для yield?"}],
+                        max_tokens=60,
+                    ), timeout=8.0
+                )
+                opinion = resp.get("content", "").strip()
+                if opinion:
+                    mf_opinions.append(f"{persona['name']}: {opinion}")
+            except Exception:
+                pass
+
+        # ── 3. DCI активные позиции ───────────────────────────────────────────
+        dci_positions = _dci_stats.get("positions", [])
+        dci_summary = ""
+        if dci_positions:
+            dci_total = sum(float(p.get("amount", 0)) for p in dci_positions)
+            dci_apy   = max((float(p.get("apy_pct", 0)) for p in dci_positions), default=0)
+            dci_summary = f"• ByBit DCI активен: ${dci_total:.2f} под {dci_apy:.0f}% APY — НЕ трогать!\n"
+
+        # ── 4. KuCoin Earn позиции (BTC в DCI) ───────────────────────────────
+        kc_earn_summary = ""
+        if _earn_positions:
+            for pos in _earn_positions:
+                amt  = float(pos.get("amount", 0))
+                apr  = float(pos.get("apr", 0)) * 100
+                coin = pos.get("coin", "?")
+                exch = pos.get("exchange", "?")
+                if amt > 0:
+                    kc_earn_summary += f"• {exch} Earn: {coin} ${amt:.2f} под {apr:.1f}% APY\n"
+
+        # ── 5. Lending позиции ────────────────────────────────────────────────
+        lending_summary = ""
+        if _lending_positions:
+            lend_total = sum(float(p.get("size", 0)) for p in _lending_positions)
+            lend_apr   = max((float(p.get("apr", 0)) for p in _lending_positions), default=0)
+            lending_summary = f"• KuCoin Lending: ${lend_total:.2f} под {lend_apr:.1f}% APY\n"
+
+        # ── 6. Монеты ─────────────────────────────────────────────────────────
         coins_summary = ", ".join(
             f"{sym.replace('bb_','').replace('-USDT','')} ${info['usd_value']:.0f}"
             for sym, info in coins.items()
-        ) or "нет монет"
+        ) or "нет свободных монет"
 
+        mf_block = "\n".join(mf_opinions) if mf_opinions else "агенты недоступны"
+
+        # ── 7. Финальный промт с полным контекстом ────────────────────────────
         prompt = (
-            f"Ты — крипто-фонд менеджер с 15-летним опытом. Ты управляешь портфелем ${total:.0f}.\n\n"
-            f"ТЕКУЩИЙ ПОРТФЕЛЬ:\n"
-            f"• Монеты на споте: {coins_summary}\n"
-            f"• USDT свободно: ${snap['total_usdt_idle']:.2f}\n"
-            f"• USDT в Earn/Lending: ${snap['total_usdt_working']:.2f} ({alloc.get('earn_lending',0):.0f}%)\n"
-            f"• USDT на фьючерсах: ${snap['usdt_futures']:.2f} ({alloc.get('futures',0):.0f}%)\n"
-            f"• Idle USDT: {alloc.get('idle',0):.0f}%\n\n"
-            f"РЫНОК:\n"
-            f"• Fear & Greed: {fg_val} — {'паника' if fg_val<25 else 'страх' if fg_val<40 else 'нейтрально' if fg_val<60 else 'жадность' if fg_val<75 else 'эйфория'}\n"
+            f"Ты — крипто-фонд менеджер с 15-летним опытом. Управляешь портфелем ${total:.0f}.\n\n"
+            f"АКТИВНЫЕ ПРОДУКТЫ (уже работают — учти это!):\n"
+            f"{dci_summary}{kc_earn_summary}{lending_summary}"
+            f"• Свободные монеты: {coins_summary}\n"
+            f"• Свободный USDT: ${snap['total_usdt_idle']:.2f}\n"
+            f"• Фьючерсы: ${snap['usdt_futures']:.2f}\n\n"
+            f"РЫНОЧНЫЙ КОНТЕКСТ:\n"
+            f"• Fear & Greed: {fg_val} ({fg_cls})\n"
+            f"• Whale сигнал (BTC): {whale_sig}\n"
             f"• DXY: {macro.get('dxy','—')}, S&P500: {macro.get('sp500','—')}\n\n"
-            f"Дай КОНКРЕТНЫЕ рекомендации (3-5 пунктов) что сделать прямо сейчас для максимизации "
-            f"доходности с учётом риска. Будь конкретен: какой % в какой продукт, какие монеты держать. "
-            f"Без вступлений, только советы. Каждый пункт с эмодзи."
+            f"МНЕНИЯ AI-АГЕНТОВ СИСТЕМЫ:\n{mf_block}\n\n"
+            f"Дай 3-4 КОНКРЕТНЫХ рекомендации с учётом уже активных продуктов. "
+            f"Если DCI/Earn уже работает хорошо — подтверди это, не предлагай менять. "
+            f"Фокус на свободных средствах и оптимизации. Каждый пункт с эмодзи, без вступлений."
         )
 
         resp = await asyncio.wait_for(
             ai_call_deepseek(
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=300,
+                max_tokens=350,
             ),
-            timeout=15.0,
+            timeout=18.0,
         )
         return resp.get("content", "").strip() or _portfolio_rule_based_advice(snap)
     except Exception as e:
@@ -4496,7 +4574,9 @@ async def _tg_portfolio(chat_id: int):
         # Аллокация
         lines.append(f"<b>📊 Аллокация:</b>")
         lines.append(f"  🪙 Монеты (спот):    <code>{alloc.get('coins_trading',0):.1f}%</code> — ${snap['usdt_trading']:.2f}")
-        lines.append(f"  💰 Earn/Lending:     <code>{alloc.get('earn_lending',0):.1f}%</code> — ${snap['total_usdt_working']:.2f}")
+        if snap.get("usdt_dci", 0) > 0:
+            lines.append(f"  🎯 DCI (locked):     <code>{alloc.get('dci',0):.1f}%</code> — ${snap['usdt_dci']:.2f} @ {snap.get('dci_apy',0):.0f}% APY ✨")
+        lines.append(f"  💰 Earn/Lending:     <code>{alloc.get('earn_lending',0):.1f}%</code> — ${snap['usdt_earn'] + snap['usdt_lending']:.2f}")
         lines.append(f"  📉 Фьючерсы:         <code>{alloc.get('futures',0):.1f}%</code> — ${snap['usdt_futures']:.2f}")
         lines.append(f"  😴 Idle USDT:        <code>{alloc.get('idle',0):.1f}%</code> — ${snap['total_usdt_idle']:.2f}")
         lines.append(f"")
