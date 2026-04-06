@@ -2081,10 +2081,11 @@ async def dci_auto_place_idle() -> dict:
         except Exception as _ck_e:
             log_activity(f"[dci] active-check error: {_ck_e}")
 
-        # Step 3.5 (v10.9.13): If USDT in FUND is insufficient for BuyLow,
-        # try to redeem from ByBit Flex Savings first.
-        # All ByBit USDT may be locked in FlexibleSaving → FUND shows $0.
-        if direction == "BuyLow" and usdt_free < 5.0:
+        # Step 3.5 (v10.9.13 → v10.12.5 Yield Router): If USDT in FUND is less than
+        # DCI_MAX_INVEST, proactively redeem from ByBit Flex Savings first.
+        # DCI APY (450-850%) >> Flex Savings APY (1-10%) — always prefer DCI.
+        # v10.12.5: threshold raised from $5 → DCI_MAX_INVEST_USDT for proactive routing.
+        if direction == "BuyLow" and usdt_free < DCI_MAX_INVEST_USDT:
             log_activity(f"[dci] FUND USDT=${usdt_free:.2f} < 5.0 — checking Flex Savings for redemption")
             try:
                 earn_positions = await bybit_earn_get_positions("USDT")
@@ -2479,7 +2480,11 @@ async def double_win_auto_place(usdt_amount: float) -> dict:
 
         best = max(eligible, key=lambda p: p["apy_pct"])
         invest = min(usdt_amount * 0.8, DOUBLE_WIN_MAX_INVEST, best["max_amount"])
-        invest = round(max(invest, best["min_amount"]), 8)
+        invest = round(max(invest, best["min_amount"]), 2)  # v10.12.5: round to 2 (ByBit rejects sub-cent)
+
+        # v10.12.5: skip if minimum exceeds available capital
+        if invest > usdt_amount + 0.5:
+            return {"success": False, "reason": f"insufficient_capital: need ${invest:.2f}, have ${usdt_amount:.2f}"}
 
         log_activity(f"[dw] placing ${invest:.4f} USDT in Double Win APY={best['apy_pct']}% product={best['product_id']}")
 
@@ -2892,6 +2897,32 @@ async def earn_monitor_loop():
                             )
                 except Exception as settle_e:
                     log_activity(f"[dci_mon] settlement check error: {settle_e}")
+
+                # v10.12.5: Auto-reinvest immediately after settlement
+                # Don't wait for the next 4th cycle — redeploy freed capital right away
+                if settled:
+                    await asyncio.sleep(15)  # brief wait for ByBit to credit funds
+                    try:
+                        reinvest = await dci_auto_place_idle()
+                        if reinvest.get("placed"):
+                            for p in reinvest["placed"]:
+                                log_activity(
+                                    f"[dci_mon] ♻️ auto-reinvested after settlement: "
+                                    f"{p['direction']} ${p['amount']:.2f} APY={p['apy_pct']:.2f}%"
+                                )
+                                if ALERT_CHAT_ID:
+                                    await _tg_send(int(ALERT_CHAT_ID),
+                                        f"♻️ <b>DCI авто-реинвест!</b>\n\n"
+                                        f"Расчёт завершён → сразу размещён новый ордер:\n"
+                                        f"<b>{p['direction']}</b> · "
+                                        f"<code>${p['amount']:.2f}</code> · "
+                                        f"<b>APY {p['apy_pct']:.2f}%</b>\n"
+                                        f"Монета: {p['coin']}"
+                                    )
+                        elif reinvest.get("reason"):
+                            log_activity(f"[dci_mon] reinvest skip: {reinvest['reason']}")
+                    except Exception as reinvest_e:
+                        log_activity(f"[dci_mon] reinvest error: {reinvest_e}")
 
                 # v10.11.3: Auto-transfer ByBit Funding → Unified if DCI needs USDT.
                 # Funds deposited via blockchain land in FUND, not UNIFIED.
