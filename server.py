@@ -11486,7 +11486,7 @@ async def generate_crypto_digest() -> str:
     prices_data, fg_data, whale_data = await asyncio.gather(
         _safe(_get_prices_with_fallback(), {"prices": {}}),
         _safe(get_fear_greed(),            {"value": 50, "classification": "Neutral"}),
-        _safe(get_whale_signal(),          {"signal": "NEUTRAL", "score": 0}),
+        _safe(get_whale_signal("BTC"),     {"signal": "NEUTRAL", "score": 0}),
     )
 
     prices   = prices_data.get("prices", {})
