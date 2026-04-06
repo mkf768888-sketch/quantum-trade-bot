@@ -1,7 +1,7 @@
 ---
 tags: [home, index]
-date: 2026-04-05
-version: v10.11.0
+date: 2026-04-06
+version: v10.12.6
 ---
 # QuantumTrade AI — Knowledge Vault
 
@@ -46,12 +46,18 @@ version: v10.11.0
 - [[earn monitor loop фоновая задача каждые 15 минут]]
 - [[Q-Score auto-tune еженедельная самонастройка порога]] ← NEW v10.10
 
+## Пассивный доход
+- [[DCI стратегия фокус на пассивный доход при малом капитале]] ← NEW
+- [[Funding Rate Arb дельта-нейтральная стратегия сбора ставок]] ← NEW
+- [[VIP-only DCI продукты надо пропускать по ошибке]] ← NEW
+
 ## Сессии
 - [[2026-04-01 earn engine и cost protection]]
 - [[2026-04-02 obsidian vault и roadmap update]]
 - [[2026-04-03 v10.2.2 LunarCrush backoff и Earn debug]]
 - [[2026-04-03 v10.9.4 command center и двойное резервирование]]
-- [[2026-04-05 v10.9-v10.10 DCI финализация и три апгрейда]] ← NEW
+- [[2026-04-05 v10.9-v10.10 DCI финализация и три апгрейда]]
+- [[2026-04-06 v10.12.2-v10.12.6 DCI fix chain и passive income focus]] ← NEW
 
 ## Текущие приоритеты
 → см. [[текущие приоритеты]]

@@ -1,32 +1,33 @@
 # QuantumTrade AI — ROADMAP
 > Волновая дорожная карта · GSD v2 Architecture · Обновлено: 2026-04-05
 > Философия: Персональная финансовая экосистема с бешеной маржинальностью
-> Версия: v10.12.0 · Smart Trading v2 + Security + DCI · Деньги НИКОГДА не простаивают
+> Версия: v10.12.6 · Passive Income Focus · DCI auto-reinvest + Funding Rate Arb
 
 ---
 
-## 📍 ГДЕ МЫ СЕЙЧАС (v10.12.0)
+## 📍 ГДЕ МЫ СЕЙЧАС (v10.12.6)
 
 **Работает:**
 - Dual-exchange торговля (KuCoin + ByBit) — 15 AI-агентов MiroFish
-- Smart Money Router — авто-распределение: Arb → Trade → Earn
-- Earn Engine — Flexible Savings (KuCoin + ByBit ✅)
-- DCI (Dual Currency Investment) — ByBit ~877-985% APY
-- Auto-Redeem перед BUY, auto-route в Earn после SELL
+- Smart Money Router — авто-распределение: Arb → Trade → DCI → DW → Earn
+- DCI (Dual Currency Investment) — ByBit 450-850% APY, auto-reinvest ✅
+- Double Win ByBit — включён, параллельно с DCI ✅
+- Funding Rate Arbitrage — код готов, ждёт капитала ✅
+- Yield Router — Flex Savings → DCI проактивно ✅
 - Q-Score торговля + Opus Gate + Self-Learning v2
 - Security hardening: ADMIN_CHAT_IDS, webhook/WS auth, locks
-- Wave 2A Smart Filters: Volume + 4h MTF + Partial Exit
 
-**Что сделано с v10.3.2 → v10.12.0:**
-- [x] ByBit Balance full display (FUNDING + UNIFIED + SPOT)
-- [x] DCI integration + precision fix + auto-transfer fix
-- [x] KuCoin Earn display fix (3-endpoint fallback)
-- [x] Full Opus security audit (237 functions, 75 issues found+fixed)
-- [x] ADMIN_CHAT_IDS authorization + confirmation dialogs
-- [x] asyncio.Lock for DCI + Earn + Arb (H-06 fix)
-- [x] Volume filter (vol_ratio ≥ 0.65) + 4h trend filter
-- [x] Partial Exit: 50% at TP1, trail to TP2
-- [x] /stats visual upgrade: win rate bar + top symbols
+**Что сделано с v10.12.0 → v10.12.6 (сессия 2026-04-06):**
+- [x] DCI "Invalid select price" fix — re-fetch quote перед placement (v10.12.2)
+- [x] DCI "User not VIP" fix — VIP-fallback loop топ-5 кандидатов (v10.12.3)
+- [x] DCI "Amount out of range" fix — capital check + active position guard (v10.12.4)
+- [x] DCI Auto-reinvest после расчёта (15с → новый ордер) (v10.12.5)
+- [x] Yield Router: порог редима $5→$20, проактивный (v10.12.5)
+- [x] Double Win precision + capital check fix (v10.12.5)
+- [x] /api/telegram/notify endpoint (hourly reports) (v10.12.5b)
+- [x] /winrate — win rate по монетам из PostgreSQL (v10.12.5b)
+- [x] Funding Rate Arbitrage полный модуль + /fundarb команда (v10.12.6)
+- [x] Стратегический сдвиг: фокус на пассивный доход при малом капитале
 
 ---
 
@@ -55,11 +56,19 @@
 - [x] APR field names fix (returnRate, estimateApr)
 
 ### Phase B: Lending + Advanced
-- [ ] KuCoin Lending Pro: автоматическое размещение при rate > 10% APR
+- [ ] **KuCoin Lending Pro** — `kucoin_lending_auto_place()` при rate > 10% APR 🔴 ПРИОРИТЕТ
 - [ ] Lending Spike Catcher: мониторинг hourly rates
 - [ ] Staking Combo: stale позиции → stake вместо auto-sell
 - [ ] Earn dashboard в Mini App (новый таб)
 - [ ] Multi-asset Earn: не только USDT, но и ETH/BTC Flexible Savings
+
+### Phase C: Funding Rate Arb (NEW v10.12.6)
+- [x] `funding_arb_open/close()` — спот + перп, атомарное (v10.12.6)
+- [x] `funding_arb_auto_check()` — авто-открытие при rate > threshold (v10.12.6)
+- [x] `/fundarb` Telegram команда — live ставки + статус (v10.12.6)
+- [ ] Включить `FUNDING_ARB_ENABLED=true` когда $10+ свободных на ByBit
+- [ ] ByBit Snowball продукты — аналог DCI для sideways рынка
+- [ ] Yield Router v2 — сравнение APY всех продуктов, авто-ротация
 
 ---
 
@@ -175,20 +184,29 @@
 
 ## 🎯 Что делать дальше (по приоритету)
 
-### 🔴 СРОЧНО (сегодня):
-1. **Проверить DCI** — /dciplace с $41 в ByBit Funding (precision fix v10.11.4)
-2. **DOUBLE_WIN_ENABLED=true** — Railway Variables, следующий поток пассивного дохода
-3. **Мониторинг логов** — убедиться что vol_ratio + 4h фильтры работают корректно
+### 🔴 СРОЧНО (сегодня/завтра):
+1. **Проверить ♻️ авто-реинвест DCI** — должен был сработать после расчёта 07:59 UTC
+2. **`/fundarb`** — проверить live ставки BTC/ETH/SOL, включить arb когда $10+ свободных
+3. **`/winrate`** — проверить команду (данных пока мало, но структура готова)
 
 ### 🟡 СКОРО (неделя):
-4. **Wave 2C: /winrate команда** — топ символы по win rate в Telegram
-5. **Wave 1B: KuCoin Lending Pro** — автоматическое размещение когда rate > 10% APR
-6. **Max portfolio allocation** — не более 30% баланса в одну монету
+4. **KuCoin Lending Pro** — `kucoin_lending_auto_place()`, Wave 1B 🔴
+5. **`FUNDING_ARB_ENABLED=true`** — включить когда ByBit spot USDT > $10 свободных
+6. **ByBit Snowball** — ещё один structured product для sideways рынка
+7. **Max portfolio allocation** — не более 30% баланса в одну монету
 
 ### 🟢 ПОТОМ (месяц):
-7. **Wave 3A: CCXT + Binance/OKX** — нужны API ключи, больше бирж = больше возможностей
-8. **Wave 5: Cyberpunk+Glassmorphism UI** — красивый Mini App (index.html redesign)
-9. **Wave 5B: AI upgrades** — DeepSeek V3.2, ML price prediction (LSTM)
+8. **Wave 3A: CCXT + Binance/OKX** — нужны API ключи (заблокировано)
+9. **Yield Router v2** — полное сравнение APY всех продуктов, авто-ротация
+10. **Wave 5B: AI upgrades** — DeepSeek V3.2, ML price prediction (LSTM)
+
+### 💡 Стратегия роста капитала
+```
+Сейчас (~$310):  DCI + Double Win (главные) + торговля (вторичная)
+При $500+:       + Funding Rate Arb активен
+При $1000+:      + KuCoin Lending Pro + активная торговля полная
+При $2000+:      + CCXT Binance/OKX + полная мультибиржевость
+```
 
 ---
 
