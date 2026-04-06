@@ -2194,7 +2194,7 @@ async def bybit_earn_redeem(product_id: str, amount: float, coin: str = "USDT") 
         "category": "FlexibleSaving",
         "productId": str(product_id),
         "coin": coin,
-        "amount": str(amount),
+        "amount": f"{amount:.2f}",  # v10.19.4: strict 2-decimal format
         "orderType": "Redeem",
         "accountType": "FUND",
         "orderLinkId": f"qt_{uuid.uuid4().hex[:16]}",  # v10.2.3
