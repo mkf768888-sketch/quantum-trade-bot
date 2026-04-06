@@ -2210,7 +2210,8 @@ async def bybit_earn_redeem(product_id: str, amount: float, coin: str = "USDT") 
 async def bybit_earn_get_positions(coin: str = "USDT") -> list:
     """ByBit: GET /v5/earn/position — Current Earn positions.
     v10.11.5 H-15: ByBit returns totalAmount/claimableAmount, not just 'amount'.
-    Try multiple field names to normalise."""
+    v10.19.1: If amount=0 but yesterdayYield>0 (ByBit API bug), fallback to
+    INVESTMENT wallet balance query to recover actual subscribed amount."""
     for cat in ["FlexibleSaving", "Flexible", "flexibleSaving", "Simple", "simple", "FLEX"]:
         res = await bybit_request("GET", "/v5/earn/position", {
             "category": cat, "coin": coin
@@ -2224,6 +2225,25 @@ async def bybit_earn_get_positions(coin: str = "USDT") -> list:
                         item["amount"] = (item.get("totalAmount") or
                                           item.get("claimableAmount") or
                                           item.get("holdAmount") or 0)
+                # v10.19.1: ByBit API bug — amount field returns "0" even when money is
+                # actively earning (yesterdayYield > 0). Fallback: query INVESTMENT wallet.
+                total_amt = sum(float(it.get("amount") or 0) for it in items)
+                has_yield = any(float(it.get("yesterdayYield") or 0) > 0 for it in items)
+                if total_amt == 0 and has_yield:
+                    try:
+                        inv_res = await bybit_request("GET", "/v5/account/wallet-balance",
+                                                      {"accountType": "INVESTMENT"})
+                        if inv_res.get("success"):
+                            inv_coins = inv_res["data"].get("list", [{}])[0].get("coin", [])
+                            inv_usdt = next(
+                                (float(c.get("equity") or c.get("walletBalance") or 0)
+                                 for c in inv_coins if c.get("coin") == coin), 0.0)
+                            if inv_usdt > 0 and items:
+                                items[0]["amount"] = str(round(inv_usdt, 2))
+                                log_activity(
+                                    f"[earn] BB Earn amount recovered from INVESTMENT wallet: ${inv_usdt:.2f}")
+                    except Exception as _inv_e:
+                        log_activity(f"[earn] INVESTMENT wallet fallback error: {_inv_e}")
                 return items
     return []
 
@@ -15627,19 +15647,37 @@ async def api_balance(_auth=Depends(verify_api_key)): return await get_balance()
 
 @app.get("/api/bybit/balance")
 async def api_bybit_balance(_auth=Depends(verify_api_key)):
-    """v10.19.0: ByBit full balance — FUND + UNIFIED + Earn + DCI."""
+    """v10.19.1: ByBit full balance — FUND + UNIFIED + Earn (INVESTMENT) + DCI.
+    Includes INVESTMENT account query to catch Simple Earn balances."""
     unified = await bybit_get_balance()
     fund_usdt = await bybit_get_funding_usdt()
-    earn_pos = await bybit_earn_get_positions("USDT")
-    earn_amt = round(sum(float(p.get("amount", 0)) for p in earn_pos), 2)
+    earn_pos = await bybit_earn_get_positions("USDT")  # includes INVESTMENT fallback
+    earn_amt = round(sum(float(p.get("amount", 0) or 0) for p in earn_pos), 2)
     dci_pos = _dci_stats.get("positions", [])
-    dci_amt = round(sum(float(p.get("amount", 0)) for p in dci_pos), 2)
+    dci_amt = round(sum(float(p.get("amount", 0) or 0) for p in dci_pos), 2)
+    # v10.19.1: Also query INVESTMENT account directly for complete picture
+    invest_usdt = 0.0
+    try:
+        inv_res = await bybit_request("GET", "/v5/account/wallet-balance",
+                                      {"accountType": "INVESTMENT"})
+        if inv_res.get("success"):
+            inv_coins = inv_res["data"].get("list", [{}])[0].get("coin", [])
+            invest_usdt = round(sum(
+                float(c.get("equity") or c.get("walletBalance") or 0)
+                for c in inv_coins if c.get("coin") == "USDT"), 2)
+    except Exception:
+        pass
+    # Use max(earn_amt, invest_usdt) — both should be the same source
+    earn_final = max(earn_amt, invest_usdt)
+    grand_total = round(unified.get("total_usdt", 0) + fund_usdt + earn_final + dci_amt, 2)
     return {
         "unified_usdt": unified.get("total_usdt", 0),
         "fund_usdt": round(fund_usdt, 2),
-        "earn_usdt": earn_amt,
+        "earn_usdt": earn_final,
+        "earn_usdt_earn_api": earn_amt,
+        "earn_usdt_investment_wallet": invest_usdt,
         "dci_usdt": dci_amt,
-        "total_usdt": round(unified.get("total_usdt", 0) + fund_usdt + earn_amt + dci_amt, 2),
+        "total_usdt": grand_total,
         "unified_balances": unified.get("balances", {}),
         "earn_positions": earn_pos[:5],
         "dci_count": len(dci_pos),
