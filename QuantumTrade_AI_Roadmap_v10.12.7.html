@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QuantumTrade AI — Дорожная Карта v10.12.7</title>
+<style>
+  :root {
+    --bg: #0a0e17; --card: #131a2b; --card-hover: #1a2540;
+    --accent: #00d4ff; --accent2: #7c3aed; --green: #22c55e;
+    --yellow: #eab308; --red: #ef4444; --orange: #f97316;
+    --text: #e2e8f0; --muted: #94a3b8; --border: #1e293b;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+
+  .hero { background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%); padding: 60px 20px; text-align: center; border-bottom: 1px solid var(--border); position: relative; overflow: hidden; }
+  .hero::before { content: ''; position: absolute; inset: 0; background: radial-gradient(circle at 30% 50%, rgba(0,212,255,0.06) 0%, transparent 50%), radial-gradient(circle at 70% 50%, rgba(124,58,237,0.06) 0%, transparent 50%); }
+  .hero h1 { font-size: 2.6em; background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; position: relative; }
+  .hero p { color: var(--muted); font-size: 1.05em; margin-top: 8px; position: relative; }
+  .version-badge { display: inline-block; background: var(--accent2); color: white; padding: 4px 14px; border-radius: 20px; font-size: 0.85em; margin: 10px 4px 0; position: relative; }
+  .badge-green { background: #166534; color: var(--green); }
+  .badge-yellow { background: #713f12; color: var(--yellow); }
+
+  .nav { display: flex; justify-content: center; gap: 7px; padding: 16px; flex-wrap: wrap; position: sticky; top: 0; background: var(--bg); z-index: 100; border-bottom: 1px solid var(--border); }
+  .nav-btn { background: var(--card); border: 1px solid var(--border); color: var(--muted); padding: 9px 18px; border-radius: 10px; cursor: pointer; font-size: 0.88em; transition: all 0.25s; }
+  .nav-btn:hover, .nav-btn.active { background: var(--accent); color: #0a0e17; border-color: var(--accent); font-weight: 600; }
+
+  .section { display: none; max-width: 1200px; margin: 0 auto; padding: 28px 20px; }
+  .section.active { display: block; animation: fadeIn 0.35s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+  .section h2 { font-size: 1.75em; margin-bottom: 22px; color: var(--accent); }
+  .section h3 { font-size: 1.2em; margin: 20px 0 12px; color: var(--text); border-left: 3px solid var(--accent); padding-left: 10px; }
+
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 22px; transition: all 0.3s; }
+  .card:hover { background: var(--card-hover); border-color: var(--accent); transform: translateY(-2px); box-shadow: 0 6px 24px rgba(0,212,255,0.08); }
+  .card-icon { font-size: 1.8em; margin-bottom: 10px; }
+  .card h4 { font-size: 1.1em; margin-bottom: 7px; }
+  .card p { color: var(--muted); font-size: 0.9em; }
+  .card-new { border-color: rgba(34,197,94,0.4); }
+  .card-new::after { content: 'NEW'; background: var(--green); color: #0a0e17; font-size: 0.65em; font-weight: 700; padding: 2px 7px; border-radius: 6px; float: right; margin-top: -2px; }
+
+  .status { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 0.75em; font-weight: 600; }
+  .status-done { background: rgba(34,197,94,0.15); color: var(--green); }
+  .status-active { background: rgba(0,212,255,0.15); color: var(--accent); }
+  .status-planned { background: rgba(234,179,8,0.15); color: var(--yellow); }
+  .status-future { background: rgba(148,163,184,0.15); color: var(--muted); }
+  .status-blocked { background: rgba(239,68,68,0.15); color: var(--red); }
+
+  .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 13px; margin-bottom: 28px; }
+  .stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; text-align: center; transition: all 0.3s; }
+  .stat-card:hover { border-color: var(--accent); }
+  .stat-val { font-size: 1.9em; font-weight: 700; background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .stat-label { color: var(--muted); font-size: 0.82em; margin-top: 3px; }
+  .stat-card.green .stat-val { background: var(--green); -webkit-background-clip: text; }
+  .stat-card.yellow .stat-val { background: var(--yellow); -webkit-background-clip: text; }
+
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; }
+  th, td { padding: 11px 14px; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.9em; }
+  th { color: var(--accent); font-weight: 600; background: rgba(0,212,255,0.04); }
+  tr:hover td { background: rgba(0,212,255,0.025); }
+
+  /* Timeline */
+  .timeline { position: relative; padding-left: 38px; }
+  .timeline::before { content: ''; position: absolute; left: 13px; top: 0; bottom: 0; width: 2px; background: linear-gradient(to bottom, var(--green), var(--accent), var(--accent2), var(--yellow), var(--muted)); }
+  .tl-item { position: relative; margin-bottom: 24px; }
+  .tl-dot { position: absolute; left: -31px; top: 5px; width: 13px; height: 13px; border-radius: 50%; border: 3px solid; }
+  .tl-dot.done { border-color: var(--green); background: var(--green); }
+  .tl-dot.active { border-color: var(--accent); background: var(--accent); animation: glow 2s ease-in-out infinite; }
+  .tl-dot.planned { border-color: var(--yellow); background: transparent; }
+  .tl-dot.future { border-color: var(--muted); background: transparent; }
+  @keyframes glow { 0%,100% { box-shadow: 0 0 5px rgba(0,212,255,0.3); } 50% { box-shadow: 0 0 14px rgba(0,212,255,0.6); } }
+  .tl-content { background: var(--card); border: 1px solid var(--border); border-radius: 11px; padding: 16px; transition: border-color 0.2s; }
+  .tl-content:hover { border-color: var(--accent); }
+  .tl-date { color: var(--muted); font-size: 0.8em; margin-bottom: 5px; }
+  .tl-version { color: var(--accent2); font-size: 0.8em; font-weight: 600; }
+  .tl-tags { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .tag { background: rgba(0,212,255,0.08); border: 1px solid rgba(0,212,255,0.2); padding: 2px 8px; border-radius: 6px; font-size: 0.74em; color: var(--muted); }
+  .tag.green { background: rgba(34,197,94,0.1); border-color: rgba(34,197,94,0.3); color: var(--green); }
+  .tag.yellow { background: rgba(234,179,8,0.1); border-color: rgba(234,179,8,0.3); color: var(--yellow); }
+
+  /* Roadmap waves */
+  .wave { background: var(--card); border: 1px solid var(--border); border-radius: 14px; margin-bottom: 20px; overflow: hidden; }
+  .wave-header { padding: 16px 20px; display: flex; align-items: center; gap: 12px; cursor: pointer; user-select: none; }
+  .wave-header:hover { background: var(--card-hover); }
+  .wave-title { font-size: 1.1em; font-weight: 600; flex: 1; }
+  .wave-body { padding: 6px 20px 18px; display: none; }
+  .wave-body.open { display: block; }
+  .task-list { list-style: none; }
+  .task-list li { padding: 7px 0; border-bottom: 1px solid rgba(30,41,59,0.5); font-size: 0.91em; display: flex; align-items: flex-start; gap: 10px; }
+  .task-list li:last-child { border-bottom: none; }
+  .task-list li.done { color: var(--muted); }
+  .task-list li.done::before { content: '✅'; flex-shrink: 0; }
+  .task-list li.active::before { content: '⚡'; flex-shrink: 0; color: var(--accent); }
+  .task-list li.planned::before { content: '🔲'; flex-shrink: 0; }
+  .task-list li.blocked::before { content: '🔒'; flex-shrink: 0; color: var(--red); }
+  .task-version { color: var(--accent2); font-size: 0.78em; margin-left: 4px; }
+
+  /* Progress bars */
+  .progress-bar { height: 7px; background: var(--border); border-radius: 4px; overflow: hidden; margin: 6px 0; }
+  .progress-fill { height: 100%; border-radius: 4px; transition: width 1s ease; }
+
+  /* Money flow */
+  .flow-grid { display: grid; gap: 10px; margin: 16px 0; }
+  .flow-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .flow-box { background: var(--card); border: 1px solid var(--border); padding: 10px 16px; border-radius: 10px; font-size: 0.88em; }
+  .flow-box.hl { border-color: var(--accent); background: rgba(0,212,255,0.07); }
+  .flow-box.green { border-color: var(--green); background: rgba(34,197,94,0.07); }
+  .flow-box.yellow { border-color: var(--yellow); background: rgba(234,179,8,0.07); }
+  .flow-box.purple { border-color: var(--accent2); background: rgba(124,58,237,0.07); }
+  .flow-arrow { color: var(--accent); font-size: 1.2em; }
+
+  /* Strategy ladder */
+  .ladder { display: flex; flex-direction: column; gap: 8px; margin: 14px 0; }
+  .ladder-step { display: flex; align-items: stretch; gap: 0; }
+  .ladder-marker { width: 4px; border-radius: 2px; flex-shrink: 0; margin-right: 12px; }
+  .ladder-content { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; flex: 1; }
+  .ladder-content .cap { font-size: 0.8em; color: var(--muted); }
+  .ladder-content .tools { font-size: 0.85em; margin-top: 4px; }
+
+  /* Arch nodes */
+  .arch-layer { background: var(--card); border: 1px solid var(--border); border-radius: 13px; padding: 18px; margin-bottom: 14px; }
+  .arch-layer-title { font-weight: 600; font-size: 1em; margin-bottom: 12px; }
+  .arch-nodes { display: flex; flex-wrap: wrap; gap: 8px; }
+  .arch-node { padding: 7px 14px; border-radius: 9px; font-size: 0.85em; border: 1px solid; cursor: default; }
+  .arch-node.done { border-color: rgba(34,197,94,0.5); background: rgba(34,197,94,0.07); color: var(--green); }
+  .arch-node.active { border-color: rgba(0,212,255,0.5); background: rgba(0,212,255,0.09); color: var(--accent); animation: glow 2s ease-in-out infinite; }
+  .arch-node.planned { border-color: rgba(234,179,8,0.5); background: rgba(234,179,8,0.07); color: var(--yellow); }
+  .arch-node.muted { border-color: var(--border); color: var(--muted); background: transparent; }
+
+  @media (max-width: 768px) {
+    .hero h1 { font-size: 1.9em; }
+    .nav { gap: 5px; padding: 10px; }
+    .nav-btn { padding: 7px 11px; font-size: 0.8em; }
+    .card-grid { grid-template-columns: 1fr; }
+    .stats-row { grid-template-columns: repeat(2, 1fr); }
+    .flow-row { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>⚛️ QuantumTrade AI</h1>
+  <p>Персональная финансовая экосистема с бешеной маржинальностью</p>
+  <div>
+    <span class="version-badge">v10.12.7 · Апрель 2026</span>
+    <span class="version-badge badge-green">Passive Income Focus</span>
+    <span class="version-badge badge-yellow">DCI ✅ Funding Arb Ready</span>
+  </div>
+</div>
+
+<div class="nav">
+  <button class="nav-btn active" onclick="show('overview')">📊 Обзор</button>
+  <button class="nav-btn" onclick="show('arch')">🏗 Архитектура</button>
+  <button class="nav-btn" onclick="show('money')">💰 Поток денег</button>
+  <button class="nav-btn" onclick="show('passive')">🌾 Пассивный доход</button>
+  <button class="nav-btn" onclick="show('timeline')">📅 История</button>
+  <button class="nav-btn" onclick="show('roadmap')">🗺 Дорожная карта</button>
+  <button class="nav-btn" onclick="show('commands')">📱 Команды</button>
+  <button class="nav-btn" onclick="show('economy')">📈 Экономика</button>
+</div>
+
+<!-- ===== OVERVIEW ===== -->
+<div class="section active" id="overview">
+  <h2>📊 Обзор проекта</h2>
+
+  <div class="stats-row">
+    <div class="stat-card"><div class="stat-val">12.5k</div><div class="stat-label">Строк кода (server.py)</div></div>
+    <div class="stat-card green"><div class="stat-val">693%</div><div class="stat-label">Лучший DCI APY</div></div>
+    <div class="stat-card"><div class="stat-val">15</div><div class="stat-label">AI-агентов MiroFish</div></div>
+    <div class="stat-card"><div class="stat-val">8</div><div class="stat-label">GSD агентов (.claude)</div></div>
+    <div class="stat-card yellow"><div class="stat-val">40+</div><div class="stat-label">Сессий разработки</div></div>
+    <div class="stat-card"><div class="stat-val">2</div><div class="stat-label">Биржи (KC+BB)</div></div>
+    <div class="stat-card green"><div class="stat-val">$0</div><div class="stat-label">API cost / день</div></div>
+    <div class="stat-card"><div class="stat-val">~$310</div><div class="stat-label">Текущий капитал</div></div>
+  </div>
+
+  <p style="color: var(--muted); margin-bottom: 22px; line-height: 1.7;">
+    QuantumTrade AI — автономная финансовая экосистема: <strong style="color: var(--text);">пассивный доход (DCI/Funding Arb)</strong> как приоритет #1,
+    торговля с Q-Score + 15 AI-агентами MiroFish как #2. Работает на KuCoin + ByBit, деплоится на Railway,
+    управляется через Telegram. Версия v10.12.7 — все DCI-баги пофикшены, Funding Rate Arb hardened и готов к включению.
+  </p>
+
+  <h3>Что работает прямо сейчас</h3>
+  <div class="card-grid">
+    <div class="card card-new">
+      <div class="card-icon">💎</div>
+      <h4>DCI — Dual Currency Invest <span class="status status-done">РАБОТАЕТ</span></h4>
+      <p>ByBit структурированные продукты, 450–693% APY. VIP-fallback loop (топ-5 кандидатов), capital guard, <strong>auto-reinvest</strong> при расчёте. F&G < 60 → BuyLow, ≥ 60 → SellHigh.</p>
+    </div>
+    <div class="card card-new">
+      <div class="card-icon">⚡</div>
+      <h4>Funding Rate Arb <span class="status status-planned">ГОТОВ К ВКЛЮЧЕНИЮ</span></h4>
+      <p>Спот-лонг + шорт перп = дельта-нейтраль. 10–150% APR. Позиции в PostgreSQL (рестарт не страшен), правильный lot-step (ETH=0.01), точный rollback. Включить: <code>FUNDING_ARB_ENABLED=true</code>.</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">🎯</div>
+      <h4>Double Win <span class="status status-done">ВКЛЮЧЁН</span></h4>
+      <p>Ещё один ByBit structured product. 200–500% APY. Параллельно с DCI. DOUBLE_WIN_ENABLED=true в Railway.</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">🔄</div>
+      <h4>Smart Money Router <span class="status status-done">v10.3</span></h4>
+      <p>Arb $3 → Trade → DCI ($20) → Double Win ($20) → Flex Savings. Yield Router: проактивно редимит из Flex перед DCI (порог $20).</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">🐟</div>
+      <h4>MiroFish v3 <span class="status status-done">15 агентов</span></h4>
+      <p>15 AI-персон голосуют за BUY/SELL/HOLD. Veto при ≥75% против. Память в PostgreSQL. DeepSeek V3 — единственный AI, $0/день.</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">🛡️</div>
+      <h4>Security v10.11.5 <span class="status status-done">HARDENED</span></h4>
+      <p>ADMIN_CHAT_IDS, AUTHORIZED_CHAT_IDS, webhook auth, asyncio.Lock на earn/_dci. Inline keyboard подтверждения для /sell all.</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">💾</div>
+      <h4>Obsidian Knowledge Vault <span class="status status-done">40+ заметок</span></h4>
+      <p>sessions/, debugging/, decisions/, integrations/, patterns/. Vault даёт Claude долгосрочную память — каждая сессия без объяснений контекста.</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">📊</div>
+      <h4>Q-Score Торговля <span class="status status-active">ВТОРИЧНЫЙ</span></h4>
+      <p>Q-Score ≥ 77, TA ≥ 2 сигнала, vol_ratio ≥ 0.65, 4h EMA trend. Partial exit 50% на TP1(4%), trail до TP2(6%). При капитале < $310 — вторичный приоритет.</p>
+    </div>
+  </div>
+
+  <h3>Ключевые достижения v10.9 → v10.12.7</h3>
+  <table>
+    <tr><th>Версия</th><th>Что сделано</th><th>Статус</th></tr>
+    <tr><td>v10.9–v10.10</td><td>DCI полная интеграция ByBit, заменил KuCoin DCI (API недоступен)</td><td><span class="status status-done">✅</span></td></tr>
+    <tr><td>v10.11.1</td><td>DCI priority over Earn, TA filters v2, Earn debug</td><td><span class="status status-done">✅</span></td></tr>
+    <tr><td>v10.11.5</td><td>Security hardening: ADMIN_CHAT_IDS, asyncio.Lock, webhook auth</td><td><span class="status status-done">✅</span></td></tr>
+    <tr><td>v10.12.0</td><td>Wave 2A: vol_ratio filter, 4h EMA trend, cooldown 4h per symbol</td><td><span class="status status-done">✅</span></td></tr>
+    <tr><td>v10.12.2</td><td>DCI "Invalid select price" — re-fetch quote перед placement</td><td><span class="status status-done">✅</span></td></tr>
+    <tr><td>v10.12.3</td><td>DCI "User not VIP" — VIP-fallback loop топ-5 кандидатов</td><td><span class="status status-done">✅</span></td></tr>
+    <tr><td>v10.12.4</td><td>DCI "Amount out of range" — capital check + active position guard</td><td><span class="status status-done">✅</span></td></tr>
+    <tr><td>v10.12.5</td><td>Auto-reinvest DCI, Yield Router $5→$20, /winrate, /api/telegram/notify</td><td><span class="status status-done">✅</span></td></tr>
+    <tr><td>v10.12.6</td><td>Funding Rate Arb полный модуль, /fundarb, стратегический сдвиг</td><td><span class="status status-done">✅</span></td></tr>
+    <tr><td><strong>v10.12.7</strong></td><td>Funding Arb hardening: qty precision, rollback fix, DB persistence, funding tracking</td><td><span class="status status-active">TODAY</span></td></tr>
+  </table>
+</div>
+
+<!-- ===== ARCHITECTURE ===== -->
+<div class="section" id="arch">
+  <h2>🏗 Архитектура системы</h2>
+
+  <div class="arch-layer">
+    <div class="arch-layer-title">🌐 Слой данных</div>
+    <div class="arch-nodes">
+      <span class="arch-node done">KuCoin Spot API</span>
+      <span class="arch-node done">ByBit V5 API (Spot + Linear)</span>
+      <span class="arch-node done">Fear & Greed Index</span>
+      <span class="arch-node done">DeepSeek V3 (MiroFish)</span>
+      <span class="arch-node done">LunarCrush Galaxy Score</span>
+      <span class="arch-node done">Reddit Sentiment</span>
+      <span class="arch-node done">Whale Tracker (blockchain)</span>
+      <span class="arch-node done">DXY + S&P500 (stooq.com)</span>
+      <span class="arch-node done">PostgreSQL (asyncpg)</span>
+    </div>
+  </div>
+
+  <div class="arch-layer">
+    <div class="arch-layer-title">🧠 Слой анализа</div>
+    <div class="arch-nodes">
+      <span class="arch-node done">Q-Score (0–100)</span>
+      <span class="arch-node done">MiroFish v3 (15 AI-агентов)</span>
+      <span class="arch-node done">Advanced TA (MACD/BB/Stoch/ADX/OBV)</span>
+      <span class="arch-node done">4h EMA Trend Confirm</span>
+      <span class="arch-node done">Volume Ratio Filter</span>
+      <span class="arch-node done">Self-Learning v2</span>
+      <span class="arch-node done">Opus Gate (сделки >$15)</span>
+      <span class="arch-node done">QAOA CPU симулятор</span>
+    </div>
+  </div>
+
+  <div class="arch-layer">
+    <div class="arch-layer-title">💰 Слой исполнения — Passive Income Engine</div>
+    <div class="arch-nodes">
+      <span class="arch-node active">DCI ByBit BuyLow/SellHigh ✅</span>
+      <span class="arch-node active">Double Win ByBit ✅</span>
+      <span class="arch-node active">Funding Rate Arb (⚡ Ready)</span>
+      <span class="arch-node done">Flex Savings KC+BB (fallback)</span>
+      <span class="arch-node planned">KuCoin Lending Pro (Wave 1B)</span>
+      <span class="arch-node planned">ByBit Snowball</span>
+      <span class="arch-node planned">Yield Router v2 (APY compare)</span>
+    </div>
+  </div>
+
+  <div class="arch-layer">
+    <div class="arch-layer-title">📊 Слой исполнения — Active Trading</div>
+    <div class="arch-nodes">
+      <span class="arch-node done">KuCoin Spot BUY/SELL</span>
+      <span class="arch-node done">ByBit Spot BUY/SELL</span>
+      <span class="arch-node done">Smart Money Router</span>
+      <span class="arch-node done">Dual-exchange routing (→ max USDT)</span>
+      <span class="arch-node done">TP/SL/Partial Exit/Trail</span>
+      <span class="arch-node done">Stale position 12h/48h auto-sell</span>
+      <span class="arch-node muted">Arbitrage (ARB_EXEC=false, < $500)</span>
+    </div>
+  </div>
+
+  <div class="arch-layer">
+    <div class="arch-layer-title">🤖 GSD v2 Agents (.claude/agents/)</div>
+    <div class="arch-nodes">
+      <span class="arch-node done">wave-orchestrator (координатор)</span>
+      <span class="arch-node done">earn-strategist (DCI/Lending/DW)</span>
+      <span class="arch-node done">trade-analyst (Q-Score/MiroFish)</span>
+      <span class="arch-node done">debugger (баги API/FastAPI)</span>
+      <span class="arch-node done">security-auditor (read-only)</span>
+      <span class="arch-node done">deployer (Railway pipeline)</span>
+      <span class="arch-node done">design-system (Cyberpunk UI)</span>
+      <span class="arch-node done">polymarket-trader (будущее)</span>
+    </div>
+  </div>
+
+  <div class="arch-layer">
+    <div class="arch-layer-title">📱 Слой управления</div>
+    <div class="arch-nodes">
+      <span class="arch-node done">Telegram Bot (30+ команд)</span>
+      <span class="arch-node done">Telegram Mini App (index.html)</span>
+      <span class="arch-node done">quantum-bot-monitor (hourly)</span>
+      <span class="arch-node done">POST /api/telegram/notify</span>
+      <span class="arch-node done">Railway Cloud + git autodeploy</span>
+      <span class="arch-node done">Obsidian Knowledge Vault (40+ заметок)</span>
+      <span class="arch-node done">STATE.md + ROADMAP.md (GSD v2)</span>
+    </div>
+  </div>
+</div>
+
+<!-- ===== MONEY FLOW ===== -->
+<div class="section" id="money">
+  <h2>💰 Поток денег</h2>
+
+  <h3>Smart Money Router — приоритеты распределения</h3>
+  <div class="flow-grid">
+    <div class="flow-row">
+      <div class="flow-box hl">💳 Свободный USDT</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box">🔒 ARB Reserve $3<br><small style="color:var(--muted)">треугольный арб (hardcoded off &lt;$500)</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box">📊 Trade Reserve $2<br><small style="color:var(--muted)">Q-Score торговля (вторичный приоритет)</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box green">💎 DCI $20<br><small style="color:var(--muted)">ПРИОРИТЕТ #1 — 450-693% APY</small></div>
+    </div>
+    <div class="flow-row" style="padding-left: 40px;">
+      <div class="flow-box yellow">🎯 Double Win $20<br><small style="color:var(--muted)">200-500% APY, параллельно с DCI</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box purple">⚡ Funding Arb $10-30<br><small style="color:var(--muted)">10-150% APR, delta-neutral</small></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box">💧 Flex Savings<br><small style="color:var(--muted)">fallback, 1-10% APR</small></div>
+    </div>
+  </div>
+
+  <h3>DCI — как работает цикл</h3>
+  <div class="flow-row" style="margin: 14px 0; flex-wrap: wrap; gap: 8px;">
+    <div class="flow-box hl">earn_monitor_loop<br><small>каждые 15 мин</small></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box">каждый 4-й цикл<br><small>~60 мин</small></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box green">dci_auto_place_idle()<br><small>VIP-fallback топ-5</small></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box">ByBit DCI ордер<br><small>$20 · 450-693% APY</small></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box yellow">Расчёт ~24ч<br><small>USDT или монета</small></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box green">♻️ Auto-reinvest<br><small>15с → новый ордер</small></div>
+  </div>
+
+  <h3>Funding Rate Arb — как работает</h3>
+  <div class="flow-row" style="margin: 14px 0; flex-wrap: wrap; gap: 8px;">
+    <div class="flow-box">$20 USDT свободных<br><small>на ByBit UNIFIED</small></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box hl">$10 купить ETH spot<br><small>UNIFIED account</small></div>
+    <div class="flow-box purple">$10 short ETHUSDT perp<br><small>1x leverage, market sell</small></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box green">Дельта = 0<br><small>цена не важна</small></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box yellow">+funding каждые 8ч<br><small>0.01%–0.1% / 8ч</small></div>
+  </div>
+
+  <h3>Yield Router — автоматический редим</h3>
+  <table>
+    <tr><th>Продукт</th><th>APY/APR</th><th>Статус</th><th>Авто-действие</th></tr>
+    <tr><td>🏆 DCI ByBit</td><td><span style="color:var(--green)">450–693%</span></td><td><span class="status status-done">Активен</span></td><td>Размещает $20, auto-reinvest</td></tr>
+    <tr><td>🎯 Double Win ByBit</td><td><span style="color:var(--green)">200–500%</span></td><td><span class="status status-done">Активен</span></td><td>Размещает параллельно с DCI</td></tr>
+    <tr><td>⚡ Funding Rate Arb</td><td><span style="color:var(--yellow)">10–150%</span></td><td><span class="status status-planned">Готов</span></td><td>Открывает при rate > 0.01%/8ч</td></tr>
+    <tr><td>📦 KuCoin Lending Pro</td><td><span style="color:var(--yellow)">20–50% пики</span></td><td><span class="status status-planned">Запланирован</span></td><td>При rate > 10% APR (Wave 1B)</td></tr>
+    <tr><td>💧 Flex Savings KC+BB</td><td><span style="color:var(--muted)">1–10%</span></td><td><span class="status status-active">Fallback</span></td><td>Редим при usdt_free < $20</td></tr>
+  </table>
+</div>
+
+<!-- ===== PASSIVE INCOME ===== -->
+<div class="section" id="passive">
+  <h2>🌾 Пассивный доход — стратегия</h2>
+
+  <h3>Почему пассивный доход важнее торговли при $310</h3>
+  <div class="card-grid">
+    <div class="card">
+      <h4>📊 Торговля при $310</h4>
+      <div class="progress-bar"><div class="progress-fill" style="width:25%; background: var(--red)"></div></div>
+      <p>~$0.5–1/день с учётом комиссий, слиппажа, потерь. Win rate нужен >55% чтобы быть в плюсе. Рыночный риск высокий.</p>
+    </div>
+    <div class="card card-new">
+      <h4>💎 DCI при $310</h4>
+      <div class="progress-bar"><div class="progress-fill" style="width:85%; background: var(--green)"></div></div>
+      <p>$20 в DCI при 500% APY = ~<strong style="color:var(--green)">$0.27/день</strong> с одного ордера. При постоянном реинвесте — compound. Нет рыночного риска.</p>
+    </div>
+    <div class="card">
+      <h4>⚡ Funding Arb при $20+</h4>
+      <div class="progress-bar"><div class="progress-fill" style="width:60%; background: var(--accent)"></div></div>
+      <p>$20 при 50% APR = ~<strong style="color:var(--accent)">$0.027/день</strong>. Небольшой но стабильный. Delta-neutral = нет directional риска.</p>
+    </div>
+  </div>
+
+  <h3>Лестница роста капитала</h3>
+  <div class="ladder">
+    <div class="ladder-step">
+      <div class="ladder-marker" style="background: var(--green)"></div>
+      <div class="ladder-content">
+        <div class="cap">Сейчас: ~$310</div>
+        <div class="tools">
+          <span class="status status-done">DCI ByBit</span>
+          <span class="status status-done">Double Win</span>
+          <span class="status status-active">Funding Arb (готов)</span>
+          <span class="status status-active">Торговля (вторичная)</span>
+        </div>
+        <div style="margin-top: 6px; color: var(--muted); font-size: 0.85em;">Фокус: максимизировать DCI циклы + включить Funding Arb</div>
+      </div>
+    </div>
+    <div class="ladder-step">
+      <div class="ladder-marker" style="background: var(--accent)"></div>
+      <div class="ladder-content">
+        <div class="cap">При $500+</div>
+        <div class="tools">
+          <span class="status status-done">DCI + Double Win</span>
+          <span class="status status-planned">Funding Arb активен $30</span>
+          <span class="status status-planned">KuCoin Lending Pro</span>
+        </div>
+        <div style="margin-top: 6px; color: var(--muted); font-size: 0.85em;">Добавляем Lending Pro — spike rates 20-50% APR</div>
+      </div>
+    </div>
+    <div class="ladder-step">
+      <div class="ladder-marker" style="background: var(--yellow)"></div>
+      <div class="ladder-content">
+        <div class="cap">При $1000+</div>
+        <div class="tools">
+          <span class="status status-planned">Все passive streams</span>
+          <span class="status status-planned">Активная торговля полная</span>
+          <span class="status status-planned">ARB включён</span>
+        </div>
+        <div style="margin-top: 6px; color: var(--muted); font-size: 0.85em;">Arbitrage имеет смысл. Торговые риски лучше абсорбируются</div>
+      </div>
+    </div>
+    <div class="ladder-step">
+      <div class="ladder-marker" style="background: var(--muted)"></div>
+      <div class="ladder-content">
+        <div class="cap">При $2000+</div>
+        <div class="tools">
+          <span class="status status-future">CCXT multi-exchange</span>
+          <span class="status status-future">Binance/OKX</span>
+          <span class="status status-future">Polymarket signals</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h3>Passive Income Engine — текущий статус</h3>
+  <table>
+    <tr><th>Продукт</th><th>Railway var</th><th>Статус</th><th>Следующий шаг</th></tr>
+    <tr><td>💎 DCI BuyLow/SellHigh</td><td>DCI_ENABLED=true</td><td><span class="status status-done">✅ Работает</span></td><td>Следить за auto-reinvest ♻️</td></tr>
+    <tr><td>🎯 Double Win</td><td>DOUBLE_WIN_ENABLED=true</td><td><span class="status status-done">✅ Работает</span></td><td>—</td></tr>
+    <tr><td>⚡ Funding Rate Arb</td><td>FUNDING_ARB_ENABLED=<strong>false</strong></td><td><span class="status status-planned">⚡ Код готов</span></td><td>Поставить <code>true</code> при $10+ free</td></tr>
+    <tr><td>📦 KuCoin Lending Pro</td><td>—</td><td><span class="status status-planned">⏳ Не реализован</span></td><td>Wave 1B — реализовать</td></tr>
+    <tr><td>💧 Flex Savings</td><td>EARN_ENABLED=true</td><td><span class="status status-done">✅ Fallback</span></td><td>—</td></tr>
+  </table>
+</div>
+
+<!-- ===== TIMELINE ===== -->
+<div class="section" id="timeline">
+  <h2>📅 История разработки</h2>
+  <div class="timeline">
+
+    <div class="tl-item">
+      <div class="tl-dot future"></div>
+      <div class="tl-content">
+        <div class="tl-date">Впереди</div>
+        <div class="tl-version">v10.13+</div>
+        <strong>KuCoin Lending Pro + ByBit Snowball + Yield Router v2</strong>
+        <div class="tl-tags"><span class="tag yellow">Wave 1B</span><span class="tag yellow">Lending</span></div>
+      </div>
+    </div>
+
+    <div class="tl-item">
+      <div class="tl-dot active"></div>
+      <div class="tl-content">
+        <div class="tl-date">2026-04-06</div>
+        <div class="tl-version">v10.12.7 — TODAY</div>
+        <strong>Funding Arb Hardening: qty precision, rollback fix, DB persistence, funding tracking</strong>
+        <p style="color:var(--muted); font-size:0.87em; margin-top:5px;">4 критических фикса перед включением. Позиции теперь в PostgreSQL — рестарт Railway не страшен.</p>
+        <div class="tl-tags"><span class="tag green">deployed</span><span class="tag green">fundarb</span><span class="tag green">db</span></div>
+      </div>
+    </div>
+
+    <div class="tl-item">
+      <div class="tl-dot done"></div>
+      <div class="tl-content">
+        <div class="tl-date">2026-04-06</div>
+        <div class="tl-version">v10.12.2 → v10.12.6</div>
+        <strong>DCI fix chain (4 бага подряд) + Funding Rate Arb модуль + стратегический сдвиг</strong>
+        <p style="color:var(--muted); font-size:0.87em; margin-top:5px;">
+          v10.12.2: re-fetch selectPrice · v10.12.3: VIP-fallback loop · v10.12.4: capital guard ·
+          v10.12.5: auto-reinvest + /winrate + /api/telegram/notify · v10.12.6: Funding Arb полный модуль
+        </p>
+        <div class="tl-tags"><span class="tag green">dci-fixed</span><span class="tag green">passive-income</span><span class="tag">funding-arb</span></div>
+      </div>
+    </div>
+
+    <div class="tl-item">
+      <div class="tl-dot done"></div>
+      <div class="tl-content">
+        <div class="tl-date">2026-04-05</div>
+        <div class="tl-version">v10.11.1 → v10.12.1</div>
+        <strong>Wave 2A Smart Trading: vol_ratio filter, 4h EMA trend, DCI priority fix, Earn debug</strong>
+        <div class="tl-tags"><span class="tag">smart-trading</span><span class="tag">dci</span><span class="tag">security</span></div>
+      </div>
+    </div>
+
+    <div class="tl-item">
+      <div class="tl-dot done"></div>
+      <div class="tl-content">
+        <div class="tl-date">2026-04-03</div>
+        <div class="tl-version">v10.9.4 → v10.10</div>
+        <strong>Command Center, двойное резервирование fix, ByBit DCI финализация</strong>
+        <div class="tl-tags"><span class="tag">dci</span><span class="tag">bybit</span><span class="tag">bugfix</span></div>
+      </div>
+    </div>
+
+    <div class="tl-item">
+      <div class="tl-dot done"></div>
+      <div class="tl-content">
+        <div class="tl-date">2026-04-03</div>
+        <div class="tl-version">v10.2.2 → v10.9.3</div>
+        <strong>LunarCrush backoff, Earn debug, Agency Agents v1, Security hardening v1</strong>
+        <div class="tl-tags"><span class="tag">earn</span><span class="tag">agents</span><span class="tag">lunarcrush</span></div>
+      </div>
+    </div>
+
+    <div class="tl-item">
+      <div class="tl-dot done"></div>
+      <div class="tl-content">
+        <div class="tl-date">2026-04-02</div>
+        <div class="tl-version">Obsidian Vault запуск</div>
+        <strong>Создан Knowledge Vault: структура, первые 15 заметок, vault в CLAUDE.md</strong>
+        <div class="tl-tags"><span class="tag">obsidian</span><span class="tag">vault</span><span class="tag">gsd-v2</span></div>
+      </div>
+    </div>
+
+    <div class="tl-item">
+      <div class="tl-dot done"></div>
+      <div class="tl-content">
+        <div class="tl-date">2026-04-01</div>
+        <div class="tl-version">v10.1 → v10.2.1</div>
+        <strong>Earn Engine запуск: KuCoin + ByBit Flex Savings, Smart Money Router, cost protection ($0/день)</strong>
+        <div class="tl-tags"><span class="tag green">earn-engine</span><span class="tag">cost-zero</span><span class="tag">router</span></div>
+      </div>
+    </div>
+
+    <div class="tl-item">
+      <div class="tl-dot done"></div>
+      <div class="tl-content">
+        <div class="tl-date">Ранее · v10.0</div>
+        <div class="tl-version">Dual-Exchange Foundation</div>
+        <strong>ByBit интеграция, dual-exchange routing, MiroFish v3, Self-Learning v2, PostgreSQL</strong>
+        <div class="tl-tags"><span class="tag">bybit</span><span class="tag">mirofish</span><span class="tag">postgresql</span></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ===== ROADMAP ===== -->
+<div class="section" id="roadmap">
+  <h2>🗺 Дорожная карта</h2>
+
+  <div style="background: rgba(34,197,94,0.07); border: 1px solid rgba(34,197,94,0.3); border-radius: 12px; padding: 14px 18px; margin-bottom: 20px;">
+    <strong style="color: var(--green)">📍 Сейчас: v10.12.7</strong> — Все DCI-баги пофикшены, Funding Arb hardened.
+    Следующий приоритет: <strong>включить FUNDING_ARB_ENABLED=true</strong> + <strong>KuCoin Lending Pro</strong>.
+  </div>
+
+  <div class="wave">
+    <div class="wave-header" onclick="toggle(this)">
+      <span>🌊</span>
+      <span class="wave-title">Wave 1 — Earn Engine (Пассивный доход)</span>
+      <span class="status status-active">В РАБОТЕ</span>
+      <span style="color:var(--muted)">▼</span>
+    </div>
+    <div class="wave-body open">
+      <p style="color:var(--muted); font-size:0.88em; margin-bottom:12px;">Phase A ✅ развёрнут · Phase B — следующий · Phase C активен</p>
+      <ul class="task-list">
+        <li class="done">Phase A: KuCoin + ByBit Flex Savings (Earn Engine v10.2) <span class="task-version">v10.2.3</span></li>
+        <li class="done">DCI ByBit BuyLow/SellHigh — полная интеграция <span class="task-version">v10.9–v10.10</span></li>
+        <li class="done">DCI fix chain — 4 бага решены (price/VIP/capital/reinvest) <span class="task-version">v10.12.2–v10.12.5</span></li>
+        <li class="done">Double Win ByBit — включён, работает параллельно <span class="task-version">v10.12.5</span></li>
+        <li class="done">Yield Router — проактивный редим из Flex перед DCI <span class="task-version">v10.12.5</span></li>
+        <li class="done">Funding Rate Arb — полный модуль + hardening <span class="task-version">v10.12.6–v10.12.7</span></li>
+        <li class="active">Включить FUNDING_ARB_ENABLED=true (нужен $10+ free на ByBit) <span class="task-version">Railway</span></li>
+        <li class="planned">KuCoin Lending Pro — kucoin_lending_auto_place() при rate > 10% APR 🔴</li>
+        <li class="planned">Lending Spike Catcher — мониторинг hourly rates</li>
+        <li class="planned">ByBit Snowball продукты — аналог DCI для sideways рынка</li>
+        <li class="planned">Yield Router v2 — полное APY сравнение + авто-ротация</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="wave">
+    <div class="wave-header" onclick="toggle(this)">
+      <span>🌊</span>
+      <span class="wave-title">Wave 2 — Smart Trading v2 (Качество сделок)</span>
+      <span class="status status-done">Phase A ✅</span>
+      <span style="color:var(--muted)">▼</span>
+    </div>
+    <div class="wave-body open">
+      <ul class="task-list">
+        <li class="done">Минимум 2 подтверждающих TA индикатора для BUY <span class="task-version">v10.11.1</span></li>
+        <li class="done">Volume filter: vol_ratio ≥ 0.65 <span class="task-version">v10.12.0</span></li>
+        <li class="done">4h EMA trend confirmation <span class="task-version">v10.12.0</span></li>
+        <li class="done">Cooldown per-symbol 4 часа <span class="task-version">v10.11.1</span></li>
+        <li class="done">Partial exit 50% на TP1(4%), trail до TP2(6%) <span class="task-version">v10.12.0</span></li>
+        <li class="done">/winrate — win rate по символам из PostgreSQL <span class="task-version">v10.12.5b</span></li>
+        <li class="planned">Max portfolio allocation: не более 30% в одну монету</li>
+        <li class="planned">Trailing stop v2: динамический trail по ATR</li>
+        <li class="planned">PnL breakdown — какие монеты зарабатывают/теряют</li>
+        <li class="planned">Backtesting engine на истории</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="wave">
+    <div class="wave-header" onclick="toggle(this)">
+      <span>🌊</span>
+      <span class="wave-title">Wave 3 — Multi-Exchange via CCXT</span>
+      <span class="status status-blocked">BLOCKED: нет API ключей</span>
+      <span style="color:var(--muted)">▼</span>
+    </div>
+    <div class="wave-body">
+      <ul class="task-list">
+        <li class="blocked">Binance API ключи — заблокировано</li>
+        <li class="blocked">OKX API ключи — заблокировано</li>
+        <li class="planned">CCXT Foundation: exchange_factory(name) + unified API</li>
+        <li class="planned">Cross-exchange APY comparison (earn_compare_all_exchanges)</li>
+        <li class="planned">Promotional Rate Hunter — мониторинг промо-ставок</li>
+        <li class="planned">BUY/SELL routing по лучшей цене на 3+ биржах</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="wave">
+    <div class="wave-header" onclick="toggle(this)">
+      <span>🌊</span>
+      <span class="wave-title">Wave 4 — Автономия (Telegram→Claude Code)</span>
+      <span class="status status-planned">ЗАПЛАНИРОВАН</span>
+      <span style="color:var(--muted)">▼</span>
+    </div>
+    <div class="wave-body">
+      <ul class="task-list">
+        <li class="done">Obsidian Knowledge Vault — 40+ заметок, GSD v2</li>
+        <li class="done">quantum-bot-monitor hourly reports через /api/telegram/notify</li>
+        <li class="planned">Claude Code CLI на MacBook</li>
+        <li class="planned">instar setup — Telegram→Claude Code мост</li>
+        <li class="planned">Remote deploy pipeline: Telegram → CC → git push → Railway</li>
+        <li class="planned">Auto-diagnostics: каждые 6ч → отчёт в Telegram</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="wave">
+    <div class="wave-header" onclick="toggle(this)">
+      <span>🌊</span>
+      <span class="wave-title">Wave 5 — UI & AI Upgrades</span>
+      <span class="status status-future">БУДУЩЕЕ</span>
+      <span style="color:var(--muted)">▼</span>
+    </div>
+    <div class="wave-body">
+      <ul class="task-list">
+        <li class="planned">CSS Design Tokens (OKLCH) + Glassmorphism + Cyberpunk в Mini App</li>
+        <li class="planned">Earn Dashboard + Funding Arb визуализация в Mini App</li>
+        <li class="planned">DeepSeek V3.2 reasoning (когда оплата)</li>
+        <li class="planned">ML price prediction (LSTM/Transformer)</li>
+        <li class="future">Polymarket prediction markets интеграция</li>
+        <li class="future">DeFi (Uniswap, AAVE)</li>
+        <li class="future">Налоговый калькулятор</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>🎯 Приоритеты прямо сейчас</h3>
+  <table>
+    <tr><th>Приоритет</th><th>Задача</th><th>Действие</th></tr>
+    <tr><td><span style="color:var(--red)">🔴 СЕГОДНЯ</span></td><td>Включить Funding Rate Arb</td><td>Railway: FUNDING_ARB_ENABLED=true, проверить /fundarb</td></tr>
+    <tr><td><span style="color:var(--red)">🔴 НЕДЕЛЯ</span></td><td>KuCoin Lending Pro</td><td>Реализовать kucoin_lending_auto_place() Wave 1B</td></tr>
+    <tr><td><span style="color:var(--yellow)">🟡 НЕДЕЛЯ</span></td><td>ByBit Snowball</td><td>Ещё один structured product для sideways</td></tr>
+    <tr><td><span style="color:var(--yellow)">🟡 МЕСЯЦ</span></td><td>Yield Router v2</td><td>APY сравнение всех продуктов, авто-ротация</td></tr>
+    <tr><td><span style="color:var(--muted)">⚪ КОГДА</span></td><td>CCXT Binance/OKX</td><td>Нужны API ключи</td></tr>
+  </table>
+</div>
+
+<!-- ===== COMMANDS ===== -->
+<div class="section" id="commands">
+  <h2>📱 Telegram команды</h2>
+
+  <div class="card-grid">
+    <div class="card">
+      <h4>💎 Пассивный доход</h4>
+      <table>
+        <tr><th>Команда</th><th>Описание</th></tr>
+        <tr><td><code>/earn</code></td><td>Статус Earn (DCI, Double Win, Flex)</td></tr>
+        <tr><td><code>/fundarb</code></td><td>🆕 Live ставки ETH/SOL/BTC + открытые позиции</td></tr>
+        <tr><td><code>/winrate</code></td><td>🆕 Win rate по монетам из PostgreSQL</td></tr>
+        <tr><td><code>/router</code></td><td>Smart Money Router статус</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h4>📊 Торговля и баланс</h4>
+      <table>
+        <tr><th>Команда</th><th>Описание</th></tr>
+        <tr><td><code>/stats</code></td><td>PnL, win rate, открытые позиции</td></tr>
+        <tr><td><code>/balance</code></td><td>KuCoin + ByBit балансы</td></tr>
+        <tr><td><code>/positions</code></td><td>Открытые торговые позиции</td></tr>
+        <tr><td><code>/analyze</code></td><td>Анализ монеты Q-Score</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h4>🛠 Управление</h4>
+      <table>
+        <tr><th>Команда</th><th>Описание</th></tr>
+        <tr><td><code>/settings</code></td><td>Параметры бота</td></tr>
+        <tr><td><code>/diag</code></td><td>Диагностика системы</td></tr>
+        <tr><td><code>/sell [монета]</code></td><td>Продать позицию</td></tr>
+        <tr><td><code>/buy [монета]</code></td><td>Ручная покупка</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h4>🤖 AI и аналитика</h4>
+      <table>
+        <tr><th>Команда</th><th>Описание</th></tr>
+        <tr><td><code>/mirofish</code></td><td>15 AI-агентов анализ</td></tr>
+        <tr><td><code>/sentiment</code></td><td>Рыночный сентимент</td></tr>
+        <tr><td><code>/macro</code></td><td>Макро (DXY, S&P500)</td></tr>
+        <tr><td><code>/ask [вопрос]</code></td><td>AI консультация</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <h3>Railway Variables — ключевые</h3>
+  <table>
+    <tr><th>Variable</th><th>Значение</th><th>Статус</th></tr>
+    <tr><td>DCI_ENABLED</td><td>true</td><td><span class="status status-done">✅</span></td></tr>
+    <tr><td>DCI_DIRECTION</td><td>Auto (F&G < 60 → BuyLow)</td><td><span class="status status-done">✅</span></td></tr>
+    <tr><td>DCI_MIN_APY_PCT</td><td>15</td><td><span class="status status-done">✅</span></td></tr>
+    <tr><td>DCI_MAX_INVEST_USDT</td><td>20</td><td><span class="status status-done">✅</span></td></tr>
+    <tr><td>DOUBLE_WIN_ENABLED</td><td>true</td><td><span class="status status-done">✅</span></td></tr>
+    <tr><td><strong>FUNDING_ARB_ENABLED</strong></td><td><strong>false → включить!</strong></td><td><span class="status status-planned">⚡ Ready</span></td></tr>
+    <tr><td>FUNDING_ARB_MIN_RATE</td><td>0.0001 (0.01%/8h)</td><td><span class="status status-done">✅</span></td></tr>
+    <tr><td>FUNDING_ARB_MAX_USDT</td><td>30</td><td><span class="status status-done">✅</span></td></tr>
+    <tr><td>EARN_ENABLED</td><td>true</td><td><span class="status status-done">✅</span></td></tr>
+    <tr><td>MIN_Q_SCORE</td><td>77 (auto-tune 72–90)</td><td><span class="status status-done">✅</span></td></tr>
+    <tr><td>RISK_PER_TRADE</td><td>0.08 (8%)</td><td><span class="status status-done">✅</span></td></tr>
+  </table>
+</div>
+
+<!-- ===== ECONOMY ===== -->
+<div class="section" id="economy">
+  <h2>📈 Экономика проекта</h2>
+
+  <h3>Текущие показатели</h3>
+  <div class="stats-row">
+    <div class="stat-card green"><div class="stat-val">$0</div><div class="stat-label">API cost / день</div></div>
+    <div class="stat-card"><div class="stat-val">~$310</div><div class="stat-label">Капитал</div></div>
+    <div class="stat-card green"><div class="stat-val">693%</div><div class="stat-label">Макс DCI APY</div></div>
+    <div class="stat-card"><div class="stat-val">~$0.27</div><div class="stat-label">DCI доход / день ($20)</div></div>
+    <div class="stat-card yellow"><div class="stat-val">10–150%</div><div class="stat-label">Funding Arb APR</div></div>
+    <div class="stat-card"><div class="stat-val">TBD</div><div class="stat-label">Trading Win Rate</div></div>
+  </div>
+
+  <h3>Прогнозы пассивного дохода</h3>
+  <table>
+    <tr><th>Сценарий</th><th>Капитал в работе</th><th>APY/APR</th><th>Доход/день</th><th>Доход/месяц</th></tr>
+    <tr><td>🟢 DCI сейчас</td><td>$20</td><td>500%</td><td>$0.27</td><td>~$8.22</td></tr>
+    <tr><td>🟢 DCI + Funding Arb</td><td>$40</td><td>400%+50%</td><td>$0.44</td><td>~$13.7</td></tr>
+    <tr><td>🟡 При $500 капитале</td><td>$100</td><td>300%+50%</td><td>$1.09</td><td>~$33</td></tr>
+    <tr><td>🟡 При $1000 капитале</td><td>$300</td><td>250%+50%</td><td>$2.74</td><td>~$82</td></tr>
+    <tr><td>⚪ При $2000 + CCXT</td><td>$800</td><td>150%+100%</td><td>$5.48</td><td>~$164</td></tr>
+  </table>
+
+  <h3>Метрики успеха — цели</h3>
+  <table>
+    <tr><th>Метрика</th><th>Сейчас</th><th>Цель v11.0</th><th>Цель v13.0</th></tr>
+    <tr><td>Биржи</td><td>2 (KC+BB)</td><td>2 + Lending Pro</td><td>4-5 + DeFi</td></tr>
+    <tr><td>Passive APY</td><td>450-693% DCI</td><td>+Funding Arb +Lending</td><td>Multi-stream auto-rotate</td></tr>
+    <tr><td>API cost/день</td><td>$0</td><td>$0 (DeepSeek only)</td><td>$0.5-1 (с ML)</td></tr>
+    <tr><td>Капитал</td><td>~$310</td><td>$500+</td><td>$1000+</td></tr>
+    <tr><td>Passive доход/мес</td><td>~$8</td><td>$30-50</td><td>$100+</td></tr>
+    <tr><td>Trading win rate</td><td>TBD</td><td>55%+</td><td>60%+</td></tr>
+    <tr><td>Автономия</td><td>Railway + Telegram</td><td>+Claude Code remote</td><td>Full Auto</td></tr>
+    <tr><td>Obsidian заметки</td><td>40+</td><td>80+</td><td>150+</td></tr>
+  </table>
+
+  <h3>Структура расходов</h3>
+  <table>
+    <tr><th>Статья</th><th>Стоимость</th><th>Примечание</th></tr>
+    <tr><td>DeepSeek V3 (MiroFish)</td><td>~$0.01–0.05/день</td><td>15 агентов × $0.001–0.003 per call</td></tr>
+    <tr><td>Railway Deploy</td><td>~$5/месяц</td><td>PostgreSQL + сервер</td></tr>
+    <tr><td>ByBit комиссии</td><td>0.1% taker</td><td>spot, DCI/DW — бесплатно</td></tr>
+    <tr><td>KuCoin комиссии</td><td>0.1% taker</td><td>spot</td></tr>
+    <tr><td>Anthropic / Claude</td><td>$0</td><td>Не используется в торговле</td></tr>
+    <tr><td>LunarCrush</td><td>$0</td><td>Бесплатный tier + rate limit backoff</td></tr>
+  </table>
+</div>
+
+<script>
+function show(id) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  event.target.classList.add('active');
+}
+
+function toggle(header) {
+  const body = header.nextElementSibling;
+  body.classList.toggle('open');
+  const arrow = header.querySelector('span:last-child');
+  if (arrow) arrow.textContent = body.classList.contains('open') ? '▲' : '▼';
+}
+
+// Init: open first two waves
+document.querySelectorAll('.wave-body.open').forEach(b => {
+  const arrow = b.previousElementSibling.querySelector('span:last-child');
+  if (arrow) arrow.textContent = '▲';
+});
+</script>
+</body>
+</html>
