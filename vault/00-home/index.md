@@ -1,7 +1,7 @@
 ---
 tags: [home, index]
 date: 2026-04-06
-version: v10.12.6
+version: v10.14.0
 ---
 # QuantumTrade AI — Knowledge Vault
 
@@ -47,9 +47,12 @@ version: v10.12.6
 - [[Q-Score auto-tune еженедельная самонастройка порога]] ← NEW v10.10
 
 ## Пассивный доход
-- [[DCI стратегия фокус на пассивный доход при малом капитале]] ← NEW
-- [[Funding Rate Arb дельта-нейтральная стратегия сбора ставок]] ← NEW
-- [[VIP-only DCI продукты надо пропускать по ошибке]] ← NEW
+- [[DCI стратегия фокус на пассивный доход при малом капитале]]
+- [[Funding Rate Arb дельта-нейтральная стратегия сбора ставок]]
+- [[VIP-only DCI продукты надо пропускать по ошибке]]
+- [[KuCoin Lending margin lending 10-50% APR авто-размещение]] ← NEW v10.13.0
+- [[ByBit Snowball range-bound product только при боковом рынке F&G 25-70]] ← NEW v10.14.0
+- [[Yield Router v2 сравнение 7 продуктов с режим-коэффициентами]] ← NEW v10.14.0
 
 ## Сессии
 - [[2026-04-01 earn engine и cost protection]]
@@ -57,7 +60,8 @@ version: v10.12.6
 - [[2026-04-03 v10.2.2 LunarCrush backoff и Earn debug]]
 - [[2026-04-03 v10.9.4 command center и двойное резервирование]]
 - [[2026-04-05 v10.9-v10.10 DCI финализация и три апгрейда]]
-- [[2026-04-06 v10.12.2-v10.12.6 DCI fix chain и passive income focus]] ← NEW
+- [[2026-04-06 v10.12.2-v10.12.6 DCI fix chain и passive income focus]]
+- [[2026-04-06 v10.13-v10.14 passive income suite завершён]] ← NEW
 
 ## Текущие приоритеты
 → см. [[текущие приоритеты]]

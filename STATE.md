@@ -4,18 +4,26 @@
 > Архитектура: GSD v2 Wave Execution
 
 ## Текущее состояние бота
-- **Версия:** 10.12.6 (deployed на Railway)
+- **Версия:** 10.14.0 (deployed на Railway)
 - **Автопилот:** включён, Q≥77 (динамический через self-learning)
 - **Арбитраж:** ARB_EXEC_ENABLED=False (hardcoded off — баланс <$500)
 - **Биржи:** KuCoin Spot + ByBit Spot (dual-exchange routing)
 - **DCI:** ✅ РАБОТАЕТ — auto-reinvest + VIP-fallback + capital check
 - **Double Win:** ✅ ENABLED в Railway
-- **Funding Rate Arb:** ✅ КОД ГОТОВ — FUNDING_ARB_ENABLED=false (ждёт капитала)
+- **Funding Rate Arb:** ✅ КОД ГОТОВ v10.12.7 — FUNDING_ARB_ENABLED=false (ждёт капитала)
+- **KuCoin Lending:** ✅ КОД ГОТОВ v10.13.0 — LENDING_ENABLED=false (включить!)
+- **Snowball:** ✅ КОД ГОТОВ v10.14.0 — SNOWBALL_ENABLED=false (включить при F&G 30-65)
+- **Yield Router v2:** ✅ РАБОТАЕТ — каждый час логирует лучший продукт, /yrouter команда
 
-## Стратегический фокус (изменён 2026-04-06)
-**Приоритет #1 — Пассивный доход** (DCI → Funding Arb → Lending)
+## 🎉 Подтверждённые результаты
+- **DCI +20.1267 USDT** (2026-04-05 21:06 → 2026-04-06 10:14) — ETH/USDT BuyLow
+  Бот работает автономно, авто-реинвест активен
+
+## Стратегический фокус
+**Приоритет #1 — Пассивный доход** (DCI → Lending → Snowball → Funding Arb)
 При ~$310 капитала DCI даёт в 3x больше чем spot trading.
-Торговля остаётся, но уступает место passive income до роста капитала до $1000+.
+Passive Income Suite полностью реализован (v10.13-v10.14).
+Включить Lending + Snowball в ближайшие дни.
 
 ## Параметры безопасности (v10.11.5+)
 - ADMIN_CHAT_IDS: настроен в Railway Variables ✅
@@ -26,20 +34,23 @@
 ## Wave Execution Status (GSD v2)
 ```
 Completed: Wave 1A (Earn Engine), Wave 1A+ (DCI ByBit full), Security Audit,
-           Wave 2A (Smart Filters), DCI fix chain v10.12.2-v10.12.6
-Current:   Passive Income Focus — DCI auto-reinvest + Funding Rate Arb
-Next:      KuCoin Lending Pro (Wave 1B) → Funding Arb live test → CCXT (Wave 3A)
+           Wave 2A (Smart Filters), DCI fix chain v10.12.2-v10.12.6,
+           Wave 1B (KuCoin Lending Pro), Wave 1C (Snowball + Yield Router v2)
+Current:   Passive Income Suite задеплоен — сбор данных
+Next:      Включить LENDING_ENABLED + SNOWBALL_ENABLED → UI дашборд
 Blocked:   Binance/OKX API keys (Wave 3A multi-exchange)
 ```
 
-## Passive Income Engine (v10.12.6)
+## Passive Income Engine (v10.14.0)
 | Продукт | Статус | APY | Railway var |
 |---------|--------|-----|-------------|
-| DCI ByBit BuyLow/SellHigh | ✅ Активен, auto-reinvest | 450-850% | DCI_ENABLED=true |
-| Double Win ByBit | ✅ Активен | 200-500% | DOUBLE_WIN_ENABLED=true |
-| Funding Rate Arb | ✅ Код готов | 10-150% | FUNDING_ARB_ENABLED=false |
+| DCI ByBit BuyLow/SellHigh | ✅ Активен, auto-reinvest | 100-900% | DCI_ENABLED=true |
+| Double Win ByBit | ✅ Активен | 5-30% | DOUBLE_WIN_ENABLED=true |
+| Funding Rate Arb | ✅ Код готов v10.12.7 | 10-150% | FUNDING_ARB_ENABLED=false |
+| KuCoin Lending Pro | ✅ Код готов v10.13.0 | 10-50% APR | LENDING_ENABLED=false → включить |
+| ByBit Snowball | ✅ Код готов v10.14.0 | 10-50% | SNOWBALL_ENABLED=false → при F&G 30-65 |
 | Flex Savings KC+BB | ✅ Fallback | 1-10% | EARN_ENABLED=true |
-| KuCoin Lending Pro | ⏳ Не реализован | 20-50% пики | — |
+| Yield Router v2 | ✅ Активен (скан) | — | авто-каждый час |
 
 ## DCI fix история (важно для отладки)
 - "Invalid select price" → re-fetch quote перед placement (v10.12.2)
@@ -48,10 +59,21 @@ Blocked:   Binance/OKX API keys (Wave 3A multi-exchange)
 - Auto-reinvest: `dci_check_settlements()` → 15с sleep → `dci_auto_place_idle()` (v10.12.5)
 - Yield Router: порог редима из Flex повышен $5→$20 (v10.12.5)
 
+## Funding Arb fix история (v10.12.7)
+- Qty precision: `_round_perp_qty()` с `_BYBIT_PERP_QTY_STEPS` (ETH=0.01, BTC=0.001)
+- Rollback: измеряем баланс ДО/ПОСЛЕ spot buy → продаём точное кол-во
+- Persistence: `funding_arb_positions` table в PostgreSQL (переживает Railway restart)
+- Funding tracking: ByBit `/v5/account/transaction-log` type=SETTLEMENT
+
+## Snowball логика (важно!)
+- category=Snowball в `/v5/earn/advance/product` (тот же паттерн что DCI/DoubleWin)
+- Авто-место ТОЛЬКО при F&G 25-70 (sideways рынок)
+- F&G < 25 или > 70 → пропуск (режим-зависимая защита)
+- Principal-protected: USDT всегда возвращается
+
 ## Торговая логика v10.12.0 (вторичный приоритет)
 - **Фильтры BUY:** Q-Score ≥ 77, TA ≥ 2, vol_ratio ≥ 0.65, 4h EMA trend, cooldown 4h, F&G ≥ 8, MiroFish veto, Opus Gate >$15
 - **Выходы:** Partial Exit 50% at TP1(4%), trail TP2(6%), SL 2%, stale 12h/48h
-- **ARB:** asyncio.Lock, FEE=0.999 (KC taker 0.1%)
 
 ## Railway Variables актуальные
 ```
@@ -62,24 +84,36 @@ RAILWAY_PUBLIC_DOMAIN / ADMIN_CHAT_IDS / ALERT_CHAT_ID
 RISK_PER_TRADE=0.08 / MIN_Q_SCORE=77 / MAX_OPEN_POSITIONS=2
 DCI_ENABLED=true / DCI_DIRECTION=Auto / DCI_MIN_APY_PCT=15 / DCI_MAX_INVEST_USDT=20
 DOUBLE_WIN_ENABLED=true / DOUBLE_WIN_MIN_INVEST=5 / DOUBLE_WIN_MAX_INVEST=20
-FUNDING_ARB_ENABLED=false → включить при $10+ свободных на ByBit
+FUNDING_ARB_ENABLED=false → включить при $30+ свободных на ByBit UNIFIED
 FUNDING_ARB_MIN_RATE=0.0001 / FUNDING_ARB_MAX_USDT=30
+LENDING_ENABLED=false → ВКЛЮЧИТЬ (готово v10.13.0)
+LENDING_MIN_APR=10.0 / LENDING_MAX_USDT=30 / LENDING_TERM_DAYS=7
+SNOWBALL_ENABLED=false → включить при F&G 30-65
+SNOWBALL_MIN_APY=15.0 / SNOWBALL_MAX_USDT=20 / SNOWBALL_MIN_USDT=5
 EARN_ENABLED=true / ARB_RESERVE_USDT=3 / SPOT_BUY_MIN_USDT=5
 ```
 
-## Новые Telegram команды (v10.12.5-v10.12.6)
-- `/winrate` — win rate по монетам из PostgreSQL с топ-5 лучших/худших
-- `/fundarb` — сканер funding rates + статус открытых позиций
-- POST `/api/telegram/notify` — внешние уведомления (quantum-bot-monitor)
+## Telegram команды (полный список v10.14.0)
+- `/dci` — статус DCI позиций + авто-реинвест
+- `/dciplace` — ручной запуск DCI placement
+- `/lending` — KuCoin Lending статус + ставки
+- `/snowball` — ByBit Snowball статус + позиции
+- `/yrouter` — **Yield Router v2**: топ-7 продуктов с APY рейтингом
+- `/fundarb` — Funding Rate Arb сканер
+- `/earn`, `/earnplace` — Flex Savings
+- `/health` — полный system check
+- `/router` — Smart Money Router статус
+- `/winrate` — win rate по монетам из PostgreSQL
+- `/balance` — балансы KuCoin + ByBit + Earn + DCI
 
-## Ближайшие задачи (приоритет)
-1. ✅ Проверить ♻️ авто-реинвест DCI в Telegram (после расчёта 07:59 UTC)
-2. Включить `FUNDING_ARB_ENABLED=true` когда $10+ свободных на ByBit
-3. `/fundarb` — проверить live ставки BTC/ETH/SOL
-4. KuCoin Lending Pro — реализовать `kucoin_lending_auto_place()` (Wave 1B)
-5. Wave 3A когда появятся API ключи Binance/OKX
+## Ближайшие задачи (следующая сессия)
+1. Включить `LENDING_ENABLED=true` в Railway Variables
+2. `/yrouter` — первый живой APY рейтинг
+3. Включить `SNOWBALL_ENABLED=true` когда F&G 30-65
+4. UI для Passive Income (Mini App / dashboard)
+5. Авто-ротация капитала в Yield Router v2
 
 ## Obsidian vault
-- Vault: vault/ — 25+ заметок
+- Vault: vault/ — 30+ заметок
 - Текущие приоритеты: vault/00-home/текущие приоритеты.md
-- Последняя сессия: vault/sessions/2026-04-06 v10.12.2-v10.12.6...
+- Последняя сессия: vault/sessions/2026-04-06 v10.13-v10.14 passive income suite завершён.md
