@@ -323,6 +323,9 @@ TP_PCT         = 0.04   # v10.0: 4% (was 6%) — faster profit taking for small 
 SL_PCT         = 0.02   # v7.2.3: 2% (было 2.5%) → ratio 2:1
 TRAIL_TRIGGER  = 0.02   # v10.0: trailing stop при +2% прибыли (was 2.5%)
 TRAIL_PCT      = 0.01   # v10.0: закрывать при откате 1% от пика (was 1.5%)
+# v10.17.1: ATR-based trailing stop and coin allocation limits
+ATR_PERIOD     = int(os.getenv("ATR_PERIOD", "14"))  # ATR period (default 14)
+MAX_COIN_ALLOCATION = float(os.getenv("MAX_COIN_ALLOCATION", "0.30"))  # max 30% per coin
 TEST_MODE      = os.getenv("TEST_MODE", "false").lower() == "true"  # v6.7: default LIVE mode
 if TEST_MODE:
     RISK_PER_TRADE = min(RISK_PER_TRADE, 0.05)  # v8.3.2: test mode even more conservative
@@ -2803,6 +2806,12 @@ _snowball_stats: dict = {
 }
 
 _digest_posted_slots: set = set()  # v10.16.4: persistent tracking of posted digest slots to prevent duplicates on restart
+
+# ── v10.17.0: Whale Alerts Channel Notifications ──────────────────────────────
+WHALE_CHANNEL_ID      = os.getenv("WHALE_CHANNEL_ID", "")   # e.g. @quantumtrade_digest or channel ID
+_recent_whale_alerts  = []  # Deque-like list with maxlen=20, stores alert history
+_whale_alert_cooldown = {}  # {symbol: last_timestamp} — prevent spam (5 min per symbol)
+_whale_alert_cooldown_secs = 300  # 5 minutes cooldown per symbol
 
 
 async def bybit_snowball_get_products(coin: str = None) -> list:
@@ -5556,6 +5565,45 @@ def _rsi(data: list, period: int = 14) -> float:
     if avg_loss == 0: return 100.0
     return round(100.0 - 100.0 / (1.0 + avg_gain / avg_loss), 1)
 
+def _calc_atr(candles: list, period: int = 14) -> float:
+    """v10.17.1: Calculate Average True Range (ATR) for dynamic trailing stop.
+    ATR = mean of True Range values over period candles.
+    True Range = max(high-low, |high-prev_close|, |low-prev_close|)
+    Candles format: [timestamp, open, close, high, low, volume]
+    Returns: ATR as % of current price (e.g., 0.015 = 1.5%)"""
+    if not candles or len(candles) < period + 1:
+        return 0.0
+
+    # Extract OHLC: candles are in reverse order (newest first), so reverse for chronological order
+    chron = list(reversed(candles))
+    tr_values = []
+
+    for i in range(1, len(chron)):
+        high = float(chron[i][3])
+        low = float(chron[i][4])
+        prev_close = float(chron[i-1][2])
+
+        tr = max(
+            high - low,
+            abs(high - prev_close),
+            abs(low - prev_close)
+        )
+        tr_values.append(tr)
+
+    if not tr_values or len(tr_values) < period:
+        return 0.0
+
+    # Calculate ATR as simple moving average of TR
+    atr = sum(tr_values[-period:]) / period
+
+    # Return ATR as % of current price (most recent close)
+    current_price = float(chron[-1][2])
+    if current_price <= 0:
+        return 0.0
+
+    atr_pct = atr / current_price
+    return round(atr_pct, 6)
+
 
 # ── Yandex Vision — свечной график + OCR паттернов ────────────────────────────
 def _render_candles_png_b64(candles: list, width: int = 400, height: int = 280) -> str:
@@ -6555,6 +6603,34 @@ def calc_signal(price_change: float, vision: dict = None,
 
 
 # ── Trading ────────────────────────────────────────────────────────────────────
+async def check_coin_allocation(symbol: str, new_amount_usdt: float, total_balance: float) -> bool:
+    """v10.17.1: Check if adding new position violates 30% per-coin allocation limit.
+    Returns True if allocation is OK, False if it would exceed the limit.
+    Considers current open positions + new amount."""
+    if total_balance <= 0:
+        return True  # no portfolio yet, allow
+    if new_amount_usdt <= 0:
+        return True  # no new amount, allow
+
+    # Calculate current position value in this coin from open trades
+    current_coin_value = sum(
+        t.get("usdt_size", 0)
+        for t in trade_log
+        if t.get("status") == "open" and t.get("symbol") == symbol
+    )
+
+    # Total value that would be in this coin after trade
+    total_coin_value = current_coin_value + new_amount_usdt
+
+    # Check if it exceeds allocation limit
+    allocation_pct = total_coin_value / total_balance
+    if allocation_pct > MAX_COIN_ALLOCATION:
+        log_activity(f"[alloc] {symbol}: current=${current_coin_value:.2f} + new=${new_amount_usdt:.2f} = ${total_coin_value:.2f} "
+                     f"({allocation_pct:.1%} > {MAX_COIN_ALLOCATION:.0%} limit) — BLOCKED")
+        return False
+
+    return True
+
 async def execute_spot_trade(symbol, signal, vision, price, trade_usdt):
     side = "buy" if signal["action"] == "BUY" else "sell"
     # v10.11.5 C-10: guard against zero/invalid price before division
@@ -7056,6 +7132,73 @@ async def fetch_whale_movements() -> dict:
     except Exception as e:
         log_activity(f"[whale_alert] error: {e}")
         return {"success": False, "whale_txs": 0, "signal": "error", "error": str(e)}
+
+
+async def send_whale_alert_to_channel(whale_data: dict) -> bool:
+    """v10.17.0: Send formatted whale alert to Telegram WHALE_CHANNEL_ID.
+    whale_data: {symbol, amount_usd, direction, type, ...}
+    Formats: 🐋 Whale Alert! | 💰 $2.5M BTC | 📤 Binance → Unknown | 🔴 Bearish signal
+    """
+    if not WHALE_CHANNEL_ID or not BOT_TOKEN:
+        return False
+
+    try:
+        symbol = whale_data.get("symbol", "UNKNOWN")
+        amount_usd = whale_data.get("amount_usd", 0)
+        direction = whale_data.get("direction", "UNKNOWN")  # BUY/SELL/NEUTRAL
+        move_type = whale_data.get("type", "large_tx")
+
+        # Check cooldown — prevent spam (5 min per symbol)
+        global _whale_alert_cooldown
+        last_alert = _whale_alert_cooldown.get(symbol, 0)
+        if time.time() - last_alert < _whale_alert_cooldown_secs:
+            return False
+
+        # Format emoji + sentiment
+        sentiment_emoji = "🔴" if direction == "SELL" else "🟢" if direction == "BUY" else "⚪"
+        sentiment_txt = "Медвежий сигнал (продажа)" if direction == "SELL" else "Бычий сигнал (покупка)" if direction == "BUY" else "Нейтральный"
+
+        # Format message
+        msg = (
+            f"🐋 <b>Whale Alert!</b>\n\n"
+            f"💰 <b>${amount_usd:,.0f}</b> {symbol}\n"
+            f"📊 Тип: {move_type.replace('_', ' ').title()}\n"
+            f"{sentiment_emoji} <b>{sentiment_txt}</b>\n"
+            f"\n"
+            f"<i>Крупный капитал в движении. Следите за рынком.</i>"
+        )
+
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(url, json={
+                "chat_id":    WHALE_CHANNEL_ID,
+                "text":       msg,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            }, timeout=aiohttp.ClientTimeout(total=8))
+            data = await r.json()
+
+        if data.get("ok"):
+            _whale_alert_cooldown[symbol] = time.time()
+            # Store in recent alerts (max 20)
+            alert_record = {
+                "ts": datetime.utcnow().isoformat(),
+                "symbol": symbol,
+                "amount_usd": amount_usd,
+                "direction": direction,
+                "type": move_type,
+            }
+            _recent_whale_alerts.append(alert_record)
+            if len(_recent_whale_alerts) > 20:
+                _recent_whale_alerts.pop(0)
+            log_activity(f"[whale_alert] ✅ sent to {WHALE_CHANNEL_ID}: ${amount_usd:,.0f} {symbol}")
+            return True
+        else:
+            log_activity(f"[whale_alert] Telegram error: {data.get('description','?')}")
+            return False
+    except Exception as e:
+        log_activity(f"[whale_alert] send error: {e}")
+        return False
 
 
 # ── v9.2: Copy-Trading Intelligence (ByBit Leaderboard) ───────────────────────
@@ -7612,6 +7755,19 @@ async def get_whale_signal(symbol: str) -> dict:
             else:                   bonus = 0
         result = {"txn_count": txn_count, "bonus": bonus, "success": True}
         _cache_set(cache_key, result)
+
+        # v10.17.0: Send whale alert if significant activity detected
+        if WHALE_CHANNEL_ID and (txn_count > 50000 or txn_count < 5000):
+            direction = "SELL" if txn_count > 50000 else "BUY"
+            whale_alert = {
+                "symbol": symbol.replace("-USDT", ""),
+                "amount_usd": abs(bonus) * 100_000,  # Proxy amount based on bonus
+                "direction": direction,
+                "type": "mempool_activity",
+                "txn_count": txn_count,
+            }
+            await send_whale_alert_to_channel(whale_alert)
+
         return result
     except Exception as e:
         return {"bonus": 0, "success": False, "error": str(e)}
@@ -8182,6 +8338,13 @@ async def auto_trade_cycle():
                 if not gate["approved"]:
                     log_activity(f"[cycle] {symbol}: BLOCKED by Opus — {gate['reason']}")
                     continue
+
+                # v10.17.1: Check coin allocation limit — max 30% per coin
+                _alloc_ok = await check_coin_allocation(symbol, spot_trade_usdt, total_usdt)
+                if not _alloc_ok:
+                    log_activity(f"[cycle] {symbol}: SKIP BUY — exceeds 30% coin allocation limit")
+                    continue
+
                 # ── v10.0: Dual-exchange — route BUY to best exchange ──
                 _buy_exchange = _primary_exchange
                 _buy_usdt = _primary_trade_usdt
@@ -9007,10 +9170,25 @@ async def spot_monitor_loop():
                     elif side == "buy" and price_now <= sl * 1.002:
                         should_close = True
                         reason = "🛑 SL"
-                    # Trailing stop (if peak was high enough and pulled back)
-                    elif peak >= TRAIL_TRIGGER and (peak - pnl_pct) >= TRAIL_PCT:
-                        should_close = True
-                        reason = "📈 Trail"
+                    # v10.17.1: ATR-based trailing stop (dynamic) or fixed trailing stop
+                    elif peak >= TRAIL_TRIGGER:
+                        # Try to calculate ATR for dynamic trailing distance
+                        used_trail_pct = TRAIL_PCT  # default fallback
+                        try:
+                            _candles = await get_kucoin_chart(symbol)
+                            if _candles:
+                                atr_pct = _calc_atr(_candles, ATR_PERIOD)
+                                if atr_pct > 0:
+                                    # Use dynamic: max(1.5x ATR, fixed TRAIL_PCT)
+                                    used_trail_pct = max(atr_pct * 1.5, TRAIL_PCT)
+                                    log_activity(f"[spot_mon] {symbol}: ATR trailing: {atr_pct:.2%} (1.5x={atr_pct*1.5:.2%}) vs fixed: {TRAIL_PCT:.2%} → using {used_trail_pct:.2%}")
+                        except Exception as atr_err:
+                            log_activity(f"[spot_mon] {symbol}: ATR calc failed, using fixed: {atr_err}")
+                            used_trail_pct = TRAIL_PCT
+
+                        if (peak - pnl_pct) >= used_trail_pct:
+                            should_close = True
+                            reason = "📈 Trail"
                     # Emergency: loss > 5% → force close
                     elif pnl_pct <= -0.05:
                         should_close = True
@@ -10774,6 +10952,84 @@ async def _tg_balance(chat_id: int):
     await _tg_send(chat_id, "\n".join(lines))
 
 
+async def _tg_allocation(chat_id: int):
+    """v10.17.1: Show portfolio allocation by coin (current positions + pending trades).
+    Displays % of total portfolio in each coin with warnings for coins near 30% limit."""
+    # Get total portfolio value
+    total_usdt = 0
+    try:
+        spot_bal = await get_balance()
+        total_usdt = spot_bal.get("total_usdt", 0)
+    except Exception:
+        total_usdt = 0
+
+    if BYBIT_ENABLED:
+        try:
+            bb_bal = await bybit_get_balance()
+            if bb_bal.get("success"):
+                total_usdt += bb_bal.get("total_usdt", 0)
+        except Exception:
+            pass
+
+    # Calculate allocation by coin from open positions
+    allocations = {}
+    for trade in trade_log:
+        if trade.get("status") == "open":
+            symbol = trade.get("symbol", "")
+            usdt_val = trade.get("price", 0) * trade.get("size", 0)
+            if symbol and usdt_val > 0:
+                allocations[symbol] = allocations.get(symbol, 0) + usdt_val
+
+    # Calculate USDT remainder
+    usdt_in_trades = sum(allocations.values())
+    allocations["USDT"] = max(0, total_usdt - usdt_in_trades)
+
+    # Build output lines
+    lines = [f"📊 <b>Аллокация портфеля</b>"]
+    lines.append("──────────────────")
+
+    if total_usdt <= 0:
+        lines.append("Портфель пуст или не доступен")
+        await _tg_send(chat_id, "\n".join(lines))
+        return
+
+    # Sort by allocation amount (descending)
+    sorted_alloc = sorted(allocations.items(), key=lambda x: x[1], reverse=True)
+
+    for coin, amount in sorted_alloc:
+        if amount <= 0:
+            continue
+
+        pct = (amount / total_usdt) * 100 if total_usdt > 0 else 0
+
+        # Warning emoji if near or exceeding 30% limit
+        if coin != "USDT":
+            if pct >= 30:
+                emoji = "🔴"  # At limit
+                warn = " ⚠️ лимит!"
+            elif pct >= 25:
+                emoji = "⚠️"  # Near limit (25%)
+                warn = " близко"
+            elif pct >= 20:
+                emoji = "🟡"  # Noticeable
+                warn = ""
+            else:
+                emoji = "✅"
+                warn = ""
+        else:
+            emoji = "💵"
+            warn = ""
+
+        lines.append(f"{emoji} {coin}: ${amount:,.2f} ({pct:.1f}%){warn}")
+
+    lines.append("──────────────────")
+    lines.append(f"<b>Всего:</b> ${total_usdt:,.2f}")
+    lines.append(f"<b>Лимит на монету:</b> {MAX_COIN_ALLOCATION:.0%}")
+    lines.append(f"\n📌 Используй /settings для изменения пределов")
+
+    await _tg_send(chat_id, "\n".join(lines))
+
+
 async def _tg_dci_place(chat_id: int):
     """v10.9.8: Manually trigger DCI auto-placement with F&G direction display."""
     if not DCI_ENABLED:
@@ -11494,6 +11750,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/settings":            await _tg_settings(chat_id)
         elif cmd == "/diag":                await _tg_diag(chat_id)
         elif cmd == "/balance":             await _tg_balance(chat_id)
+        elif cmd == "/allocation":          await _tg_allocation(chat_id)
         elif cmd == "/positions":           await _tg_positions(chat_id)
         elif cmd == "/arb":                 await _tg_arb(chat_id)
         elif cmd == "/spot":                await _tg_spot_status(chat_id)
@@ -11514,6 +11771,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/yrouter":             await _tg_yield_router(chat_id)
         elif cmd == "/portfolio":           await _tg_portfolio(chat_id)
         elif cmd == "/digest":              await _tg_digest(chat_id)
+        elif cmd == "/whalealerts":         await _tg_whalealerts(chat_id)
         elif cmd == "/audit":               await _tg_audit(chat_id)
         elif cmd == "/fills":               await _tg_fills(chat_id)
         elif cmd == "/agency":              await _tg_agency(chat_id)
@@ -12374,6 +12632,33 @@ async def _tg_digest(chat_id: int):
             )
     except Exception as e:
         await _tg_send(chat_id, f"❌ Ошибка: {e}")
+
+
+
+async def _tg_whalealerts(chat_id: int):
+    """v10.17.0: /whalealerts — показать последние киты сигналы."""
+    if not _recent_whale_alerts:
+        await _tg_send(chat_id, "🐋 <i>История китов пока пуста. Ждём первый сигнал...</i>")
+        return
+
+    msg = "<b>🐋 Последние Whale Alerts (макс 20):</b>\n\n"
+    for i, alert in enumerate(reversed(_recent_whale_alerts[-20:]), 1):
+        ts = alert.get("ts", "?")[:16]  # ISO datetime → "2026-04-06T15:30"
+        symbol = alert.get("symbol", "?")
+        amount = alert.get("amount_usd", 0)
+        direction = alert.get("direction", "?")
+        alert_type = alert.get("type", "?")
+
+        emoji = "🔴" if direction == "SELL" else "🟢" if direction == "BUY" else "⚪"
+        msg += f"{i}. {emoji} <code>{symbol:6s}</code> ${amount:10,.0f} [{ts}]\n"
+        msg += f"   Type: {alert_type.replace('_', ' ').title()}\n\n"
+
+    if WHALE_CHANNEL_ID:
+        msg += f"\n📢 Канал: <code>{WHALE_CHANNEL_ID}</code>"
+    else:
+        msg += f"\n⚙️ Канал не настроен — добавь WHALE_CHANNEL_ID в Railway Variables"
+
+    await _tg_send(chat_id, msg)
 
 
 async def airdrop_digest_loop():
