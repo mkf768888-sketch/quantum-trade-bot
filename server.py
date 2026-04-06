@@ -1581,6 +1581,14 @@ LENDING_MAX_USDT      = float(os.getenv("LENDING_MAX_USDT", "30.0"))   # max USD
 LENDING_TERM_DAYS     = int(os.getenv("LENDING_TERM_DAYS",  "7"))      # 7 or 14 days
 LENDING_AUTO_RENEW    = os.getenv("LENDING_AUTO_RENEW",  "true").lower() == "true"
 
+# ── Yield Router v2 Auto-Rotation (v10.16.0) ─────────────────────────────────
+YROUTER_AUTO_ENABLED        = os.getenv("YROUTER_AUTO_ENABLED",        "false").lower() == "true"
+YROUTER_SAFE_ONLY           = os.getenv("YROUTER_SAFE_ONLY",           "true").lower()  == "true"
+YROUTER_REBALANCE_THRESHOLD = float(os.getenv("YROUTER_REBALANCE_THRESHOLD", "5.0"))  # min APY gain %
+YROUTER_COOLDOWN_HOURS      = int(os.getenv("YROUTER_COOLDOWN_HOURS",  "4"))           # hours
+YROUTER_MIN_USDT            = float(os.getenv("YROUTER_MIN_USDT",      "5.0"))         # min to deploy
+_yrouter_last_rebalance: float = 0.0  # timestamp последней ротации
+
 _lending_positions: list = []   # [{order_id, currency, size, daily_rate, apr, term, placed_at}]
 _lending_stats: dict = {
     "total_interest": 0.0, "active_orders": 0,
@@ -4079,40 +4087,281 @@ async def yield_router_v2_scan() -> dict:
         return {"success": False, "error": str(e)}
 
 
-async def _tg_yield_router(chat_id: int):
-    """v10.14.0: /yrouter — Telegram handler: Yield Router v2 full APY snapshot."""
+async def yield_router_v2_get_deployed() -> dict:
+    """v10.16.0: Возвращает текущее состояние всех deployed средств.
+    Читает _earn_positions, _lending_positions, балансы обеих бирж."""
+    deployed = {
+        "lending_usdt":   0.0,   # KuCoin Lending активная сумма
+        "earn_usdt":      0.0,   # Flex Earn (ByBit + KuCoin)
+        "earn_positions": [],    # детали позиций
+        "lending_orders": [],    # детали ордеров
+        "current_product": None, # название активного продукта
+        "current_apy":    0.0,
+        "free_kucoin":    0.0,
+        "free_bybit":     0.0,
+        "total_deployed": 0.0,
+        "total_free":     0.0,
+    }
     try:
-        data = await yield_router_v2_scan()
+        # ── Earn positions из кеша ────────────────────────────────────────────
+        for pos in _earn_positions:
+            if pos.get("coin") == "USDT":
+                amt = float(pos.get("amount", 0))
+                deployed["earn_usdt"] += amt
+                deployed["earn_positions"].append(pos)
+        # ── KuCoin Lending из кеша ────────────────────────────────────────────
+        for pos in _lending_positions:
+            if pos.get("currency") == "USDT":
+                amt = float(pos.get("size", 0))
+                deployed["lending_usdt"] += amt
+                deployed["lending_orders"].append(pos)
+        # ── Свободные балансы ─────────────────────────────────────────────────
+        try:
+            kc_bal = await asyncio.wait_for(get_balance(), timeout=8.0)
+            for acc in kc_bal.get("accounts", []):
+                if acc.get("currency") == "USDT" and acc.get("type") == "trade":
+                    deployed["free_kucoin"] = float(acc.get("available", 0))
+        except Exception:
+            pass
+        try:
+            bb_bal = await asyncio.wait_for(bybit_get_spot_balance(), timeout=8.0)
+            for coin in bb_bal.get("result", {}).get("list", [{}])[0].get("coin", []):
+                if coin.get("coin") == "USDT":
+                    deployed["free_bybit"] = float(coin.get("availableToWithdraw", 0))
+        except Exception:
+            pass
+        # ── Определяем текущий "активный" продукт (по сумме) ──────────────────
+        if deployed["lending_usdt"] >= deployed["earn_usdt"]:
+            if deployed["lending_usdt"] > 0:
+                deployed["current_product"] = "KuCoin Lending"
+                # APR из кеша
+                if _lending_positions:
+                    rates = [float(p.get("daily_rate", 0)) for p in _lending_positions if p.get("daily_rate")]
+                    if rates:
+                        deployed["current_apy"] = round(max(rates) * 365 * 100, 2)
+        else:
+            if deployed["earn_usdt"] > 0:
+                deployed["current_product"] = "ByBit/KuCoin Flex Earn"
+                if _earn_positions:
+                    aprs = [float(p.get("apr", 0)) for p in _earn_positions if p.get("apr")]
+                    if aprs:
+                        deployed["current_apy"] = round(max(aprs) * 100, 2)
+
+        deployed["total_deployed"] = round(deployed["lending_usdt"] + deployed["earn_usdt"], 2)
+        deployed["total_free"]     = round(deployed["free_kucoin"] + deployed["free_bybit"], 2)
+    except Exception as e:
+        log_activity(f"[yrouter] get_deployed error: {e}")
+    return deployed
+
+
+async def yield_router_v2_auto_rebalance() -> dict:
+    """v10.16.0: Авторотация капитала в лучший yield-продукт.
+
+    Логика:
+    1. Получить текущий deployed state
+    2. Получить scan (лучший APY)
+    3. Если улучшение > YROUTER_REBALANCE_THRESHOLD → ротируем
+    4. SAFE_ONLY=true → только Lending + Flex Earn (без DCI/Snowball)
+    5. Cooldown: не ротировать чаще YROUTER_COOLDOWN_HOURS
+    """
+    global _yrouter_last_rebalance
+    result = {"action": "none", "reason": "", "from": None, "to": None, "amount": 0.0}
+    try:
+        # ── Cooldown check ────────────────────────────────────────────────────
+        hours_since = (time.time() - _yrouter_last_rebalance) / 3600
+        if hours_since < YROUTER_COOLDOWN_HOURS:
+            result["reason"] = f"cooldown ({YROUTER_COOLDOWN_HOURS}h, осталось {YROUTER_COOLDOWN_HOURS - hours_since:.1f}h)"
+            return result
+
+        # ── Текущее состояние ─────────────────────────────────────────────────
+        deployed = await yield_router_v2_get_deployed()
+        free_usdt = deployed["total_free"]
+        deployed_usdt = deployed["total_deployed"]
+        current_product = deployed["current_product"]
+        current_apy = deployed["current_apy"]
+
+        # ── Scan лучших продуктов ─────────────────────────────────────────────
+        scan = await yield_router_v2_scan()
+        if not scan.get("success"):
+            result["reason"] = "scan failed"
+            return result
+
+        ranking = scan.get("ranking", [])
+        # В safe mode — только Lending и Flex (без DCI/Snowball/FundingArb)
+        safe_products = {"KuCoin Lending", "ByBit Flex Earn", "KuCoin Flex Earn"}
+        if YROUTER_SAFE_ONLY:
+            ranking = [r for r in ranking if r["product"] in safe_products and r["enabled"]]
+        else:
+            ranking = [r for r in ranking if r["enabled"]]
+
+        if not ranking:
+            result["reason"] = "нет доступных продуктов"
+            return result
+
+        best = ranking[0]
+        best_product = best["product"]
+        best_apy = best["apy_pct"]
+
+        # ── Есть ли смысл в ротации? ──────────────────────────────────────────
+        improvement = best_apy - current_apy
+        if current_product == best_product:
+            result["reason"] = f"уже в лучшем продукте ({best_product}, {best_apy:.1f}%)"
+            return result
+        if improvement < YROUTER_REBALANCE_THRESHOLD:
+            result["reason"] = f"улучшение {improvement:.1f}% < порога {YROUTER_REBALANCE_THRESHOLD}%"
+            return result
+
+        # ── Определяем сумму для размещения ──────────────────────────────────
+        # Приоритет: свободные USDT + можно снять из текущего earn
+        deploy_amount = 0.0
+
+        # 1) Свободные средства
+        if free_usdt >= YROUTER_MIN_USDT:
+            deploy_amount = free_usdt
+
+        # 2) Если улучшение существенное (>15%) — перекладываем из текущего продукта
+        if improvement >= 15.0 and deployed_usdt > 0:
+            # Закрываем текущие earn позиции
+            if current_product and "Flex" in current_product:
+                for pos in list(_earn_positions):
+                    if pos.get("coin") == "USDT":
+                        try:
+                            if pos.get("exchange") == "kucoin":
+                                await kucoin_earn_redeem(pos.get("order_id",""), float(pos.get("amount",0)))
+                            else:
+                                await bybit_earn_redeem(pos.get("product_id",""), float(pos.get("amount",0)))
+                            deploy_amount += float(pos.get("amount", 0))
+                        except Exception as e:
+                            log_activity(f"[yrouter] redeem error: {e}")
+            # Закрываем lending ордера
+            if current_product == "KuCoin Lending":
+                for order in list(_lending_positions):
+                    if order.get("currency") == "USDT":
+                        try:
+                            await kucoin_lending_cancel_order(order.get("order_id",""))
+                            deploy_amount += float(order.get("size", 0))
+                        except Exception as e:
+                            log_activity(f"[yrouter] cancel lending error: {e}")
+            await asyncio.sleep(2)  # дать биржам время вернуть средства
+
+        if deploy_amount < YROUTER_MIN_USDT:
+            result["reason"] = f"недостаточно средств ({deploy_amount:.2f} < {YROUTER_MIN_USDT}$)"
+            return result
+
+        # ── Размещаем в лучший продукт ────────────────────────────────────────
+        place_amount = min(deploy_amount, LENDING_MAX_USDT if best_product == "KuCoin Lending" else deploy_amount)
+        place_result = {"success": False}
+
+        if best_product == "KuCoin Lending":
+            place_result = await kucoin_lending_auto_place()
+        elif best_product in ("ByBit Flex Earn", "KuCoin Flex Earn"):
+            # Используем earn_monitor_loop логику через прямой вызов
+            bb_flex = await bybit_earn_get_products("USDT")
+            if bb_flex:
+                best_p = max(bb_flex, key=lambda p: float(str(p.get("estimateApr","0")).rstrip("%") or 0))
+                sub = await bybit_earn_subscribe(best_p["productId"], round(place_amount, 2))
+                place_result = {"success": sub.get("retCode") == 0, "raw": sub}
+
+        if place_result.get("success"):
+            _yrouter_last_rebalance = time.time()
+            result.update({
+                "action":  "rebalanced",
+                "from":    current_product or "idle",
+                "to":      best_product,
+                "amount":  round(place_amount, 2),
+                "from_apy": current_apy,
+                "to_apy":   best_apy,
+                "improvement": round(improvement, 2),
+            })
+            log_activity(f"[yrouter] ✅ ротация: {current_product} → {best_product} "
+                         f"(+{improvement:.1f}% APY, ${place_amount:.2f})")
+            # Уведомление в Telegram
+            msg = (f"🔄 <b>Yield Router авторотация</b>\n\n"
+                   f"📤 Из: <b>{current_product or 'idle'}</b> ({current_apy:.1f}% APY)\n"
+                   f"📥 В: <b>{best_product}</b> ({best_apy:.1f}% APY)\n"
+                   f"💰 Сумма: <code>${place_amount:.2f}</code>\n"
+                   f"📈 Прирост: <b>+{improvement:.1f}%</b> годовых")
+            await _tg_notify(msg)
+        else:
+            result["reason"] = f"place failed: {place_result}"
+            log_activity(f"[yrouter] ❌ размещение не удалось: {place_result}")
+
+    except Exception as e:
+        log_activity(f"[yrouter] rebalance error: {e}")
+        result["reason"] = str(e)
+    return result
+
+
+async def yield_router_v2_loop():
+    """v10.16.0: Авторотация yield каждый час. Включается через YROUTER_AUTO_ENABLED=true."""
+    await asyncio.sleep(120)  # дать серверу запуститься
+    log_activity(f"[yrouter] auto-loop started — safe_only={YROUTER_SAFE_ONLY}, "
+                 f"threshold={YROUTER_REBALANCE_THRESHOLD}%, cooldown={YROUTER_COOLDOWN_HOURS}h")
+    while True:
+        try:
+            if YROUTER_AUTO_ENABLED:
+                result = await yield_router_v2_auto_rebalance()
+                if result.get("action") == "rebalanced":
+                    log_activity(f"[yrouter] ✅ {result['from']} → {result['to']} +{result['improvement']}%")
+                else:
+                    log_activity(f"[yrouter] skip: {result.get('reason','?')}")
+        except Exception as e:
+            log_activity(f"[yrouter] loop error: {e}")
+        await asyncio.sleep(3600)  # каждый час
+
+
+async def _tg_yield_router(chat_id: int):
+    """v10.16.0: /yrouter — Yield Router v2: snapshot + deployed state + авторотация статус."""
+    try:
+        data, deployed = await asyncio.gather(
+            yield_router_v2_scan(),
+            yield_router_v2_get_deployed(),
+        )
         if not data.get("success"):
             await _tg_send(chat_id, f"❌ Yield Router error: {data.get('error','?')}")
             return
 
-        fg_val = data["fg_val"]
-        regime = data["market_regime"]
+        fg_val  = data["fg_val"]
+        regime  = data["market_regime"]
         ranking = data.get("ranking", [])
-        rec = data.get("recommendation")
-
+        rec     = data.get("recommendation")
         regime_emoji = {"sideways": "↔️", "trending": "📈", "neutral": "⚖️"}.get(regime, "❓")
+
+        # ── Текущий deployed state ────────────────────────────────────────────
+        cur_prod  = deployed.get("current_product") or "—"
+        cur_apy   = deployed.get("current_apy", 0)
+        deployed_amt = deployed.get("total_deployed", 0)
+        free_amt  = deployed.get("total_free", 0)
+        auto_status = "🟢 ВКЛ" if YROUTER_AUTO_ENABLED else "🔴 ВЫКЛ"
+        safe_status = "🛡 safe" if YROUTER_SAFE_ONLY else "⚡ all"
+        cooldown_h  = max(0.0, YROUTER_COOLDOWN_HOURS - (time.time() - _yrouter_last_rebalance) / 3600)
+
         lines = [
-            f"📊 <b>Yield Router v2</b>\n",
-            f"<b>F&G:</b> {fg_val} {regime_emoji} {regime.upper()}\n",
+            f"📊 <b>Yield Router v2</b> · v10.16\n",
+            f"<b>Авторотация:</b> {auto_status} ({safe_status}, порог {YROUTER_REBALANCE_THRESHOLD:.0f}%)\n",
+            f"\n<b>💼 Текущее размещение:</b>\n",
+            f"  📌 Продукт: <b>{cur_prod}</b> ({cur_apy:.1f}% APY)\n",
+            f"  💰 Deployed: <code>${deployed_amt:.2f}</code> · Свободно: <code>${free_amt:.2f}</code>\n",
+            f"  ⏱ До ротации: {cooldown_h:.1f}h\n",
+            f"\n<b>F&G:</b> {fg_val} {regime_emoji} {regime.upper()}\n",
             f"\n<b>🏆 APY Ranking:</b>\n",
         ]
         for i, s in enumerate(ranking, 1):
             flag = "✅" if s["enabled"] else "🔒"
             star = " ⭐" if rec and s["product"] == rec["product"] else ""
+            active = " ◀ сейчас" if s["product"] == cur_prod else ""
             lines.append(
-                f"  {i}. {flag} <b>{s['product']}</b>{star}\n"
-                f"      APY {s['apy_pct']:.1f}% · Score {s['score']:.1f} · {s['liquidity']}\n"
+                f"  {i}. {flag} <b>{s['product']}</b>{star}{active}\n"
+                f"      APY {s['apy_pct']:.1f}% · {s['liquidity']}\n"
             )
-
         if rec:
+            improvement = rec["apy_pct"] - cur_apy
+            imp_str = f" (+{improvement:.1f}%)" if improvement > 0 else ""
             lines.append(
                 f"\n<b>💡 Рекомендация:</b>\n"
-                f"  → <b>{rec['product']}</b> — APY {rec['apy_pct']:.1f}%\n"
+                f"  → <b>{rec['product']}</b> — APY {rec['apy_pct']:.1f}%{imp_str}\n"
                 f"  Мин. вход: ${rec['min_usdt']:.0f} · {rec['regime_fit']}"
             )
-
         await _tg_send(chat_id, "".join(lines))
     except Exception as e:
         await _tg_send(chat_id, f"❌ /yrouter error: {e}")
@@ -11227,7 +11476,8 @@ async def startup():
     asyncio.create_task(_ws_price_feed())          # v8.3.3: WebSocket real-time prices
     asyncio.create_task(_arb_fast_scanner())       # v8.3.3: fast arb scanner (every 5s)
     asyncio.create_task(airdrop_digest_loop())
-    asyncio.create_task(crypto_digest_loop())   # v10.15.0: AI Content Factory
+    asyncio.create_task(crypto_digest_loop())      # v10.15.0: AI Content Factory
+    asyncio.create_task(yield_router_v2_loop())    # v10.16.0: Yield Router авторотация
     asyncio.create_task(auto_scanner_loop())  # v7.4.4: health scanner
     asyncio.create_task(agency_agent_loop())  # v10.5.0: Agency Agents — 5 AI agents
     await get_airdrops()  # прогреваем кеш при старте
