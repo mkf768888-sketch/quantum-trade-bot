@@ -1784,15 +1784,18 @@ async def kucoin_lending_auto_place() -> dict:
     if not bal["success"]:
         return {"action": "error", "reason": "balance_fetch_failed"}
 
-    kc_usdt = float(next(
-        (a.get("available", 0) for a in bal.get("accounts", [])
-         if a.get("currency") == "USDT" and a.get("type") == "main"),
-        0
-    ))
-    deploy = round(min(kc_usdt * 0.8, LENDING_MAX_USDT), 2)
+    # v10.17.2: sum main + trade accounts — bot keeps USDT in "trade", not "main"
+    kc_usdt = sum(
+        float(a.get("available", 0)) for a in bal.get("accounts", [])
+        if a.get("currency") == "USDT" and a.get("type") in ("main", "trade")
+    )
+    # Reserve enough for active trading
+    reserve = ROUTER_TRADE_RESERVE_USDT + ROUTER_ARB_RESERVE_USDT
+    lendable = max(0.0, kc_usdt - reserve)
+    deploy = round(min(lendable * 0.8, LENDING_MAX_USDT), 2)
 
     if deploy < 5.0:
-        return {"action": "insufficient_capital", "available": kc_usdt, "need": 5.0}
+        return {"action": "insufficient_capital", "available": kc_usdt, "lendable": lendable, "need": 5.0}
 
     # Place lending order at market rate (slight premium for faster fill)
     place_rate = round(daily * 0.99, 6)   # 1% below best rate = priority fill
