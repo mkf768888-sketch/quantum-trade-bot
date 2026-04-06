@@ -2997,6 +2997,15 @@ async def earn_monitor_loop():
                     except Exception as report_e:
                         log_activity(f"[health] hourly report error: {report_e}")
 
+                # v10.12.5: Funding Rate Arb — every 4th cycle (~1 hour)
+                if FUNDING_ARB_ENABLED and _earn_stats.get("_dci_cycle", 0) % 4 == 0:
+                    try:
+                        fa_res = await funding_arb_auto_check()
+                        if fa_res.get("action") not in ("disabled", "monitoring", "no_attractive_rate"):
+                            log_activity(f"[fundarb] auto_check: {fa_res}")
+                    except Exception as fa_e:
+                        log_activity(f"[fundarb] auto_check error: {fa_e}")
+
                 # v10.10: Q-Score auto-tune — every ~7 days (672 cycles = 4/hr * 24h * 7d)
                 if _earn_stats.get("_dci_cycle", 0) % 672 == 1:
                     try:
@@ -3433,6 +3442,221 @@ async def bybit_get_funding_rates_all() -> dict:
         if fr["success"]:
             rates[sym] = fr["rate"]
     return rates
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v10.12.5: Funding Rate Arbitrage — Delta-Neutral Passive Income
+# Strategy: Buy spot + Short perpetual = delta neutral → collect funding rate
+# ByBit pays funding every 8h: when market is bullish, LONGS pay SHORTS
+# Expected APR: 10–150% depending on market conditions (zero directional risk)
+# ══════════════════════════════════════════════════════════════════════════════
+
+FUNDING_ARB_ENABLED  = os.getenv("FUNDING_ARB_ENABLED",  "false").lower() == "true"
+FUNDING_ARB_MIN_RATE = float(os.getenv("FUNDING_ARB_MIN_RATE", "0.0001"))  # 0.01%/8h ≈ 10% APR
+FUNDING_ARB_MAX_USDT = float(os.getenv("FUNDING_ARB_MAX_USDT", "30.0"))    # max USDT per position
+FUNDING_ARB_SYMBOLS  = ["ETH-USDT", "SOL-USDT", "BTC-USDT"]               # checked in priority order
+
+_funding_arb_positions: list = []  # [{symbol, perp_qty, usdt_deployed, entry_price, opened_at, funding_collected}]
+_funding_arb_stats: dict = {
+    "last_check": 0.0, "total_collected": 0.0,
+    "open_positions": 0, "checks": 0, "errors": 0,
+}
+
+
+async def bybit_get_live_funding_rate(symbol: str) -> dict:
+    """Get live funding rate + next payment time from ByBit market tickers."""
+    bb_symbol = symbol.replace("-", "")
+    try:
+        res = await bybit_request("GET", "/v5/market/tickers",
+                                   {"category": "linear", "symbol": bb_symbol})
+        if res["success"]:
+            items = res["data"].get("list", [])
+            if items:
+                item = items[0]
+                rate = float(item.get("fundingRate", 0))
+                mark_price = float(item.get("markPrice", 0))
+                next_ts = item.get("nextFundingTime", "")
+                apr = rate * 3 * 365 * 100  # 3 payments/day × 365 days
+                return {
+                    "success": True, "symbol": symbol,
+                    "rate": rate, "rate_pct": round(rate * 100, 6),
+                    "apr_pct": round(apr, 2),
+                    "mark_price": mark_price,
+                    "next_funding_time": next_ts,
+                }
+    except Exception as e:
+        log_activity(f"[fundarb] get_live_rate error ({symbol}): {e}")
+    return {"success": False, "rate": 0, "apr_pct": 0, "symbol": symbol}
+
+
+async def bybit_place_perp_short(symbol: str, usdt_amount: float) -> dict:
+    """Open 1x SHORT on ByBit linear perpetual. qty calculated from mark price."""
+    bb_symbol = symbol.replace("-", "")
+    try:
+        # Set leverage to 1x (safety — no amplification for arb)
+        await bybit_request("POST", "/v5/position/set-leverage", {
+            "category": "linear", "symbol": bb_symbol,
+            "buyLeverage": "1", "sellLeverage": "1",
+        })
+        # Get mark price for qty calculation
+        ticker = await bybit_request("GET", "/v5/market/tickers",
+                                      {"category": "linear", "symbol": bb_symbol})
+        if not ticker["success"] or not ticker["data"].get("list"):
+            return {"success": False, "error": "could not get mark price"}
+        mark_price = float(ticker["data"]["list"][0].get("markPrice", 0))
+        if mark_price <= 0:
+            return {"success": False, "error": "invalid mark price"}
+        qty = round(usdt_amount / mark_price, 6)
+        params = {
+            "category": "linear", "symbol": bb_symbol,
+            "side": "Sell", "orderType": "Market",
+            "qty": str(qty), "timeInForce": "IOC",
+            "reduceOnly": False,
+        }
+        res = await bybit_request("POST", "/v5/order/create", params)
+        if res["success"]:
+            return {"success": True, "order_id": res["data"].get("orderId","?"),
+                    "qty": qty, "mark_price": mark_price}
+        return {"success": False, "error": res.get("error", "unknown")}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+async def bybit_close_perp_short(symbol: str, qty: float) -> dict:
+    """Close SHORT on ByBit perpetual — market buy, reduce-only."""
+    bb_symbol = symbol.replace("-", "")
+    try:
+        params = {
+            "category": "linear", "symbol": bb_symbol,
+            "side": "Buy", "orderType": "Market",
+            "qty": str(qty), "timeInForce": "IOC",
+            "reduceOnly": True,
+        }
+        res = await bybit_request("POST", "/v5/order/create", params)
+        if res["success"]:
+            return {"success": True, "order_id": res["data"].get("orderId","?")}
+        return {"success": False, "error": res.get("error","unknown")}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+async def funding_arb_open(symbol: str, usdt_amount: float) -> dict:
+    """v10.12.5: Open funding arb: buy spot + short perp = delta neutral."""
+    if not FUNDING_ARB_ENABLED:
+        return {"success": False, "reason": "FUNDING_ARB_ENABLED=false"}
+    if any(p["symbol"] == symbol for p in _funding_arb_positions):
+        return {"success": False, "reason": f"position_already_open: {symbol}"}
+    try:
+        half = round(usdt_amount / 2, 2)
+        # Step 1: buy spot
+        spot_res = await bybit_place_spot_order(symbol, "Buy", half, "Market")
+        if not spot_res["success"]:
+            return {"success": False, "reason": f"spot_buy_failed: {spot_res.get('error')}"}
+        await asyncio.sleep(2)
+        # Step 2: short perpetual with same USDT value
+        perp_res = await bybit_place_perp_short(symbol, half)
+        if not perp_res["success"]:
+            # Rollback: sell spot immediately
+            await bybit_sell_spot(symbol)
+            return {"success": False, "reason": f"perp_short_failed (spot rolled back): {perp_res.get('error')}"}
+        pos = {
+            "symbol": symbol, "perp_qty": perp_res["qty"],
+            "entry_price": perp_res["mark_price"], "usdt_deployed": usdt_amount,
+            "opened_at": time.time(), "funding_collected": 0.0,
+        }
+        _funding_arb_positions.append(pos)
+        _funding_arb_stats["open_positions"] = len(_funding_arb_positions)
+        log_activity(
+            f"[fundarb] ✅ opened {symbol}: ${usdt_amount:.2f} USDT "
+            f"spot+short @{perp_res['mark_price']:.4f}"
+        )
+        return {"success": True, "symbol": symbol, "usdt_deployed": usdt_amount,
+                "entry_price": perp_res["mark_price"]}
+    except Exception as e:
+        _funding_arb_stats["errors"] += 1
+        return {"success": False, "reason": str(e)}
+
+
+async def funding_arb_close(symbol: str, reason: str = "manual") -> dict:
+    """Close funding arb: sell spot + buy-to-close perp short."""
+    pos = next((p for p in _funding_arb_positions if p["symbol"] == symbol), None)
+    if not pos:
+        return {"success": False, "reason": "no_open_position"}
+    try:
+        errs = []
+        perp_close = await bybit_close_perp_short(symbol, pos["perp_qty"])
+        if not perp_close["success"]:
+            errs.append(f"perp: {perp_close.get('error')}")
+        await asyncio.sleep(1)
+        spot_close = await bybit_sell_spot(symbol)
+        if not spot_close["success"]:
+            errs.append(f"spot: {spot_close.get('error')}")
+        _funding_arb_positions[:] = [p for p in _funding_arb_positions if p["symbol"] != symbol]
+        _funding_arb_stats["open_positions"] = len(_funding_arb_positions)
+        _funding_arb_stats["total_collected"] += pos["funding_collected"]
+        log_activity(
+            f"[fundarb] closed {symbol} reason={reason}, "
+            f"collected=${pos['funding_collected']:.4f}"
+        )
+        if errs:
+            return {"success": False, "reason": " | ".join(errs), "collected": pos["funding_collected"]}
+        return {"success": True, "symbol": symbol, "collected": pos["funding_collected"]}
+    except Exception as e:
+        return {"success": False, "reason": str(e)}
+
+
+async def funding_arb_auto_check() -> dict:
+    """v10.12.5: Hourly check — open arb if rate attractive, close if rate negative."""
+    if not FUNDING_ARB_ENABLED:
+        return {"action": "disabled"}
+    _funding_arb_stats["last_check"] = time.time()
+    _funding_arb_stats["checks"] += 1
+    # Check open positions — close if rate turned negative
+    for pos in list(_funding_arb_positions):
+        fr = await bybit_get_live_funding_rate(pos["symbol"])
+        if fr["success"] and fr["rate"] < -0.0001:
+            log_activity(f"[fundarb] rate negative ({fr['rate']:.4%}) → closing {pos['symbol']}")
+            close_res = await funding_arb_close(pos["symbol"], reason="negative_rate")
+            if ALERT_CHAT_ID:
+                await _tg_send(int(ALERT_CHAT_ID),
+                    f"⚠️ <b>Funding Arb закрыт</b>\n"
+                    f"<b>{pos['symbol']}</b>: ставка стала отрицательной "
+                    f"(<code>{fr['rate']:.4%}</code>/8ч)\n"
+                    f"💰 Собрано: <code>${pos['funding_collected']:.4f}</code>"
+                )
+            return {"action": "closed_negative_rate", "symbol": pos["symbol"]}
+    # If no open positions — scan for opportunity
+    if not _funding_arb_positions:
+        best = {"symbol": None, "rate": FUNDING_ARB_MIN_RATE, "apr_pct": 0, "mark_price": 0}
+        for sym in FUNDING_ARB_SYMBOLS:
+            fr = await bybit_get_live_funding_rate(sym)
+            if fr["success"] and fr["rate"] > best["rate"]:
+                best = {"symbol": sym, "rate": fr["rate"],
+                        "apr_pct": fr["apr_pct"], "mark_price": fr["mark_price"]}
+        if best["symbol"]:
+            bb_bal = await bybit_get_balance()
+            usdt_free = float(bb_bal.get("balances", {}).get("USDT", {}).get("available", 0)) if bb_bal.get("success") else 0
+            deploy = round(min(usdt_free * 0.8, FUNDING_ARB_MAX_USDT), 2)
+            if deploy >= 10.0:
+                open_res = await funding_arb_open(best["symbol"], deploy)
+                if open_res["success"]:
+                    if ALERT_CHAT_ID:
+                        await _tg_send(int(ALERT_CHAT_ID),
+                            f"⚡ <b>Funding Arb открыт!</b>\n\n"
+                            f"Монета: <b>{best['symbol']}</b>\n"
+                            f"Вложено: <code>${deploy:.2f}</code> USDT\n"
+                            f"Ставка: <code>{best['rate']:.4%}</code> / 8ч\n"
+                            f"APR прогноз: <code>{best['apr_pct']:.1f}%</code>\n\n"
+                            f"<i>Стратегия: Спот + Шорт перп = дельта-нейтраль\n"
+                            f"Доход каждые 8 часов независимо от цены</i>"
+                        )
+                    return {"action": "opened", "symbol": best["symbol"],
+                            "rate": best["rate"], "deploy": deploy}
+            else:
+                return {"action": "insufficient_capital", "available": usdt_free, "need": 10.0}
+        else:
+            return {"action": "no_attractive_rate", "min_required": FUNDING_ARB_MIN_RATE}
+    return {"action": "monitoring", "open": len(_funding_arb_positions)}
 
 
 # ── KuCoin API ─────────────────────────────────────────────────────────────────
@@ -8356,6 +8580,55 @@ async def _tg_winrate(chat_id: int):
         await _tg_send(chat_id, f"❌ Ошибка winrate: {e}")
 
 
+async def _tg_fundarb(chat_id: int):
+    """v10.12.5: /fundarb — Funding Rate Arbitrage status and rates scanner."""
+    await _tg_send(chat_id, "⚡ <i>Сканирую ставки финансирования...</i>")
+    try:
+        lines = ["⚡ <b>Funding Rate Arbitrage</b>",
+                 "━━━━━━━━━━━━━━━━━━━━━━",
+                 f"<b>Статус:</b> {'✅ ВКЛ' if FUNDING_ARB_ENABLED else '❌ ВЫКЛ (FUNDING_ARB_ENABLED=true в Railway)'}",
+                 ""]
+        # Scan all symbols
+        lines.append("📊 <b>Текущие ставки:</b>")
+        for sym in FUNDING_ARB_SYMBOLS:
+            fr = await bybit_get_live_funding_rate(sym)
+            if fr["success"]:
+                rate = fr["rate"]
+                apr = fr["apr_pct"]
+                emoji = "🟢" if rate >= FUNDING_ARB_MIN_RATE else ("🔴" if rate < 0 else "🟡")
+                lines.append(
+                    f"  {emoji} <b>{sym}</b>: "
+                    f"<code>{rate:.4%}</code>/8ч · "
+                    f"APR <code>{apr:.1f}%</code>"
+                )
+        # Open positions
+        lines.append("")
+        if _funding_arb_positions:
+            lines.append(f"📂 <b>Открытые позиции ({len(_funding_arb_positions)}):</b>")
+            for pos in _funding_arb_positions:
+                age_h = (time.time() - pos["opened_at"]) / 3600
+                lines.append(
+                    f"  • <b>{pos['symbol']}</b> "
+                    f"${pos['usdt_deployed']:.2f} · "
+                    f"{age_h:.1f}ч · "
+                    f"собрано <code>${pos['funding_collected']:.4f}</code>"
+                )
+        else:
+            lines.append("📭 <i>Открытых позиций нет</i>")
+        # Stats
+        lines.append("")
+        lines.append(
+            f"📈 Всего собрано: <code>${_funding_arb_stats['total_collected']:.4f}</code> · "
+            f"Проверок: {_funding_arb_stats['checks']}"
+        )
+        if not FUNDING_ARB_ENABLED:
+            lines.append("")
+            lines.append("💡 <i>Включи в Railway: FUNDING_ARB_ENABLED=true</i>")
+        await _tg_send(chat_id, "\n".join(lines))
+    except Exception as e:
+        await _tg_send(chat_id, f"❌ Ошибка fundarb: {e}")
+
+
 async def _tg_audit(chat_id: int):
     """v10.4: Full PnL audit from PostgreSQL. Shows REAL numbers, not cached _perf_stats."""
     await _tg_send(chat_id, "🔍 <i>Запускаю полный аудит из PostgreSQL...</i>")
@@ -9700,6 +9973,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         if cmd in ["/start", "/menu"]:     await _tg_main_menu(chat_id)
         elif cmd == "/stats":               await _tg_stats(chat_id)
         elif cmd == "/winrate":             await _tg_winrate(chat_id)
+        elif cmd == "/fundarb":             await _tg_fundarb(chat_id)
         elif cmd == "/reset_stats":         await _tg_reset_stats(chat_id)
         elif cmd in ["/airdrops", "/air"]: await _tg_airdrops(chat_id)
         elif cmd == "/settings":            await _tg_settings(chat_id)
