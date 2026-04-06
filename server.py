@@ -11781,6 +11781,27 @@ async def api_pause_status():
         result["paused_for_seconds"] = int(time.time() - _pause_ts) if _pause_ts > 0 else 0
     return result
 
+# ── v10.14.0: Quantum Control Center — Unified Dashboard with Flow Animation ──
+@app.get("/center", response_class=HTMLResponse)
+async def serve_control_center():
+    """v10.14.0: Quantum Control Center — unified dashboard with live flow animation,
+    beginner mode, Yield Router v2, Russian UI. Replaces command.html + old dashboards."""
+    try:
+        with open("quantum-control-center.html", "r", encoding="utf-8") as f:
+            content = f.read()
+        return HTMLResponse(content=content, headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache", "Expires": "0"})
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>Quantum Control Center not found</h1>", status_code=404)
+
+
+@app.get("/api/yield-router")
+async def yield_router_api(_auth=Depends(verify_api_key)):
+    """v10.14.0: Yield Router v2 — full APY comparison across all passive income products."""
+    return await yield_router_v2_scan()
+
+
 # ── v10.9: Command Center — Live Dashboard ─────────────────────────────────
 @app.get("/command", response_class=HTMLResponse)
 async def serve_command_center():

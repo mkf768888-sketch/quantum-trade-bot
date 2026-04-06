@@ -1,0 +1,1047 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>QuantumTrade — Центр Управления</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+:root{
+  --bg:#03000f;
+  --bg2:#06021a;
+  --purple:#7c3aed;
+  --purple-s:#9f67ff;
+  --purple-d:rgba(124,58,237,.28);
+  --gold:#fbbf24;
+  --gold-s:#fde68a;
+  --gold-d:rgba(251,191,36,.22);
+  --cyan:#48cae4;
+  --cyan-d:rgba(72,202,228,.25);
+  --green:#34d399;
+  --red:#f87171;
+  --glass:rgba(10,6,30,.6);
+  --glass2:rgba(20,10,50,.5);
+  --border:rgba(124,58,237,.22);
+  --border-g:rgba(251,191,36,.25);
+  --text:rgba(215,228,255,.95);
+  --text2:rgba(150,185,230,.70);
+  --text3:rgba(90,120,170,.50);
+  --font:-apple-system,'SF Pro Display','Inter',sans-serif;
+  --nav:58px;
+}
+html,body{width:100%;min-height:100vh;background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;overflow-x:hidden}
+body{padding-bottom:calc(var(--nav) + 8px);-webkit-font-smoothing:antialiased}
+
+/* ══ BACKGROUND ═══════════════════════════════════════════ */
+.qbg{position:fixed;inset:0;z-index:0;pointer-events:none}
+.qbg::before{
+  content:'';position:absolute;inset:0;
+  background:
+    radial-gradient(ellipse at 20% 10%,rgba(80,20,180,.35) 0%,transparent 55%),
+    radial-gradient(ellipse at 85% 80%,rgba(20,5,80,.30) 0%,transparent 50%),
+    radial-gradient(ellipse at 60% 40%,rgba(251,191,36,.05) 0%,transparent 40%),
+    linear-gradient(180deg,#03000f 0%,#060220 45%,#02001a 100%);
+  animation:breathe 16s ease-in-out infinite;
+}
+@keyframes breathe{
+  0%,100%{opacity:1;filter:brightness(1)}
+  50%{opacity:.92;filter:brightness(1.08)}
+}
+/* stars */
+.qbg::after{
+  content:'';position:absolute;inset:0;
+  background-image:
+    radial-gradient(1.5px 1.5px at 10% 8%,rgba(255,255,255,.8) 0%,transparent 100%),
+    radial-gradient(1px 1px at 25% 35%,rgba(255,255,255,.5) 0%,transparent 100%),
+    radial-gradient(2px 2px at 42% 5%,rgba(255,255,255,.75) 0%,transparent 100%),
+    radial-gradient(1px 1px at 58% 20%,rgba(255,255,255,.55) 0%,transparent 100%),
+    radial-gradient(1.5px 1.5px at 75% 50%,rgba(255,255,255,.6) 0%,transparent 100%),
+    radial-gradient(2px 2px at 90% 12%,rgba(255,255,255,.85) 0%,transparent 100%),
+    radial-gradient(1px 1px at 15% 70%,rgba(255,255,255,.45) 0%,transparent 100%),
+    radial-gradient(1px 1px at 50% 80%,rgba(255,255,255,.50) 0%,transparent 100%),
+    radial-gradient(2px 2px at 70% 3%,rgba(255,255,255,.88) 0%,transparent 100%),
+    radial-gradient(2px 2px at 35% 55%,rgba(124,58,237,.7) 0%,transparent 100%),
+    radial-gradient(1.5px 1.5px at 82% 75%,rgba(72,202,228,.65) 0%,transparent 100%),
+    radial-gradient(2px 2px at 5% 92%,rgba(251,191,36,.4) 0%,transparent 100%);
+  animation:twinkle 8s ease-in-out infinite alternate;
+}
+@keyframes twinkle{0%{opacity:.7}100%{opacity:1}}
+
+/* ══ LAYOUT ════════════════════════════════════════════════ */
+.main{position:relative;z-index:1;padding:0 12px 12px}
+
+/* ══ HEADER ════════════════════════════════════════════════ */
+.header{display:flex;align-items:center;justify-content:space-between;padding:14px 0 10px}
+.header-logo{display:flex;align-items:center;gap:8px}
+.logo-orb{width:32px;height:32px;border-radius:50%;background:radial-gradient(circle at 35% 35%,var(--purple-s),var(--purple));box-shadow:0 0 16px rgba(124,58,237,.6);animation:orb-pulse 3s ease-in-out infinite;flex-shrink:0}
+@keyframes orb-pulse{0%,100%{box-shadow:0 0 16px rgba(124,58,237,.6),0 0 32px rgba(124,58,237,.2)}50%{box-shadow:0 0 24px rgba(159,103,255,.8),0 0 48px rgba(124,58,237,.3)}}
+.logo-text{font-size:15px;font-weight:700;background:linear-gradient(135deg,var(--gold),var(--purple-s));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.logo-sub{font-size:10px;color:var(--text3);font-weight:500;letter-spacing:.5px;margin-top:1px}
+.header-right{display:flex;align-items:center;gap:8px}
+.status-pill{display:flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:10px;font-weight:600;letter-spacing:.4px;border:1px solid;transition:all .3s}
+.status-pill.on{background:rgba(52,211,153,.12);border-color:rgba(52,211,153,.4);color:var(--green)}
+.status-pill.off{background:rgba(248,113,113,.12);border-color:rgba(248,113,113,.4);color:var(--red)}
+.status-dot{width:6px;height:6px;border-radius:50%;background:currentColor;animation:blink 2s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+
+/* ══ MODE TOGGLE ═══════════════════════════════════════════ */
+.mode-bar{display:flex;gap:6px;margin-bottom:12px;background:var(--glass);border:1px solid var(--border);border-radius:12px;padding:4px}
+.mode-btn{flex:1;padding:8px 4px;border-radius:9px;border:none;background:transparent;color:var(--text2);font-size:11px;font-weight:600;cursor:pointer;transition:all .25s;font-family:var(--font)}
+.mode-btn.active{background:linear-gradient(135deg,var(--purple),rgba(124,58,237,.7));color:#fff;box-shadow:0 2px 12px rgba(124,58,237,.4)}
+
+/* ══ SECTION TITLE ═════════════════════════════════════════ */
+.section-title{font-size:11px;font-weight:700;letter-spacing:.8px;color:var(--text3);text-transform:uppercase;margin:14px 0 8px;display:flex;align-items:center;gap:6px}
+.section-title::after{content:'';flex:1;height:1px;background:var(--border);opacity:.5}
+
+/* ══ GLASS CARD ════════════════════════════════════════════ */
+.card{background:var(--glass);border:1px solid var(--border);border-radius:16px;padding:14px;margin-bottom:10px;position:relative;overflow:hidden}
+.card::before{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(135deg,rgba(124,58,237,.06) 0%,transparent 60%);pointer-events:none}
+.card-gold{border-color:var(--border-g)}
+.card-gold::before{background:linear-gradient(135deg,rgba(251,191,36,.08) 0%,transparent 60%)}
+
+/* ══ ЖИВОЙ ПОТОК (FLOW ANIMATION) ══════════════════════════ */
+.flow-scene{width:100%;height:260px;position:relative;overflow:hidden;border-radius:14px;background:radial-gradient(ellipse at 50% 50%,rgba(20,8,60,.8),rgba(3,0,15,.95));border:1px solid var(--border)}
+.flow-svg{width:100%;height:100%;position:absolute;inset:0}
+.flow-label{position:absolute;text-align:center;pointer-events:none}
+.fl-wallet{left:5%;top:50%;transform:translateY(-50%)}
+.fl-router{left:50%;top:50%;transform:translate(-50%,-50%)}
+.fl-products{right:5%;top:50%;transform:translateY(-50%)}
+
+/* узел */
+.node{position:absolute;display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;transition:transform .2s}
+.node:hover{transform:scale(1.08) translateY(-2px)}
+.node-circle{border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;position:relative}
+.node-circle::after{content:'';position:absolute;inset:-4px;border-radius:50%;border:1.5px solid;opacity:.4;animation:ring-spin 6s linear infinite}
+.node-label{font-size:9px;font-weight:700;letter-spacing:.5px;text-align:center;white-space:nowrap}
+.node-val{font-size:10px;font-weight:800;white-space:nowrap}
+
+/* Кошелёк */
+.node-wallet .node-circle{width:54px;height:54px;background:radial-gradient(circle at 35% 35%,rgba(251,191,36,.3),rgba(251,191,36,.08));border:2px solid rgba(251,191,36,.6);box-shadow:0 0 20px rgba(251,191,36,.3)}
+.node-wallet .node-circle::after{border-color:rgba(251,191,36,.4)}
+.node-wallet .node-label{color:var(--gold)}
+.node-wallet .node-val{color:var(--gold)}
+
+/* Роутер */
+.node-router .node-circle{width:64px;height:64px;background:radial-gradient(circle at 35% 35%,rgba(124,58,237,.5),rgba(124,58,237,.15));border:2px solid rgba(124,58,237,.7);box-shadow:0 0 28px rgba(124,58,237,.5),inset 0 0 20px rgba(124,58,237,.1)}
+.node-router .node-circle::after{border-color:rgba(159,103,255,.5);animation-duration:4s}
+.node-router .node-label{color:var(--purple-s)}
+
+/* DCI пузырь */
+.node-dci .node-circle{width:50px;height:50px;background:radial-gradient(circle at 35% 35%,rgba(72,202,228,.4),rgba(72,202,228,.1));border:2px solid rgba(72,202,228,.6);box-shadow:0 0 20px rgba(72,202,228,.35)}
+.node-dci .node-circle::after{border-color:rgba(72,202,228,.4)}
+.node-dci .node-label{color:var(--cyan)}
+.node-dci .node-val{color:var(--cyan)}
+
+/* Лендинг */
+.node-lending .node-circle{width:44px;height:44px;background:radial-gradient(circle at 35% 35%,rgba(52,211,153,.35),rgba(52,211,153,.08));border:2px solid rgba(52,211,153,.5);box-shadow:0 0 16px rgba(52,211,153,.25)}
+.node-lending .node-circle::after{border-color:rgba(52,211,153,.35)}
+.node-lending .node-label{color:var(--green)}
+.node-lending .node-val{color:var(--green)}
+
+/* Сноубол */
+.node-snowball .node-circle{width:40px;height:40px;background:radial-gradient(circle at 35% 35%,rgba(251,191,36,.3),rgba(251,191,36,.06));border:2px solid rgba(251,191,36,.45);box-shadow:0 0 14px rgba(251,191,36,.2)}
+.node-snowball .node-circle::after{border-color:rgba(251,191,36,.3)}
+.node-snowball .node-label{color:var(--gold)}
+.node-snowball .node-val{color:var(--gold)}
+
+/* Earn */
+.node-earn .node-circle{width:38px;height:38px;background:radial-gradient(circle at 35% 35%,rgba(159,103,255,.3),rgba(159,103,255,.06));border:2px solid rgba(159,103,255,.4)}
+.node-earn .node-circle::after{border-color:rgba(159,103,255,.3)}
+.node-earn .node-label{color:var(--purple-s)}
+
+@keyframes ring-spin{0%{transform:rotate(0deg) scale(1.15)}100%{transform:rotate(360deg) scale(1.15)}}
+
+/* частицы-монетки */
+.particle{position:absolute;width:8px;height:8px;border-radius:50%;pointer-events:none;opacity:0;font-size:9px;display:flex;align-items:center;justify-content:center}
+
+/* доход-всплеск */
+.income-burst{position:absolute;font-size:11px;font-weight:800;pointer-events:none;opacity:0;color:var(--green);text-shadow:0 0 8px rgba(52,211,153,.8)}
+
+/* ══ СТАТУС ПРОДУКТОВ ══════════════════════════════════════ */
+.products-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.prod-card{background:var(--glass);border:1px solid var(--border);border-radius:14px;padding:12px;position:relative;overflow:hidden;transition:all .25s}
+.prod-card.active-prod{border-color:rgba(52,211,153,.4);background:rgba(52,211,153,.04)}
+.prod-card.inactive-prod{opacity:.6}
+.prod-icon{font-size:22px;margin-bottom:4px}
+.prod-name{font-size:11px;font-weight:700;color:var(--text)}
+.prod-apy{font-size:16px;font-weight:800;margin:4px 0 2px}
+.prod-apy.gold{color:var(--gold);text-shadow:0 0 10px rgba(251,191,36,.4)}
+.prod-apy.cyan{color:var(--cyan);text-shadow:0 0 10px rgba(72,202,228,.4)}
+.prod-apy.green{color:var(--green);text-shadow:0 0 10px rgba(52,211,153,.35)}
+.prod-apy.purple{color:var(--purple-s);text-shadow:0 0 10px rgba(124,58,237,.4)}
+.prod-sub{font-size:9px;color:var(--text3);line-height:1.4}
+.prod-badge{position:absolute;top:8px;right:8px;font-size:8px;font-weight:700;padding:2px 6px;border-radius:8px;letter-spacing:.3px}
+.badge-on{background:rgba(52,211,153,.15);color:var(--green);border:1px solid rgba(52,211,153,.35)}
+.badge-off{background:rgba(248,113,113,.12);color:var(--red);border:1px solid rgba(248,113,113,.3)}
+.badge-ready{background:rgba(251,191,36,.12);color:var(--gold);border:1px solid rgba(251,191,36,.3)}
+/* пульс на активных */
+.prod-card.active-prod::after{content:'';position:absolute;inset:0;border-radius:inherit;background:radial-gradient(ellipse at 80% 20%,rgba(52,211,153,.06) 0%,transparent 60%);pointer-events:none;animation:prod-glow 3s ease-in-out infinite}
+@keyframes prod-glow{0%,100%{opacity:.5}50%{opacity:1}}
+
+/* ══ DCI ПОЗИЦИИ ═══════════════════════════════════════════ */
+.dci-positions{display:flex;flex-direction:column;gap:8px}
+.dci-pos-card{background:var(--glass);border:1px solid rgba(72,202,228,.3);border-radius:14px;padding:12px 14px;display:flex;align-items:center;gap:12px;position:relative;overflow:hidden}
+.dci-pos-card::before{content:'';position:absolute;left:0;top:0;width:3px;height:100%;background:linear-gradient(180deg,var(--cyan),rgba(72,202,228,.2));border-radius:3px 0 0 3px}
+.dci-coin{font-size:24px}
+.dci-info{flex:1}
+.dci-pair{font-size:12px;font-weight:700;color:var(--cyan)}
+.dci-details{font-size:10px;color:var(--text2);margin-top:2px}
+.dci-apy-badge{background:rgba(72,202,228,.12);border:1px solid rgba(72,202,228,.35);border-radius:10px;padding:4px 10px;text-align:center}
+.dci-apy-val{font-size:14px;font-weight:800;color:var(--cyan)}
+.dci-apy-lbl{font-size:8px;color:var(--text3);letter-spacing:.3px}
+.dci-empty{text-align:center;padding:24px;color:var(--text3);font-size:12px}
+.dci-countdown{font-size:9px;color:var(--gold);font-weight:600;margin-top:3px}
+
+/* ══ ИСТОРИЯ СОБЫТИЙ ════════════════════════════════════════ */
+.events-list{display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto}
+.events-list::-webkit-scrollbar{width:3px}
+.events-list::-webkit-scrollbar-track{background:transparent}
+.events-list::-webkit-scrollbar-thumb{background:var(--purple-d);border-radius:3px}
+.event-row{display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border-radius:10px;background:var(--glass2);border:1px solid rgba(255,255,255,.04);transition:background .2s}
+.event-row:hover{background:rgba(124,58,237,.08)}
+.event-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;margin-top:3px}
+.event-earn{background:var(--green)}
+.event-trade{background:var(--cyan)}
+.event-warn{background:var(--gold)}
+.event-error{background:var(--red)}
+.event-info{background:var(--purple-s)}
+.event-text{font-size:10px;color:var(--text2);line-height:1.45;flex:1}
+.event-time{font-size:9px;color:var(--text3);flex-shrink:0;margin-top:2px}
+
+/* ══ БАЛАНСЫ ════════════════════════════════════════════════ */
+.balance-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.balance-row:last-child{border-bottom:none}
+.bal-left{display:flex;align-items:center;gap:8px}
+.bal-icon{font-size:18px}
+.bal-name{font-size:12px;font-weight:600}
+.bal-sub{font-size:10px;color:var(--text3)}
+.bal-amount{font-size:13px;font-weight:700;color:var(--gold)}
+.bal-usdt{font-size:10px;color:var(--text3);text-align:right;margin-top:1px}
+
+/* ══ MACRO BAR ══════════════════════════════════════════════ */
+.macro-bar{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;-ms-overflow-style:none;scrollbar-width:none}
+.macro-bar::-webkit-scrollbar{display:none}
+.macro-chip{display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 14px;border-radius:12px;background:var(--glass);border:1px solid var(--border);white-space:nowrap;flex-shrink:0;min-width:72px}
+.macro-chip-label{font-size:9px;color:var(--text3);letter-spacing:.4px;text-transform:uppercase;font-weight:600}
+.macro-chip-val{font-size:14px;font-weight:800}
+.fg-extreme-fear{color:#f87171}
+.fg-fear{color:#fb923c}
+.fg-neutral{color:#fbbf24}
+.fg-greed{color:#a3e635}
+.fg-extreme-greed{color:#34d399}
+
+/* ══ YIELD ROUTER BARS ══════════════════════════════════════ */
+.yr-item{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.yr-item:last-child{border-bottom:none}
+.yr-rank{width:18px;font-size:10px;font-weight:700;color:var(--text3);text-align:center}
+.yr-rank.top{color:var(--gold)}
+.yr-name{flex:1;font-size:11px;font-weight:600;color:var(--text)}
+.yr-bar-wrap{width:80px;height:6px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden}
+.yr-bar-fill{height:100%;border-radius:3px;transition:width .8s ease}
+.yr-apy{font-size:11px;font-weight:800;min-width:52px;text-align:right}
+.yr-star{font-size:10px}
+
+/* ══ НАВИГАЦИЯ ══════════════════════════════════════════════ */
+.nav{position:fixed;bottom:0;left:0;right:0;z-index:100;background:rgba(3,0,15,.92);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-top:1px solid rgba(124,58,237,.2);height:var(--nav);display:flex;align-items:center;padding:0 4px}
+.nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 2px;border-radius:10px;border:none;background:transparent;color:var(--text3);cursor:pointer;transition:all .2s;font-family:var(--font)}
+.nav-btn.active{color:var(--purple-s)}
+.nav-btn svg,.nav-btn .nav-ico{font-size:20px}
+.nav-lbl{font-size:9px;font-weight:600;letter-spacing:.2px}
+.nav-btn.active .nav-lbl{color:var(--purple-s)}
+
+/* ══ ТАБЫ ═══════════════════════════════════════════════════ */
+.tab-content{display:none}
+.tab-content.active{display:block}
+
+/* ══ TOGGLE ═════════════════════════════════════════════════ */
+.toggle-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.toggle-row:last-child{border-bottom:none}
+.toggle-left{}
+.toggle-name{font-size:12px;font-weight:600}
+.toggle-desc{font-size:10px;color:var(--text3);margin-top:2px}
+.toggle-sw{width:42px;height:24px;border-radius:12px;border:none;cursor:pointer;position:relative;transition:background .3s;flex-shrink:0}
+.toggle-sw::after{content:'';position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;transition:transform .3s;box-shadow:0 1px 4px rgba(0,0,0,.3)}
+.toggle-sw.on{background:var(--purple)}
+.toggle-sw.off{background:rgba(255,255,255,.15)}
+.toggle-sw.on::after{transform:translateX(18px)}
+
+/* ══ КНОПКИ ═════════════════════════════════════════════════ */
+.btn{width:100%;padding:13px;border-radius:13px;border:none;font-family:var(--font);font-size:13px;font-weight:700;cursor:pointer;transition:all .2s;letter-spacing:.3px}
+.btn-primary{background:linear-gradient(135deg,var(--purple),rgba(124,58,237,.7));color:#fff;box-shadow:0 4px 20px rgba(124,58,237,.35)}
+.btn-primary:active{transform:scale(.97);box-shadow:0 2px 10px rgba(124,58,237,.3)}
+.btn-gold{background:linear-gradient(135deg,rgba(251,191,36,.25),rgba(251,191,36,.12));color:var(--gold);border:1px solid rgba(251,191,36,.4)}
+.btn-gold:active{transform:scale(.97)}
+.btn-sm{padding:8px 16px;border-radius:10px;font-size:11px;font-weight:700;border:none;cursor:pointer;font-family:var(--font)}
+.btn-cyan{background:rgba(72,202,228,.15);color:var(--cyan);border:1px solid rgba(72,202,228,.4)}
+
+/* ══ BEGINNER TIPS ══════════════════════════════════════════ */
+.tip-box{background:linear-gradient(135deg,rgba(251,191,36,.08),rgba(124,58,237,.06));border:1px solid rgba(251,191,36,.25);border-radius:14px;padding:12px 14px;margin-bottom:10px;position:relative}
+.tip-icon{font-size:20px;float:left;margin-right:10px;margin-top:2px}
+.tip-title{font-size:12px;font-weight:700;color:var(--gold);margin-bottom:4px}
+.tip-text{font-size:11px;color:var(--text2);line-height:1.55;clear:both}
+.tip-tag{display:inline-block;background:rgba(251,191,36,.12);color:var(--gold);border-radius:6px;padding:1px 6px;font-size:9px;font-weight:700;margin-right:4px;margin-top:4px}
+
+/* ══ STATS GRID ═════════════════════════════════════════════ */
+.stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.stat-cell{background:var(--glass);border:1px solid var(--border);border-radius:12px;padding:10px 8px;text-align:center}
+.stat-val{font-size:16px;font-weight:800;margin-bottom:2px}
+.stat-lbl{font-size:9px;color:var(--text3);letter-spacing:.3px;text-transform:uppercase;font-weight:600}
+.pos-val{color:var(--green)}
+.neg-val{color:var(--red)}
+.neutral-val{color:var(--gold)}
+
+/* loading */
+.loading{text-align:center;padding:32px;color:var(--text3)}
+.spin{display:inline-block;width:28px;height:28px;border-radius:50%;border:2px solid var(--border);border-top-color:var(--purple-s);animation:spin .8s linear infinite;margin-bottom:8px}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ticker */
+.ticker-bar{overflow:hidden;background:rgba(124,58,237,.08);border:1px solid var(--border);border-radius:8px;padding:6px 0;margin-bottom:10px}
+.ticker-inner{display:flex;gap:0;white-space:nowrap;animation:ticker-scroll 30s linear infinite}
+@keyframes ticker-scroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+.ticker-item{padding:0 18px;font-size:10px;font-weight:700;display:inline-flex;align-items:center;gap:5px;color:var(--text2)}
+.ticker-item .up{color:var(--green)}
+.ticker-item .dn{color:var(--red)}
+</style>
+</head>
+<body>
+<div class="qbg"></div>
+
+<!-- ТИКЕР ЦЕН -->
+<div id="tickerBar" class="ticker-bar" style="margin:8px 12px 0">
+  <div class="ticker-inner" id="tickerInner">
+    <span class="ticker-item">⏳ Загрузка цен...</span>
+  </div>
+</div>
+
+<div class="main">
+  <!-- HEADER -->
+  <div class="header">
+    <div class="header-logo">
+      <div class="logo-orb"></div>
+      <div>
+        <div class="logo-text">QuantumTrade</div>
+        <div class="logo-sub">ЦЕНТР УПРАВЛЕНИЯ</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="status-pill" id="pilotPill">
+        <span class="status-dot"></span>
+        <span id="pilotLabel">...</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- РЕЖИМ -->
+  <div class="mode-bar">
+    <button class="mode-btn active" onclick="setMode('beginner')" id="modeBeginner">🌱 Новичок</button>
+    <button class="mode-btn" onclick="setMode('pro')" id="modePro">⚡ Эксперт</button>
+    <button class="mode-btn" onclick="setMode('flow')" id="modeFlow">🔮 Живой поток</button>
+  </div>
+
+  <!-- ══ РЕЖИМ: НОВИЧОК ══════════════════════════════════════ -->
+  <div class="tab-content active" id="mode-beginner">
+
+    <div class="tip-box">
+      <div class="tip-icon">🤖</div>
+      <div class="tip-title">Как работает твой бот?</div>
+      <div class="tip-text">Бот автоматически вкладывает твои деньги в самые выгодные инструменты и торгует криптой. Всё происходит само, круглосуточно — ты просто наблюдаешь как растёт капитал.</div>
+    </div>
+
+    <!-- МАКРО -->
+    <div id="macroBar" class="macro-bar">
+      <div class="macro-chip"><span class="macro-chip-label">Страх &amp; Жадность</span><span class="macro-chip-val fg-neutral" id="fgVal">–</span></div>
+      <div class="macro-chip"><span class="macro-chip-label">Настроение</span><span class="macro-chip-val" id="fgLabel" style="font-size:11px;color:var(--text2)">–</span></div>
+      <div class="macro-chip"><span class="macro-chip-label">Автопилот</span><span class="macro-chip-val" id="autopilotVal" style="font-size:11px">–</span></div>
+      <div class="macro-chip"><span class="macro-chip-label">Позиций</span><span class="macro-chip-val" id="posCount" style="color:var(--cyan)">–</span></div>
+    </div>
+
+    <div class="section-title">💰 Мой баланс</div>
+    <div class="card card-gold">
+      <div id="balanceRows"><div class="loading"><div class="spin"></div><br>Загрузка...</div></div>
+    </div>
+
+    <div class="section-title">🚀 Пассивный доход — что куда вложено</div>
+    <div id="beginnerProducts">
+      <div class="loading"><div class="spin"></div><br>Загрузка...</div>
+    </div>
+
+    <div class="section-title">📖 Как читать показатели</div>
+    <div class="tip-box">
+      <div class="tip-icon">📈</div>
+      <div class="tip-title">APY — годовая доходность</div>
+      <div class="tip-text">Если APY = 200%, это значит что при вложении $100 за год ты заработаешь $200. Но бот не ждёт год — он реинвестирует каждый день, поэтому реальный результат выше.<br>
+      <span class="tip-tag">DCI</span> — инвестиция на 1-14 дней с высоким APY<br>
+      <span class="tip-tag">Лендинг</span> — даём USDT в долг трейдерам<br>
+      <span class="tip-tag">Snowball</span> — зарабатываем на боковом движении</div>
+    </div>
+
+    <div class="tip-box">
+      <div class="tip-icon">🛡️</div>
+      <div class="tip-title">Как бот защищает деньги?</div>
+      <div class="tip-text">Индикатор "Страх &amp; Жадность" показывает настроение рынка. При панике (< 25) бот не покупает. 15 AI-агентов MiroFish голосуют за каждую сделку. Стоп-лосс автоматический — максимальный убыток ограничен 2%.</div>
+    </div>
+  </div>
+
+  <!-- ══ РЕЖИМ: ЭКСПЕРТ ══════════════════════════════════════ -->
+  <div class="tab-content" id="mode-pro">
+
+    <!-- СТАТИСТИКА -->
+    <div class="section-title">📊 Статистика торговли</div>
+    <div class="stats-grid" id="statsGrid">
+      <div class="stat-cell"><div class="stat-val neutral-val" id="stWinrate">–</div><div class="stat-lbl">Winrate</div></div>
+      <div class="stat-cell"><div class="stat-val" id="stPnl">–</div><div class="stat-lbl">PnL</div></div>
+      <div class="stat-cell"><div class="stat-val neutral-val" id="stQscore">–</div><div class="stat-lbl">Q-Score</div></div>
+      <div class="stat-cell"><div class="stat-val" id="stTrades">–</div><div class="stat-lbl">Сделок</div></div>
+      <div class="stat-cell"><div class="stat-val" id="stStreak">–</div><div class="stat-lbl">Стрик</div></div>
+      <div class="stat-cell"><div class="stat-val neutral-val" id="stPositions">–</div><div class="stat-lbl">Открыто</div></div>
+    </div>
+
+    <!-- YIELD ROUTER -->
+    <div class="section-title">🏆 Рейтинг доходности (Yield Router)</div>
+    <div class="card">
+      <div id="yieldRouterList"><div class="loading"><div class="spin"></div></div></div>
+      <div style="margin-top:10px;display:flex;gap:6px">
+        <button class="btn btn-gold" style="flex:1;padding:10px" onclick="refreshYieldRouter()">🔄 Обновить</button>
+      </div>
+    </div>
+
+    <!-- DCI ПОЗИЦИИ -->
+    <div class="section-title">💎 Бивалютные инвестиции (DCI)</div>
+    <div id="dciPositionsWrap">
+      <div class="loading"><div class="spin"></div></div>
+    </div>
+    <button class="btn btn-primary" style="margin-bottom:12px" onclick="forceDCI()">⚡ Разместить DCI вручную</button>
+
+    <!-- ВСЕ МОДУЛИ -->
+    <div class="section-title">⚙️ Управление модулями</div>
+    <div class="card">
+      <div id="modulesToggles"><div class="loading"><div class="spin"></div></div></div>
+    </div>
+
+    <!-- ЛОГ -->
+    <div class="section-title">📋 Лог активности бота</div>
+    <div class="card">
+      <div class="events-list" id="eventsList"></div>
+    </div>
+  </div>
+
+  <!-- ══ РЕЖИМ: ЖИВОЙ ПОТОК ══════════════════════════════════ -->
+  <div class="tab-content" id="mode-flow">
+
+    <div class="tip-box" style="margin-bottom:8px">
+      <div class="tip-icon">🔮</div>
+      <div class="tip-title">Как деньги работают в реальном времени</div>
+      <div class="tip-text">Наблюдай как USDT течёт через Yield Router и распределяется по продуктам. Золотые искры = доход поступает на счёт.</div>
+    </div>
+
+    <!-- FLOW ANIMATION -->
+    <div class="flow-scene" id="flowScene">
+      <svg class="flow-svg" id="flowSvg" viewBox="0 0 380 260" preserveAspectRatio="xMidYMid meet">
+        <!-- линии потока -->
+        <defs>
+          <linearGradient id="lineGold" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" style="stop-color:rgba(251,191,36,.0)"/>
+            <stop offset="50%" style="stop-color:rgba(251,191,36,.7)"/>
+            <stop offset="100%" style="stop-color:rgba(251,191,36,.0)"/>
+          </linearGradient>
+          <linearGradient id="linePurple" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" style="stop-color:rgba(124,58,237,.0)"/>
+            <stop offset="50%" style="stop-color:rgba(124,58,237,.6)"/>
+            <stop offset="100%" style="stop-color:rgba(124,58,237,.0)"/>
+          </linearGradient>
+          <linearGradient id="lineCyan" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" style="stop-color:rgba(72,202,228,.0)"/>
+            <stop offset="50%" style="stop-color:rgba(72,202,228,.5)"/>
+            <stop offset="100%" style="stop-color:rgba(72,202,228,.0)"/>
+          </linearGradient>
+          <filter id="glow">
+            <feGaussianBlur stdDeviation="2" result="blur"/>
+            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+          <marker id="arrowGold" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="rgba(251,191,36,.7)"/>
+          </marker>
+          <marker id="arrowPurple" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="rgba(124,58,237,.7)"/>
+          </marker>
+        </defs>
+
+        <!-- Wallet → Router -->
+        <line x1="68" y1="130" x2="162" y2="130" stroke="url(#lineGold)" stroke-width="2" stroke-dasharray="5,4" opacity="0.8">
+          <animate attributeName="stroke-dashoffset" from="0" to="-18" dur="1.2s" repeatCount="indefinite"/>
+        </line>
+
+        <!-- Router → DCI -->
+        <line x1="218" y1="115" x2="292" y2="68" stroke="url(#lineCyan)" stroke-width="1.5" stroke-dasharray="4,4" opacity="0.7">
+          <animate attributeName="stroke-dashoffset" from="0" to="-16" dur="1s" repeatCount="indefinite"/>
+        </line>
+        <!-- Router → Lending -->
+        <line x1="220" y1="128" x2="295" y2="118" stroke="url(#linePurple)" stroke-width="1.5" stroke-dasharray="4,4" opacity="0.65">
+          <animate attributeName="stroke-dashoffset" from="0" to="-16" dur="1.4s" repeatCount="indefinite"/>
+        </line>
+        <!-- Router → Snowball -->
+        <line x1="220" y1="140" x2="295" y2="165" stroke="url(#lineGold)" stroke-width="1.5" stroke-dasharray="4,4" opacity="0.55">
+          <animate attributeName="stroke-dashoffset" from="0" to="-16" dur="1.6s" repeatCount="indefinite"/>
+        </line>
+        <!-- Router → Earn -->
+        <line x1="218" y1="148" x2="293" y2="205" stroke="url(#linePurple)" stroke-width="1.5" stroke-dasharray="3,5" opacity="0.45">
+          <animate attributeName="stroke-dashoffset" from="0" to="-16" dur="2s" repeatCount="indefinite"/>
+        </line>
+
+        <!-- WALLET NODE -->
+        <g filter="url(#glow)">
+          <circle cx="42" cy="130" r="26" fill="rgba(251,191,36,.1)" stroke="rgba(251,191,36,.6)" stroke-width="1.5"/>
+          <circle cx="42" cy="130" r="30" fill="none" stroke="rgba(251,191,36,.25)" stroke-width="1" stroke-dasharray="4,4">
+            <animateTransform attributeName="transform" type="rotate" from="0 42 130" to="360 42 130" dur="12s" repeatCount="indefinite"/>
+          </circle>
+          <text x="42" y="135" text-anchor="middle" font-size="18" fill="white">💰</text>
+        </g>
+        <text x="42" y="166" text-anchor="middle" font-size="8" fill="rgba(251,191,36,.9)" font-weight="700">КОШЕЛЁК</text>
+        <text x="42" y="177" text-anchor="middle" font-size="9" fill="rgba(251,191,36,.7)" id="walletAmtSvg" font-weight="800">$–</text>
+
+        <!-- ROUTER NODE -->
+        <g filter="url(#glow)">
+          <circle cx="190" cy="130" r="30" fill="rgba(124,58,237,.18)" stroke="rgba(124,58,237,.7)" stroke-width="2"/>
+          <circle cx="190" cy="130" r="35" fill="none" stroke="rgba(159,103,255,.3)" stroke-width="1.5" stroke-dasharray="3,3">
+            <animateTransform attributeName="transform" type="rotate" from="360 190 130" to="0 190 130" dur="8s" repeatCount="indefinite"/>
+          </circle>
+          <text x="190" y="136" text-anchor="middle" font-size="22" fill="white">⚡</text>
+        </g>
+        <text x="190" y="172" text-anchor="middle" font-size="8" fill="rgba(159,103,255,.9)" font-weight="700">РОУТЕР</text>
+        <text x="190" y="183" text-anchor="middle" font-size="8" fill="rgba(159,103,255,.65)" id="routerLabelSvg">YIELD v2</text>
+
+        <!-- DCI NODE -->
+        <g filter="url(#glow)">
+          <circle cx="320" cy="55" r="22" fill="rgba(72,202,228,.12)" stroke="rgba(72,202,228,.6)" stroke-width="1.5"/>
+          <circle cx="320" cy="55" r="26" fill="none" stroke="rgba(72,202,228,.25)" stroke-width="1" stroke-dasharray="3,4">
+            <animateTransform attributeName="transform" type="rotate" from="0 320 55" to="360 320 55" dur="10s" repeatCount="indefinite"/>
+          </circle>
+          <text x="320" y="61" text-anchor="middle" font-size="16" fill="white">💎</text>
+        </g>
+        <text x="320" y="86" text-anchor="middle" font-size="8" fill="rgba(72,202,228,.9)" font-weight="700">DCI</text>
+        <text x="320" y="96" text-anchor="middle" font-size="8" fill="rgba(72,202,228,.65)" id="dciApySvg">–% APY</text>
+
+        <!-- LENDING NODE -->
+        <g filter="url(#glow)">
+          <circle cx="320" cy="118" r="18" fill="rgba(52,211,153,.1)" stroke="rgba(52,211,153,.55)" stroke-width="1.5"/>
+          <text x="320" y="124" text-anchor="middle" font-size="14" fill="white">🏦</text>
+        </g>
+        <text x="320" y="144" text-anchor="middle" font-size="8" fill="rgba(52,211,153,.85)" font-weight="700">ЛЕНДИНГ</text>
+        <text x="320" y="154" text-anchor="middle" font-size="8" fill="rgba(52,211,153,.6)" id="lendingApySvg">–% APR</text>
+
+        <!-- SNOWBALL NODE -->
+        <g filter="url(#glow)">
+          <circle cx="320" cy="172" r="17" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.45)" stroke-width="1.5"/>
+          <text x="320" y="178" text-anchor="middle" font-size="13" fill="white">⛄</text>
+        </g>
+        <text x="320" y="197" text-anchor="middle" font-size="8" fill="rgba(251,191,36,.85)" font-weight="700">SNOWBALL</text>
+        <text x="320" y="207" text-anchor="middle" font-size="8" fill="rgba(251,191,36,.6)" id="snowballApySvg">–% APY</text>
+
+        <!-- EARN NODE -->
+        <g filter="url(#glow)">
+          <circle cx="320" cy="218" r="15" fill="rgba(159,103,255,.1)" stroke="rgba(159,103,255,.4)" stroke-width="1.5"/>
+          <text x="320" y="223" text-anchor="middle" font-size="12" fill="white">💾</text>
+        </g>
+        <text x="320" y="241" text-anchor="middle" font-size="8" fill="rgba(159,103,255,.8)" font-weight="700">СБЕРЕЖЕНИЯ</text>
+
+        <!-- плавающие монетки (JS добавит) -->
+        <g id="particlesGroup"></g>
+      </svg>
+
+      <!-- Всплески дохода -->
+      <div id="incomeBursts" style="position:absolute;inset:0;pointer-events:none"></div>
+
+      <!-- Легенда -->
+      <div style="position:absolute;bottom:8px;left:10px;display:flex;gap:10px">
+        <span style="font-size:9px;color:rgba(251,191,36,.7);font-weight:600">—— USDT</span>
+        <span style="font-size:9px;color:rgba(72,202,228,.7);font-weight:600">—— DCI</span>
+        <span style="font-size:9px;color:rgba(52,211,153,.7);font-weight:600">—— Доход</span>
+      </div>
+    </div>
+
+    <!-- Живые события -->
+    <div class="section-title" style="margin-top:12px">⚡ Что происходит прямо сейчас</div>
+    <div class="card">
+      <div class="events-list" id="flowEventsList"></div>
+    </div>
+
+    <!-- DCI позиции в потоке -->
+    <div class="section-title">💎 Активные DCI</div>
+    <div id="flowDciPositions">
+      <div class="loading"><div class="spin"></div></div>
+    </div>
+  </div>
+
+</div><!-- /main -->
+
+<!-- НАВИГАЦИЯ -->
+<nav class="nav">
+  <button class="nav-btn active" onclick="setMode('beginner')" id="navBeginner">
+    <span class="nav-ico">🌱</span>
+    <span class="nav-lbl">Обзор</span>
+  </button>
+  <button class="nav-btn" onclick="setMode('pro')" id="navPro">
+    <span class="nav-ico">⚡</span>
+    <span class="nav-lbl">Эксперт</span>
+  </button>
+  <button class="nav-btn" onclick="setMode('flow')" id="navFlow">
+    <span class="nav-ico">🔮</span>
+    <span class="nav-lbl">Поток</span>
+  </button>
+</nav>
+
+<script>
+// ══ CONFIG ══════════════════════════════════════════════════
+const BASE = (()=>{
+  try{const t=window.Telegram?.WebApp;if(t?.initDataUnsafe?.start_param)return'https://'+t.initDataUnsafe.start_param;}catch(e){}
+  return window.location.origin;
+})();
+const API_KEY = (() => {
+  try { return window.Telegram?.WebApp?.initDataUnsafe?.user?.id ? '' : (localStorage.getItem('qt_key') || ''); } catch(e){return '';}
+})();
+
+const H = {'X-API-Key': API_KEY, 'Content-Type':'application/json'};
+
+async function api(path, opts={}){
+  try{
+    const r = await fetch(BASE+path, {headers:H, signal:AbortSignal.timeout(12000), ...opts});
+    if(!r.ok) return null;
+    return r.json();
+  }catch(e){return null;}
+}
+
+// ══ STATE ═══════════════════════════════════════════════════
+let _live = {};
+let _dci  = {};
+let _earn = {};
+let _currentMode = 'beginner';
+let _refreshTimer = null;
+
+// ══ MODE SWITCH ══════════════════════════════════════════════
+function setMode(mode){
+  _currentMode = mode;
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.mode-btn').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('mode-'+mode)?.classList.add('active');
+  document.getElementById('mode'+mode.charAt(0).toUpperCase()+mode.slice(1))?.classList.add('active');
+  document.getElementById('nav'+mode.charAt(0).toUpperCase()+mode.slice(1))?.classList.add('active');
+  if(mode==='flow') startFlowAnimation();
+}
+
+// ══ FEAR & GREED COLOR ═══════════════════════════════════════
+function fgClass(v){
+  if(v<=20)return'fg-extreme-fear';
+  if(v<=40)return'fg-fear';
+  if(v<=60)return'fg-neutral';
+  if(v<=80)return'fg-greed';
+  return'fg-extreme-greed';
+}
+function fgLabel(v){
+  if(v<=20)return'😱 Паника';
+  if(v<=40)return'😰 Страх';
+  if(v<=60)return'😐 Нейтрально';
+  if(v<=80)return'😏 Жадность';
+  return'🤑 Макс. жадность';
+}
+
+// ══ RENDER MACRO ════════════════════════════════════════════
+function renderMacro(d){
+  const fg = d?.macro?.fear_greed ?? 50;
+  const el = document.getElementById('fgVal');
+  if(el){el.textContent=fg;el.className='macro-chip-val '+fgClass(fg);}
+  const lbl = document.getElementById('fgLabel');
+  if(lbl) lbl.textContent = fgLabel(fg);
+  const ap = document.getElementById('autopilotVal');
+  if(ap){ap.textContent=d?.system?.autopilot?'✅ ВКЛ':'❌ ВЫКЛ';ap.style.color=d?.system?.autopilot?'var(--green)':'var(--red)';}
+  const pc = document.getElementById('posCount');
+  if(pc) pc.textContent = d?.trading?.open_positions ?? 0;
+  // pilot pill
+  const pill = document.getElementById('pilotPill');
+  const pLabel = document.getElementById('pilotLabel');
+  if(pill && pLabel){
+    const on = d?.system?.autopilot;
+    pill.className='status-pill '+(on?'on':'off');
+    pLabel.textContent=on?'АВТОПИЛОТ':'ПАУЗА';
+  }
+}
+
+// ══ RENDER BALANCE ══════════════════════════════════════════
+function renderBalance(bal){
+  const el = document.getElementById('balanceRows');
+  if(!el) return;
+  if(!bal){el.innerHTML='<div style="color:var(--text3);text-align:center;padding:16px">Нет данных</div>';return;}
+  const rows = [];
+  const kc = bal.kucoin_spot_usdt ?? bal.kucoin?.spot_usdt ?? 0;
+  const bb = bal.bybit_usdt ?? bal.bybit?.total_usdt ?? 0;
+  const earn = bal.earn_total ?? (_earn?.kucoin_subscribed??0)+(_earn?.bybit_subscribed??0);
+  const dciInv = bal.dci_invested ?? _dci?.total_invested ?? 0;
+  const total = kc + bb + earn + dciInv;
+
+  rows.push({icon:'🟡',name:'KuCoin',sub:'Спот кошелёк',amt:`$${kc.toFixed(2)}`});
+  rows.push({icon:'🔵',name:'ByBit',sub:'Спот кошелёк',amt:`$${bb.toFixed(2)}`});
+  if(earn>0) rows.push({icon:'💾',name:'Сбережения',sub:'Flex Earn KC+BB',amt:`$${earn.toFixed(2)}`});
+  if(dciInv>0) rows.push({icon:'💎',name:'DCI вложено',sub:'Бивалютные инвестиции',amt:`$${dciInv.toFixed(2)}`});
+  rows.push({icon:'⚡',name:'ИТОГО',sub:'Всё включено',amt:`$${total.toFixed(2)}`,gold:true});
+
+  el.innerHTML = rows.map(r=>`
+    <div class="balance-row">
+      <div class="bal-left"><span class="bal-icon">${r.icon}</span>
+        <div><div class="bal-name${r.gold?' '+'bal-gold':''}" ${r.gold?'style="color:var(--gold)"':''}>${r.name}</div>
+        <div class="bal-sub">${r.sub}</div></div></div>
+      <div><div class="bal-amount" ${r.gold?'style="font-size:16px"':''}>${r.amt}</div></div>
+    </div>`).join('');
+}
+
+// ══ RENDER BEGINNER PRODUCTS ════════════════════════════════
+function renderBeginnerProducts(live, earn, dci){
+  const el = document.getElementById('beginnerProducts');
+  if(!el) return;
+  const fg = live?.macro?.fear_greed ?? 50;
+  const sideways = fg >= 30 && fg <= 65;
+  const products = [
+    {
+      icon:'💎', name:'Бивалютные инвестиции',
+      nameEn:'DCI',
+      apy: dci?.min_apy ? `${dci.min_apy}%+` : '100-900%',
+      apyCls:'cyan',
+      desc: dci?.positions>0 ? `✅ Активно · ${dci.positions} позиц. · след. цикл ~${dci.next_cycle_mins} мин` : 'Ищем лучшие условия...',
+      badge: dci?.enabled ? 'on' : 'off',
+      badgeText: dci?.enabled ? 'ВКЛ' : 'ВЫКЛ',
+    },
+    {
+      icon:'🏦', name:'Кредитование (Лендинг)',
+      nameEn:'KuCoin Lending',
+      apy:'10-50%', apyCls:'green',
+      desc:'Даём USDT трейдерам в долг · доход каждый день',
+      badge:'ready', badgeText:'ГОТОВО',
+    },
+    {
+      icon:'⛄', name:'Снежный ком',
+      nameEn:'ByBit Snowball',
+      apy:'10-50%', apyCls:'gold',
+      desc: sideways ? `✅ Рынок боковой (F&G=${fg}) — идеальные условия!` : `⏸ Ждём бокового рынка (F&G ${fg})`,
+      badge: sideways ? 'ready' : 'off', badgeText: sideways ? 'ГОТОВО' : 'НЕ СЕЙЧАС',
+    },
+    {
+      icon:'⚡', name:'Арбитраж ставок',
+      nameEn:'Funding Rate Arb',
+      apy:'10-150%', apyCls:'purple',
+      desc:'Дельта-нейтральная стратегия · ждёт $30+ капитала',
+      badge:'off', badgeText:'ЖДЁТ',
+    },
+    {
+      icon:'💾', name:'Гибкие сбережения',
+      nameEn:'Flex Earn',
+      apy:`${(live?.modules?.earn?.kc??0)+(live?.modules?.earn?.bb??0)>0 ? '0.7' : '0.5-5'}%`,
+      apyCls:'purple',
+      desc:`В работе: $${((live?.modules?.earn?.kc??0)+(live?.modules?.earn?.bb??0)).toFixed(2)} USDT · можно вывести в любой момент`,
+      badge: live?.modules?.earn?.enabled ? 'on' : 'off',
+      badgeText: live?.modules?.earn?.enabled ? 'ВКЛ' : 'ВЫКЛ',
+    },
+  ];
+  el.innerHTML = `<div class="products-grid">${products.map(p=>`
+    <div class="prod-card ${p.badge==='on'?'active-prod':'inactive-prod'}">
+      <span class="prod-badge badge-${p.badge}">${p.badgeText}</span>
+      <div class="prod-icon">${p.icon}</div>
+      <div class="prod-name">${p.name}</div>
+      <div class="prod-apy ${p.apyCls}">${p.apy}</div>
+      <div class="prod-sub">${p.desc}</div>
+    </div>`).join('')}</div>`;
+}
+
+// ══ RENDER DCI POSITIONS ════════════════════════════════════
+async function renderDciPositions(containerId){
+  const el = document.getElementById(containerId);
+  if(!el) return;
+  // Try to get live DCI positions from ByBit
+  const positions = _live?.positions ?? [];
+  const dciStat = _dci;
+  if(!dciStat?.enabled){
+    el.innerHTML=`<div class="dci-empty">💎 DCI отключён (DCI_ENABLED=false)</div>`;return;
+  }
+  // Render from _live positions or show stats
+  const invested = dciStat?.total_invested ?? 0;
+  const subs = dciStat?.subscriptions ?? 0;
+  const nextMins = dciStat?.next_cycle_mins ?? 60;
+  if(invested===0 && subs===0){
+    el.innerHTML=`<div class="dci-empty">⏳ DCI активен, ищет лучшие продукты...<br><span style="font-size:10px;color:var(--text3)">Следующая попытка через ~${nextMins} мин</span></div>`;
+    return;
+  }
+  el.innerHTML=`<div class="dci-positions">
+    <div class="dci-pos-card">
+      <div class="dci-coin">💎</div>
+      <div class="dci-info">
+        <div class="dci-pair">Бивалютные инвестиции</div>
+        <div class="dci-details">Всего размещено: <b style="color:var(--gold)">$${invested.toFixed(2)}</b> · подписок: ${subs}</div>
+        <div class="dci-countdown">⏱ Следующий цикл через ~${nextMins} мин</div>
+      </div>
+      <div class="dci-apy-badge">
+        <div class="dci-apy-val">${dciStat?.min_apy ?? '15'}%+</div>
+        <div class="dci-apy-lbl">МИН APY</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ══ RENDER MODULES TOGGLES ══════════════════════════════════
+function renderModules(live){
+  const el = document.getElementById('modulesToggles');
+  if(!el) return;
+  const m = live?.modules ?? {};
+  const items = [
+    {key:'trading',label:'🤖 Автопилот',desc:'Автоматическая торговля криптой',val:live?.system?.autopilot??false},
+    {key:'earn',label:'💾 Сбережения',desc:'Flex Earn — пассивный % на свободный USDT',val:m.earn?.enabled??false},
+    {key:'router',label:'🔄 Маршрутизатор',desc:'Авто-распределение свободных средств',val:m.router?.enabled??false},
+    {key:'mirofish',label:'🐟 MiroFish AI',desc:'15 AI-агентов голосуют за сделки',val:m.mirofish?.enabled??false},
+  ];
+  el.innerHTML = items.map(i=>`
+    <div class="toggle-row">
+      <div class="toggle-left">
+        <div class="toggle-name">${i.label}</div>
+        <div class="toggle-desc">${i.desc}</div>
+      </div>
+      <button class="toggle-sw ${i.val?'on':'off'}" onclick="toggleModule('${i.key}',this)"></button>
+    </div>`).join('');
+}
+
+async function toggleModule(key, btn){
+  const isOn = btn.classList.contains('on');
+  btn.classList.toggle('on',!isOn);btn.classList.toggle('off',isOn);
+  await api('/api/module/toggle',{method:'POST',body:JSON.stringify({module:key,enabled:!isOn})});
+}
+
+// ══ RENDER ACTIVITY LOG ══════════════════════════════════════
+function renderActivity(log, containerId){
+  const el = document.getElementById(containerId);
+  if(!el) return;
+  if(!log?.length){el.innerHTML='<div style="color:var(--text3);text-align:center;padding:12px;font-size:11px">Нет событий</div>';return;}
+  const classify = (txt)=>{
+    const t = txt.toLowerCase();
+    if(t.includes('dci')||t.includes('earn')||t.includes('snowball')||t.includes('lending'))return'earn';
+    if(t.includes('buy')||t.includes('sell')||t.includes('trade'))return'trade';
+    if(t.includes('error')||t.includes('❌')||t.includes('fail'))return'error';
+    if(t.includes('⚠')||t.includes('warn'))return'warn';
+    return'info';
+  };
+  const fmt = (msg) => {
+    return msg.replace(/\[([^\]]+)\]/g,'<span style="color:var(--purple-s);font-weight:700">$1</span>')
+              .replace(/✅/g,'<span style="color:var(--green)">✅</span>')
+              .replace(/❌/g,'<span style="color:var(--red)">❌</span>')
+              .replace(/\$[\d.]+/g,m=>`<span style="color:var(--gold);font-weight:700">${m}</span>`);
+  };
+  el.innerHTML = log.slice(0,15).map(e=>{
+    const txt = typeof e==='string'?e:(e.msg||e.text||JSON.stringify(e));
+    const cls = classify(txt);
+    const ts = e.ts ? new Date(e.ts*1000).toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'}) : '';
+    return`<div class="event-row">
+      <span class="event-dot event-${cls}"></span>
+      <span class="event-text">${fmt(txt)}</span>
+      ${ts?`<span class="event-time">${ts}</span>`:''}
+    </div>`;
+  }).join('');
+}
+
+// ══ YIELD ROUTER ════════════════════════════════════════════
+let _yrCache = null;
+async function renderYieldRouter(){
+  const el = document.getElementById('yieldRouterList');
+  if(!el) return;
+  el.innerHTML='<div class="loading"><div class="spin"></div></div>';
+  const d = await api('/api/yield-router');
+  if(!d?.success||!d.ranking?.length){
+    el.innerHTML='<div style="color:var(--text3);text-align:center;padding:12px">Нет данных — требуется API ключ</div>';
+    return;
+  }
+  _yrCache = d;
+  const max = Math.max(...d.ranking.map(r=>r.score||0),1);
+  el.innerHTML = d.ranking.map((r,i)=>{
+    const isTop = i===0;
+    const barW = Math.round((r.score/max)*100);
+    const colors = ['var(--gold)','var(--cyan)','var(--green)','var(--purple-s)','rgba(159,103,255,.6)','var(--text3)','var(--text3)'];
+    const barColor = colors[i] || 'var(--text3)';
+    const rec = d.recommendation?.product===r.product;
+    return`<div class="yr-item">
+      <span class="yr-rank ${isTop?'top':''}">${isTop?'🏆':(i+1)}</span>
+      <span class="yr-name">${translateProduct(r.product)}</span>
+      <div class="yr-bar-wrap"><div class="yr-bar-fill" style="width:${barW}%;background:${barColor}"></div></div>
+      <span class="yr-apy" style="color:${barColor}">${r.apy_pct?.toFixed(1)}%</span>
+      ${rec?'<span class="yr-star">⭐</span>':''}
+    </div>`;
+  }).join('');
+  // Update SVG labels
+  const topDCI = d.ranking.find(r=>r.product==='ByBit DCI');
+  const topLend = d.ranking.find(r=>r.product==='KuCoin Lending');
+  const topSB = d.ranking.find(r=>r.product==='ByBit Snowball');
+  if(topDCI) document.getElementById('dciApySvg').textContent=topDCI.apy_pct?.toFixed(0)+'% APY';
+  if(topLend) document.getElementById('lendingApySvg').textContent=topLend.apy_pct?.toFixed(0)+'% APR';
+  if(topSB) document.getElementById('snowballApySvg').textContent=topSB.apy_pct?.toFixed(0)+'% APY';
+}
+async function refreshYieldRouter(){await renderYieldRouter();}
+
+function translateProduct(p){
+  const map={'ByBit DCI':'💎 Бивалютные инвест.','Funding Arb':'⚡ Арбитраж ставок','ByBit Snowball':'⛄ Снежный ком','ByBit DoubleWin':'🎯 Двойная победа','KuCoin Lending':'🏦 Кредитование','ByBit Flex Earn':'💾 ByBit Сбережения','KuCoin Flex Earn':'💾 KuCoin Сбережения'};
+  return map[p]||p;
+}
+
+// ══ TICKER ══════════════════════════════════════════════════
+function renderTicker(prices){
+  const inner = document.getElementById('tickerInner');
+  if(!inner||!prices) return;
+  const pairs = Object.entries(prices).filter(([k])=>k.includes('USDT'));
+  if(!pairs.length) return;
+  const items = pairs.map(([sym,price])=>{
+    const name = sym.replace('-USDT','').replace('USDT','');
+    return`<span class="ticker-item">${name} <span>${price>=1?'$'+price.toFixed(2):price.toFixed(6)}</span></span>`;
+  }).join('');
+  inner.innerHTML = items+items; // duplicate for seamless loop
+}
+
+// ══ FLOW ANIMATION ══════════════════════════════════════════
+let _flowActive = false;
+let _flowInterval = null;
+function startFlowAnimation(){
+  if(_flowActive) return;
+  _flowActive = true;
+  // Update wallet amount
+  const walletEl = document.getElementById('walletAmtSvg');
+  if(walletEl && _live?.trading){
+    const bal = (_live.earn?.kc??0)+(_live.earn?.bb??0)+(_dci?.total_invested??0);
+    if(bal>0) walletEl.textContent = '$'+bal.toFixed(0);
+  }
+  // Spawn particles every 2s
+  _flowInterval = setInterval(spawnParticle, 2200);
+  // Spawn income bursts when DCI has positions
+  if((_dci?.total_invested??0)>0) setInterval(spawnIncomeBurst, 7000);
+  renderActivity(_live?.activity, 'flowEventsList');
+  renderDciPositions('flowDciPositions');
+}
+
+function spawnParticle(){
+  const g = document.getElementById('particlesGroup');
+  if(!g) return;
+  // Wallet → Router
+  const ns='http://www.w3.org/2000/svg';
+  const circle=document.createElementNS(ns,'circle');
+  circle.setAttribute('r','4');
+  circle.setAttribute('fill','rgba(251,191,36,0.9)');
+  circle.setAttribute('filter','url(#glow)');
+  const anim=document.createElementNS(ns,'animateMotion');
+  anim.setAttribute('dur','1.2s');
+  anim.setAttribute('repeatCount','1');
+  anim.setAttribute('fill','freeze');
+  // random target: Router or one of the products
+  const paths=[
+    'M42,130 Q100,128 190,130',  // wallet→router
+    'M42,130 Q100,128 190,130',  // wallet→router (higher prob)
+    'M190,130 Q255,90 320,55',   // router→DCI
+    'M190,130 Q255,120 320,118', // router→Lending
+    'M190,130 Q255,155 320,172', // router→Snowball
+  ];
+  anim.setAttribute('path', paths[Math.floor(Math.random()*paths.length)]);
+  circle.appendChild(anim);
+  g.appendChild(circle);
+  anim.addEventListener('endEvent',()=>g.removeChild(circle));
+}
+
+function spawnIncomeBurst(){
+  const container = document.getElementById('incomeBursts');
+  if(!container) return;
+  const amounts = ['+$0.02','💰','+APY','✨'];
+  const div = document.createElement('div');
+  div.className='income-burst';
+  div.textContent = amounts[Math.floor(Math.random()*amounts.length)];
+  const x = 250+Math.random()*80;
+  const y = 40+Math.random()*150;
+  div.style.cssText=`left:${x}px;top:${y}px;animation:burst-up 1.8s ease-out forwards`;
+  container.appendChild(div);
+  setTimeout(()=>div.remove(), 2000);
+}
+
+// ══ FORCE DCI ════════════════════════════════════════════════
+async function forceDCI(){
+  const btn=event.target;btn.textContent='⏳ Размещаем...';btn.disabled=true;
+  const r = await api('/api/dci/place',{method:'POST'});
+  btn.disabled=false;
+  if(r?.placed?.length){
+    btn.textContent='✅ Размещено!';
+    showToast(`💎 DCI: ${r.placed.length} позиций · APY ${r.placed[0]?.apy_pct?.toFixed(1)}%`);
+  } else {
+    btn.textContent='⚠️ '+( r?.reason||r?.error||'Нет доступных продуктов');
+  }
+  setTimeout(()=>{btn.textContent='⚡ Разместить DCI вручную';},4000);
+}
+
+// ══ TOAST ════════════════════════════════════════════════════
+function showToast(msg){
+  const d=document.createElement('div');
+  d.style.cssText='position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(124,58,237,.9);color:#fff;padding:10px 20px;border-radius:20px;font-size:12px;font-weight:600;z-index:999;white-space:nowrap;backdrop-filter:blur(10px);border:1px solid rgba(159,103,255,.5);animation:toast-in .3s ease';
+  d.textContent=msg;
+  document.body.appendChild(d);
+  setTimeout(()=>d.remove(),3500);
+}
+
+// ══ MAIN REFRESH ════════════════════════════════════════════
+async function refresh(){
+  const [live, earnStatus, dciStatus, bal] = await Promise.all([
+    api('/api/dashboard/live'),
+    api('/api/earn/status'),
+    api('/api/dci/status'),
+    api('/api/public/balance'),
+  ]);
+  if(live) _live = live;
+  if(earnStatus) _earn = earnStatus;
+  if(dciStatus) _dci = dciStatus;
+
+  renderMacro(_live);
+  renderBalance(bal);
+  renderBeginnerProducts(_live, _earn, _dci);
+  renderTicker(_live?.prices);
+
+  if(_currentMode==='pro'){
+    // stats
+    const p = _live?.performance??{};
+    document.getElementById('stWinrate').textContent=(p.winrate??0).toFixed(1)+'%';
+    const pnl=p.total_pnl??0;
+    const pEl=document.getElementById('stPnl');pEl.textContent=(pnl>=0?'+':'')+pnl.toFixed(2)+'$';pEl.className='stat-val '+(pnl>=0?'pos-val':'neg-val');
+    document.getElementById('stQscore').textContent=(_live?.trading?.last_q_score??0).toFixed(1);
+    document.getElementById('stTrades').textContent=p.total_trades??0;
+    const st=p.streak??0;const sEl=document.getElementById('stStreak');sEl.textContent=(st>=0?'+':'')+st;sEl.className='stat-val '+(st>0?'pos-val':st<0?'neg-val':'neutral-val');
+    document.getElementById('stPositions').textContent=_live?.trading?.open_positions??0;
+    renderDciPositions('dciPositionsWrap');
+    renderModules(_live);
+    renderActivity(_live?.activity,'eventsList');
+  }
+
+  if(_currentMode==='flow'){
+    renderActivity(_live?.activity,'flowEventsList');
+    renderDciPositions('flowDciPositions');
+    const walletEl=document.getElementById('walletAmtSvg');
+    if(walletEl&&_live?.modules?.earn){
+      const tot=(_live.modules.earn.kc??0)+(_live.modules.earn.bb??0)+(_dci?.total_invested??0);
+      if(tot>0) walletEl.textContent='$'+tot.toFixed(0);
+    }
+  }
+}
+
+// ══ INIT ════════════════════════════════════════════════════
+async function init(){
+  try{window.Telegram?.WebApp?.expand?.();}catch(e){}
+  await refresh();
+  // Yield router load in background
+  renderYieldRouter();
+  // Auto-refresh every 30s
+  _refreshTimer = setInterval(refresh, 30000);
+}
+
+// burst animation keyframe (add dynamically)
+const style=document.createElement('style');
+style.textContent=`@keyframes burst-up{0%{opacity:0;transform:translateY(0) scale(.8)}20%{opacity:1;transform:translateY(-8px) scale(1)}80%{opacity:.8;transform:translateY(-28px) scale(1.1)}100%{opacity:0;transform:translateY(-44px) scale(.9)}} @keyframes toast-in{from{opacity:0;transform:translateX(-50%) translateY(10px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}`;
+document.head.appendChild(style);
+
+window.addEventListener('load', init);
+</script>
+</body>
+</html>
