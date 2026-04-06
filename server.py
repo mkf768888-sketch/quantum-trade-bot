@@ -1730,8 +1730,10 @@ async def kucoin_lending_auto_place() -> dict:
 
     # Sync local positions list with exchange (clean expired orders)
     active_exchange = await kucoin_lending_get_active_orders("USDT")
-    active_ids = {o.get("orderId") for o in active_exchange}
-    _lending_positions[:] = [p for p in _lending_positions if p["order_id"] in active_ids]
+    # Only sync if we got a valid response; if API fails, keep positions as-is to avoid false clearing
+    if active_exchange is not None:
+        active_ids = {o.get("orderId") for o in active_exchange}
+        _lending_positions[:] = [p for p in _lending_positions if p["order_id"] in active_ids]
     _lending_stats["active_orders"] = len(_lending_positions)
 
     # Don't place if rate too low
@@ -2800,6 +2802,8 @@ _snowball_stats: dict = {
     "last_check": 0.0,
 }
 
+_digest_posted_slots: set = set()  # v10.16.4: persistent tracking of posted digest slots to prevent duplicates on restart
+
 
 async def bybit_snowball_get_products(coin: str = None) -> list:
     """v10.14.0: GET available Snowball products from ByBit Advanced Earn.
@@ -2894,13 +2898,13 @@ async def snowball_auto_place(usdt_amount: float) -> dict:
         return {"success": False, "reason": f"amount ${usdt_amount:.2f} < min ${SNOWBALL_MIN_USDT}"}
 
     try:
-        # Market regime check: Snowball best in sideways markets (F&G 30-65)
+        # Market regime check: Snowball best in sideways markets (F&G 25-65, not trending)
         fg_data = await get_fear_greed()
         fg_val = fg_data.get("value", 50)
-        if fg_val < 25 or fg_val > 70:
+        if fg_val < 25 or fg_val > 65:
             return {
                 "success": False,
-                "reason": f"market_regime: F&G={fg_val} outside Snowball range [25-70] — too trending"
+                "reason": f"market_regime: F&G={fg_val} outside Snowball range [25-65] — too trending"
             }
 
         products = await bybit_snowball_get_products("USDT")
@@ -2922,7 +2926,7 @@ async def snowball_auto_place(usdt_amount: float) -> dict:
         invest = round(min(usdt_amount * 0.8, SNOWBALL_MAX_USDT, best["max_amount"]), 2)
         invest = max(invest, best["min_amount"])
 
-        if invest > usdt_amount + 0.5:
+        if invest > usdt_amount:
             return {"success": False, "reason": f"insufficient_capital: need ${invest:.2f}, have ${usdt_amount:.2f}"}
 
         log_activity(
@@ -3034,7 +3038,7 @@ async def _tg_snowball(chat_id: int):
             f"<b>Размещений:</b> {_snowball_stats['subscriptions']} | "
             f"<b>Ошибок:</b> {_snowball_stats['errors']}"
             f"{pos_text}{prod_text}\n"
-            f"💡 Snowball активен при F&G 25-70 (боковой рынок)"
+            f"💡 Snowball активен при F&G 25-65 (боковой рынок)"
         )
         await _tg_send(chat_id, msg)
     except Exception as e:
@@ -4149,7 +4153,9 @@ async def yield_router_v2_get_deployed() -> dict:
                     for p in _earn_positions:
                         apr_raw = float(p.get("apr", 0))
                         if apr_raw > 0:
-                            aprs.append(apr_raw if apr_raw >= 1 else apr_raw * 100)
+                            # Normalize: if 0 < value < 1, assume decimal (0.13 = 13%)
+                            # if value >= 1, assume already percentage
+                            aprs.append(apr_raw * 100 if apr_raw < 1 else apr_raw)
                     if aprs:
                         deployed["current_apy"] = round(max(aprs), 2)
 
@@ -4490,7 +4496,7 @@ async def portfolio_ai_analyze(snap: dict) -> str:
                 amt  = float(pos.get("amount", 0))
                 # APR может быть decimal (0.13) или percentage (13.0) — нормализуем
                 apr_raw = float(pos.get("apr", 0))
-                apr  = apr_raw if apr_raw >= 1 else apr_raw * 100
+                apr  = apr_raw * 100 if (0 < apr_raw < 1) else apr_raw
                 coin = pos.get("coin", "?")
                 exch = pos.get("exchange", "?")
                 if amt > 0:
@@ -4519,7 +4525,7 @@ async def portfolio_ai_analyze(snap: dict) -> str:
             max_earn_apy = 0.0
             for _p in _earn_positions:
                 _ar = float(_p.get("apr", 0))
-                _ar_pct = _ar if _ar >= 1 else _ar * 100
+                _ar_pct = _ar * 100 if (0 < _ar < 1) else _ar
                 if _ar_pct > max_earn_apy:
                     max_earn_apy = _ar_pct
             if max_earn_apy > 20:
@@ -12311,10 +12317,11 @@ async def post_digest_to_channel(evening: bool = False) -> bool:
 
 async def crypto_digest_loop():
     """v10.15.2: Постинг дайджеста 2 раза в день — утро (DIGEST_HOUR_UTC) и вечер (DIGEST_HOUR_UTC_2)."""
+    global _digest_posted_slots
     import datetime as _dt
     await asyncio.sleep(60)  # дать серверу стартовать
     log_activity(f"[digest] loop started — посты в {DIGEST_HOUR_UTC}:00 UTC (утро) и {DIGEST_HOUR_UTC_2}:00 UTC (вечер)")
-    posted_slots: set = set()  # "YYYY-MM-DD-morning" / "YYYY-MM-DD-evening"
+    # v10.16.4: use persistent global variable to prevent duplicate posts on restart
     while True:
         try:
             if DIGEST_ENABLED and DIGEST_CHANNEL_ID:
@@ -12322,26 +12329,26 @@ async def crypto_digest_loop():
                 today_str = now_utc.strftime("%Y-%m-%d")
                 # Guard: если часы одинаковые, оставляем только "morning" для безопасности
                 if DIGEST_HOUR_UTC == DIGEST_HOUR_UTC_2:
-                    if now_utc.hour == DIGEST_HOUR_UTC and f"{today_str}-morning" not in posted_slots:
+                    if now_utc.hour == DIGEST_HOUR_UTC and f"{today_str}-morning" not in _digest_posted_slots:
                         log_activity(f"[digest] 🌅 утренний дайджест (одновременно с вечеренним)")
                         ok = await post_digest_to_channel()
                         if ok:
-                            posted_slots.add(f"{today_str}-morning")
+                            _digest_posted_slots.add(f"{today_str}-morning")
                 else:
                     # Утренний дайджест
-                    if now_utc.hour == DIGEST_HOUR_UTC and f"{today_str}-morning" not in posted_slots:
+                    if now_utc.hour == DIGEST_HOUR_UTC and f"{today_str}-morning" not in _digest_posted_slots:
                         log_activity(f"[digest] 🌅 утренний дайджест")
                         ok = await post_digest_to_channel()
                         if ok:
-                            posted_slots.add(f"{today_str}-morning")
+                            _digest_posted_slots.add(f"{today_str}-morning")
                     # Вечерний срез
-                    if now_utc.hour == DIGEST_HOUR_UTC_2 and f"{today_str}-evening" not in posted_slots:
+                    if now_utc.hour == DIGEST_HOUR_UTC_2 and f"{today_str}-evening" not in _digest_posted_slots:
                         log_activity(f"[digest] 🌆 вечерний срез рынка")
                         ok = await post_digest_to_channel(evening=True)
                         if ok:
-                            posted_slots.add(f"{today_str}-evening")
-                # Чистим старые слоты (оставляем только сегодня)
-                posted_slots = {s for s in posted_slots if s.startswith(today_str)}
+                            _digest_posted_slots.add(f"{today_str}-evening")
+                # Чистим старые слоты (оставляем только сегодня + вчера на случай перехода в новый день)
+                _digest_posted_slots = {s for s in _digest_posted_slots if today_str in s or (now_utc - _dt.timedelta(days=1)).strftime("%Y-%m-%d") in s}
         except Exception as e:
             log_activity(f"[digest] loop error: {e}")
         await asyncio.sleep(300)  # проверяем каждые 5 минут
