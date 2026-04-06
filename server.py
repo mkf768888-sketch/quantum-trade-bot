@@ -4310,6 +4310,228 @@ async def yield_router_v2_loop():
         await asyncio.sleep(3600)  # каждый час
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# v10.16.1: AI PORTFOLIO MANAGER — полный вид портфеля + AI-рекомендации
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def portfolio_full_snapshot() -> dict:
+    """v10.16.1: Собирает ПОЛНЫЙ портфель: монеты + USDT + earn + lending + фьючерсы.
+    Возвращает структурированный снапшот с USD-оценкой каждого актива."""
+    snap = {
+        "coins":          {},    # {symbol: {exchange, amount, price, usd_value}}
+        "usdt_free":      {},    # {exchange: amount}
+        "usdt_earn":      0.0,   # в earn продуктах
+        "usdt_lending":   0.0,   # в KuCoin Lending
+        "usdt_futures":   0.0,   # фьючерсный счёт
+        "usdt_trading":   0.0,   # заморожено в открытых позициях
+        "total_usd":      0.0,
+        "total_usdt_working": 0.0,  # earn + lending (работающий USDT)
+        "total_usdt_idle":    0.0,  # свободный USDT
+        "allocation_pct": {},    # % аллокация по категориям
+    }
+    try:
+        # ── 1. Монеты на споте (обе биржи параллельно) ───────────────────────
+        kc_coins, bb_coins = await asyncio.gather(
+            asyncio.wait_for(get_spot_balances(), timeout=10.0),
+            asyncio.wait_for(bybit_get_spot_balances(), timeout=10.0),
+            return_exceptions=True,
+        )
+        if isinstance(kc_coins, dict):
+            for sym, info in kc_coins.items():
+                usd = info.get("usd_value", info.get("balance", 0) * info.get("price", 0))
+                if usd >= 0.5:  # фильтр пыли
+                    snap["coins"][sym] = {
+                        "exchange": "kucoin",
+                        "amount":   round(float(info.get("balance", info.get("available", 0))), 6),
+                        "price":    info.get("price", 0),
+                        "usd_value": round(usd, 2),
+                    }
+        if isinstance(bb_coins, dict):
+            for sym, info in bb_coins.items():
+                usd = info.get("usd_value", 0)
+                if usd >= 0.5:
+                    key = f"bb_{sym}"
+                    snap["coins"][key] = {
+                        "exchange": "bybit",
+                        "amount":   round(float(info.get("available", 0)), 6),
+                        "price":    info.get("price", 0),
+                        "usd_value": round(usd, 2),
+                    }
+
+        # ── 2. Свободный USDT ─────────────────────────────────────────────────
+        kc_bal, bb_bal, fut_bal = await asyncio.gather(
+            asyncio.wait_for(get_balance(), timeout=8.0),
+            asyncio.wait_for(bybit_get_balance(), timeout=8.0),
+            asyncio.wait_for(get_futures_balance(), timeout=8.0),
+            return_exceptions=True,
+        )
+        if isinstance(kc_bal, dict) and kc_bal.get("success"):
+            for acc in kc_bal.get("accounts", []):
+                if acc.get("currency") == "USDT" and acc.get("type") == "trade":
+                    snap["usdt_free"]["kucoin"] = round(float(acc.get("available", 0)), 2)
+        if isinstance(bb_bal, dict) and bb_bal.get("success"):
+            for coin, info in bb_bal.get("balances", {}).items():
+                if coin == "USDT":
+                    snap["usdt_free"]["bybit"] = round(float(info.get("available", 0)), 2)
+        if isinstance(fut_bal, dict):
+            snap["usdt_futures"] = round(float(fut_bal.get("available_balance", 0)), 2)
+
+        # ── 3. Deployed: Earn + Lending ───────────────────────────────────────
+        deployed = await yield_router_v2_get_deployed()
+        snap["usdt_earn"]    = deployed.get("earn_usdt", 0.0)
+        snap["usdt_lending"] = deployed.get("lending_usdt", 0.0)
+
+        # ── 4. В торговых позициях ────────────────────────────────────────────
+        for pos in snap["coins"].values():
+            snap["usdt_trading"] += pos["usd_value"]
+
+        # ── 5. Итоги ──────────────────────────────────────────────────────────
+        snap["total_usdt_idle"]    = round(sum(snap["usdt_free"].values()), 2)
+        snap["total_usdt_working"] = round(snap["usdt_earn"] + snap["usdt_lending"], 2)
+        snap["total_usd"] = round(
+            snap["total_usdt_idle"] +
+            snap["total_usdt_working"] +
+            snap["usdt_futures"] +
+            snap["usdt_trading"], 2
+        )
+
+        # ── 6. % аллокация ────────────────────────────────────────────────────
+        if snap["total_usd"] > 0:
+            snap["allocation_pct"] = {
+                "coins_trading": round(snap["usdt_trading"]      / snap["total_usd"] * 100, 1),
+                "earn_lending":  round(snap["total_usdt_working"] / snap["total_usd"] * 100, 1),
+                "futures":       round(snap["usdt_futures"]       / snap["total_usd"] * 100, 1),
+                "idle":          round(snap["total_usdt_idle"]    / snap["total_usd"] * 100, 1),
+            }
+    except Exception as e:
+        log_activity(f"[portfolio] snapshot error: {e}")
+    return snap
+
+
+async def portfolio_ai_analyze(snap: dict) -> str:
+    """v10.16.1: DeepSeek в роли крипто-фонд менеджера анализирует портфель.
+    Возвращает конкретные рекомендации по аллокации."""
+    try:
+        if not DEEPSEEK_API_KEY or time.time() < _deepseek_disabled_until:
+            return _portfolio_rule_based_advice(snap)
+
+        fg_data = await get_fear_greed()
+        fg_val  = fg_data.get("value", 50)
+        macro   = _macro_cache
+        alloc   = snap.get("allocation_pct", {})
+        coins   = snap.get("coins", {})
+        total   = snap.get("total_usd", 0)
+
+        coins_summary = ", ".join(
+            f"{sym.replace('bb_','').replace('-USDT','')} ${info['usd_value']:.0f}"
+            for sym, info in coins.items()
+        ) or "нет монет"
+
+        prompt = (
+            f"Ты — крипто-фонд менеджер с 15-летним опытом. Ты управляешь портфелем ${total:.0f}.\n\n"
+            f"ТЕКУЩИЙ ПОРТФЕЛЬ:\n"
+            f"• Монеты на споте: {coins_summary}\n"
+            f"• USDT свободно: ${snap['total_usdt_idle']:.2f}\n"
+            f"• USDT в Earn/Lending: ${snap['total_usdt_working']:.2f} ({alloc.get('earn_lending',0):.0f}%)\n"
+            f"• USDT на фьючерсах: ${snap['usdt_futures']:.2f} ({alloc.get('futures',0):.0f}%)\n"
+            f"• Idle USDT: {alloc.get('idle',0):.0f}%\n\n"
+            f"РЫНОК:\n"
+            f"• Fear & Greed: {fg_val} — {'паника' if fg_val<25 else 'страх' if fg_val<40 else 'нейтрально' if fg_val<60 else 'жадность' if fg_val<75 else 'эйфория'}\n"
+            f"• DXY: {macro.get('dxy','—')}, S&P500: {macro.get('sp500','—')}\n\n"
+            f"Дай КОНКРЕТНЫЕ рекомендации (3-5 пунктов) что сделать прямо сейчас для максимизации "
+            f"доходности с учётом риска. Будь конкретен: какой % в какой продукт, какие монеты держать. "
+            f"Без вступлений, только советы. Каждый пункт с эмодзи."
+        )
+
+        resp = await asyncio.wait_for(
+            ai_call_deepseek(
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=300,
+            ),
+            timeout=15.0,
+        )
+        return resp.get("content", "").strip() or _portfolio_rule_based_advice(snap)
+    except Exception as e:
+        log_activity(f"[portfolio] AI analyze error: {e}")
+        return _portfolio_rule_based_advice(snap)
+
+
+def _portfolio_rule_based_advice(snap: dict) -> str:
+    """Фолбек: правила-based рекомендации без AI."""
+    advice = []
+    idle    = snap.get("total_usdt_idle", 0)
+    working = snap.get("total_usdt_working", 0)
+    trading = snap.get("usdt_trading", 0)
+    total   = snap.get("total_usd", 0)
+    alloc   = snap.get("allocation_pct", {})
+
+    if idle > 5:
+        advice.append(f"💡 ${idle:.2f} USDT простаивает — разместить в KuCoin Lending или Flex Earn")
+    if alloc.get("earn_lending", 0) < 20 and total > 10:
+        advice.append("📈 Менее 20% портфеля работает в yield — увеличить долю Earn/Lending")
+    if alloc.get("idle", 0) > 30:
+        advice.append("⚠️ Более 30% портфеля в idle — деньги не работают")
+    if working > 0:
+        advice.append(f"✅ ${working:.2f} уже генерирует пассивный доход — продолжать стратегию")
+    if not advice:
+        advice.append("✅ Портфель сбалансирован. Продолжать текущую стратегию.")
+    return "\n".join(advice)
+
+
+async def _tg_portfolio(chat_id: int):
+    """v10.16.1: /portfolio — полный портфель + AI-рекомендации."""
+    await _tg_send(chat_id, "🔍 <i>Анализирую портфель...</i>")
+    try:
+        snap = await portfolio_full_snapshot()
+        ai_advice = await portfolio_ai_analyze(snap)
+
+        total  = snap["total_usd"]
+        alloc  = snap["allocation_pct"]
+        coins  = snap["coins"]
+
+        lines = [f"💼 <b>AI Portfolio Manager</b>\n",
+                 f"<b>Общая стоимость: <code>${total:.2f}</code></b>\n",
+                 f""]
+
+        # Аллокация
+        lines.append(f"<b>📊 Аллокация:</b>")
+        lines.append(f"  🪙 Монеты (спот):    <code>{alloc.get('coins_trading',0):.1f}%</code> — ${snap['usdt_trading']:.2f}")
+        lines.append(f"  💰 Earn/Lending:     <code>{alloc.get('earn_lending',0):.1f}%</code> — ${snap['total_usdt_working']:.2f}")
+        lines.append(f"  📉 Фьючерсы:         <code>{alloc.get('futures',0):.1f}%</code> — ${snap['usdt_futures']:.2f}")
+        lines.append(f"  😴 Idle USDT:        <code>{alloc.get('idle',0):.1f}%</code> — ${snap['total_usdt_idle']:.2f}")
+        lines.append(f"")
+
+        # Монеты
+        if coins:
+            lines.append(f"<b>🪙 Активы:</b>")
+            for sym, info in sorted(coins.items(), key=lambda x: -x[1]["usd_value"]):
+                name = sym.replace("bb_","").replace("-USDT","")
+                exch = "🔵" if info["exchange"] == "kucoin" else "🟡"
+                lines.append(f"  {exch} {name}: <code>{info['amount']:.4f}</code> · ${info['usd_value']:.2f}")
+            lines.append(f"")
+
+        # USDT breakdown
+        lines.append(f"<b>💵 USDT:</b>")
+        for exch, amt in snap["usdt_free"].items():
+            if amt > 0:
+                lines.append(f"  {'🔵' if exch=='kucoin' else '🟡'} {exch}: <code>${amt:.2f}</code> свободно")
+        if snap["usdt_earn"] > 0:
+            lines.append(f"  📦 Earn: <code>${snap['usdt_earn']:.2f}</code>")
+        if snap["usdt_lending"] > 0:
+            lines.append(f"  🏦 Lending: <code>${snap['usdt_lending']:.2f}</code>")
+        lines.append(f"")
+
+        # AI советы
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"<b>🤖 AI-рекомендации:</b>")
+        lines.append(f"")
+        lines.append(ai_advice)
+
+        await _tg_send(chat_id, "\n".join(lines))
+    except Exception as e:
+        await _tg_send(chat_id, f"❌ /portfolio error: {e}")
+
+
 async def _tg_yield_router(chat_id: int):
     """v10.16.0: /yrouter — Yield Router v2: snapshot + deployed state + авторотация статус."""
     try:
@@ -11146,6 +11368,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/lending":             await _tg_lending(chat_id)
         elif cmd == "/snowball":            await _tg_snowball(chat_id)
         elif cmd == "/yrouter":             await _tg_yield_router(chat_id)
+        elif cmd == "/portfolio":           await _tg_portfolio(chat_id)
         elif cmd == "/digest":              await _tg_digest(chat_id)
         elif cmd == "/audit":               await _tg_audit(chat_id)
         elif cmd == "/fills":               await _tg_fills(chat_id)
