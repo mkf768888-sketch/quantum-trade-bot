@@ -11575,6 +11575,24 @@ async def generate_crypto_digest() -> str:
         f"━━━━━━━━━━━━━━━━━━━━",
     ]
 
+    # Fallback комментарии на основе F&G если DeepSeek недоступен
+    if not persona_comments:
+        if fg_val <= 20:
+            persona_comments = [
+                ("Macro Sage", "Экстремальный страх — исторически это зоны накопления умных денег. Паника розничных инвесторов создаёт возможности."),
+                ("The Contrarian", "Когда все боятся — я смотрю на покупки. F&G ниже 20 встречается редко, и обычно предшествует развороту."),
+            ]
+        elif fg_val >= 75:
+            persona_comments = [
+                ("Macro Sage", "Эйфория на рынке — время осторожности. Жадность толпы часто сигнализирует о приближении коррекции."),
+                ("Cycle Analyst", "Исторически F&G выше 75 предшествовал локальным топам. Фиксация прибыли выглядит разумно."),
+            ]
+        else:
+            persona_comments = [
+                ("Macro Sage", f"Рынок в нейтральной зоне. BTC держится на ключевых уровнях, следим за макро — DXY и S&P определят следующий импульс."),
+                ("Quant", "Алгоритмы фиксируют умеренную волатильность. Оптимальная зона для точечных входов с жёстким риск-менеджментом."),
+            ]
+
     if persona_comments:
         lines.append(f"")
         lines.append(f"<b>🎙 Что говорят эксперты:</b>")
@@ -13749,7 +13767,7 @@ async def _get_prices_with_fallback() -> dict:
                 if cg_id in data:
                     prices[kucoin_sym] = {
                         "price": data[cg_id].get("usd", 0),
-                        "change": data[cg_id].get("usd_24h_change", 0),
+                        "change_24h": data[cg_id].get("usd_24h_change", 0),
                     }
             return {"prices": prices, "success": True, "source": "coingecko"}
     except Exception as e:
