@@ -1598,6 +1598,212 @@ async def kucoin_earn_get_hold_assets(coin: str = "USDT") -> list:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# v10.18.0: Gate.io Integration — Spot + Lend & Earn (Margin Lending 5-50% APR)
+# API v4: https://api.gateio.ws/api/v4
+# Auth: HMAC-SHA512 (KEY + SIGN + Timestamp headers)
+# Лендинг: даём USDT маржинальным трейдерам Gate.io, получаем APR каждый час
+# ══════════════════════════════════════════════════════════════════════════════
+
+GATE_API_KEY    = os.getenv("GATE_API_KEY", "")
+GATE_SECRET     = os.getenv("GATE_SECRET", "")
+GATE_BASE_URL   = "https://api.gateio.ws/api/v4"
+
+GATE_LENDING_ENABLED   = os.getenv("GATE_LENDING_ENABLED",   "false").lower() == "true"
+GATE_LENDING_MIN_APR   = float(os.getenv("GATE_LENDING_MIN_APR",  "8.0"))   # % порог APR
+GATE_LENDING_MAX_USDT  = float(os.getenv("GATE_LENDING_MAX_USDT", "50.0"))  # макс USDT
+GATE_LENDING_DAYS      = int(os.getenv("GATE_LENDING_DAYS",   "10"))        # срок (7/10/30)
+GATE_SPOT_ENABLED      = os.getenv("GATE_SPOT_ENABLED",      "false").lower() == "true"
+
+_gate_lending_positions: list = []  # [{id, currency, amount, rate, apr, days, created_at}]
+_gate_stats: dict = {
+    "total_interest": 0.0, "active_loans": 0,
+    "last_check": 0.0, "errors": 0,
+}
+
+
+def gate_sign(method: str, path: str, query_string: str = "", body: str = "") -> tuple[str, str]:
+    """Gate.io API v4 HMAC-SHA512 signature.
+    Format: METHOD\\n/api/v4/PATH\\nQUERY\\nSHA512(BODY)\\nTIMESTAMP"""
+    ts = str(int(time.time()))
+    body_hash = hashlib.sha512(body.encode("utf-8")).hexdigest()
+    msg = f"{method}\n/api/v4{path}\n{query_string}\n{body_hash}\n{ts}"
+    sign = hmac.new(GATE_SECRET.encode("utf-8"), msg.encode("utf-8"), hashlib.sha512).hexdigest()
+    return sign, ts
+
+
+async def gate_request(method: str, path: str,
+                       params: dict | None = None,
+                       body: dict | None = None) -> dict:
+    """Gate.io API v4 authenticated request."""
+    if not GATE_API_KEY or not GATE_SECRET:
+        return {"success": False, "error": "Gate.io keys not configured"}
+    try:
+        import urllib.parse
+        query_string = urllib.parse.urlencode(params) if params else ""
+        body_str = json.dumps(body) if body else ""
+        sign, ts = gate_sign(method.upper(), path, query_string, body_str)
+        headers = {
+            "KEY":          GATE_API_KEY,
+            "SIGN":         sign,
+            "Timestamp":    ts,
+            "Content-Type": "application/json",
+            "Accept":       "application/json",
+        }
+        url = GATE_BASE_URL + path + (f"?{query_string}" if query_string else "")
+        async with aiohttp.ClientSession() as s:
+            if method.upper() == "GET":
+                r = await s.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10))
+            elif method.upper() == "POST":
+                r = await s.post(url, headers=headers, data=body_str, timeout=aiohttp.ClientTimeout(total=10))
+            elif method.upper() == "DELETE":
+                r = await s.delete(url, headers=headers, data=body_str, timeout=aiohttp.ClientTimeout(total=10))
+            else:
+                return {"success": False, "error": f"Unsupported method: {method}"}
+            data = await r.json()
+            if r.status in (200, 201):
+                return {"success": True, "data": data}
+            label = data.get("label", "") if isinstance(data, dict) else ""
+            msg_  = data.get("message", str(data)) if isinstance(data, dict) else str(data)
+            _gate_stats["errors"] += 1
+            log_activity(f"[gate] API error {r.status}: {label} — {msg_}")
+            return {"success": False, "error": f"{label}: {msg_}", "status": r.status}
+    except Exception as e:
+        _gate_stats["errors"] += 1
+        log_activity(f"[gate] request error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def gate_get_spot_balance(currency: str = "USDT") -> float:
+    """GET /spot/accounts — возвращает available баланс указанной валюты."""
+    result = await gate_request("GET", "/spot/accounts", params={"currency": currency})
+    if not result["success"]:
+        return 0.0
+    for acc in (result["data"] if isinstance(result["data"], list) else []):
+        if acc.get("currency") == currency:
+            return round(float(acc.get("available", 0)), 2)
+    return 0.0
+
+
+async def gate_lending_get_rate(currency: str = "USDT") -> dict:
+    """GET /earn/uni/lending_rate — текущая ставка лендинга на Gate.io.
+    Returns {success, currency, min_rate, max_rate, avg_rate, apr}"""
+    result = await gate_request("GET", "/earn/uni/lending_rate", params={"currency": currency})
+    if not result["success"]:
+        return {"success": False, "currency": currency, "apr": 0.0}
+    data = result["data"]
+    # Gate.io returns list of rate tiers or single rate object
+    if isinstance(data, list) and data:
+        data = data[0]
+    # rate is daily rate in decimal (e.g. 0.0003 = 0.03%/day = ~10.95% APR)
+    daily_rate = float(data.get("rate", 0))
+    apr = round(daily_rate * 365 * 100, 2)
+    return {
+        "success": True,
+        "currency": currency,
+        "daily_rate": daily_rate,
+        "apr": apr,
+        "min_rate": float(data.get("min_rate", daily_rate)),
+    }
+
+
+async def gate_lending_get_active(currency: str = "USDT") -> list:
+    """GET /earn/uni/lends — активные ордера лендинга."""
+    result = await gate_request("GET", "/earn/uni/lends",
+                                 params={"currency": currency, "status": "lending"})
+    if not result["success"]:
+        return []
+    data = result["data"]
+    return data if isinstance(data, list) else []
+
+
+async def gate_lending_place(currency: str, amount: float, min_rate: float, days: int = 10) -> dict:
+    """POST /earn/uni/lends — разместить ордер лендинга.
+    amount: сумма USDT, min_rate: минимальная дневная ставка, days: срок (7/10/30)"""
+    body = {
+        "currency":   currency,
+        "amount":     str(round(amount, 2)),
+        "min_rate":   f"{min_rate:.8f}",
+        "days":       days,
+        "auto_renew": True,
+    }
+    result = await gate_request("POST", "/earn/uni/lends", body=body)
+    if result["success"]:
+        apr = round(min_rate * 365 * 100, 2)
+        log_activity(f"[gate] lending placed: ${amount:.2f} {currency} rate={min_rate:.6f} APR≈{apr:.1f}% {days}d")
+        return {"success": True, "amount": amount, "apr": apr, "days": days}
+    return {"success": False, "error": result.get("error", "unknown")}
+
+
+async def gate_lending_auto_place() -> dict:
+    """v10.18.0: Авто-лендинг Gate.io — размещает USDT когда APR > GATE_LENDING_MIN_APR.
+    Вызывается из earn_monitor_loop каждые ~60 мин (каждый 4-й цикл)."""
+    if not GATE_LENDING_ENABLED:
+        return {"action": "disabled"}
+    if not GATE_API_KEY or not GATE_SECRET:
+        return {"action": "no_keys"}
+    _gate_stats["last_check"] = time.time()
+
+    # 1. Получаем текущую ставку
+    rate_info = await gate_lending_get_rate("USDT")
+    if not rate_info["success"]:
+        return {"action": "error", "reason": "rate_fetch_failed"}
+    apr = rate_info["apr"]
+    daily_rate = rate_info["daily_rate"]
+    log_activity(f"[gate] lending rate: {daily_rate*100:.4f}%/day ({apr:.1f}% APR)")
+
+    # 2. Проверяем порог APR
+    if apr < GATE_LENDING_MIN_APR:
+        return {"action": "rate_too_low", "apr": apr, "min_required": GATE_LENDING_MIN_APR}
+
+    # 3. Синхронизируем активные ордера
+    active = await gate_lending_get_active("USDT")
+    _gate_lending_positions[:] = active
+    _gate_stats["active_loans"] = len(active)
+    if active:
+        total_lent = sum(float(o.get("amount", 0)) for o in active)
+        return {"action": "already_active", "loans": len(active), "total": total_lent, "apr": apr}
+
+    # 4. Получаем баланс Gate.io
+    usdt_avail = await gate_get_spot_balance("USDT")
+    if usdt_avail < 5.0:
+        return {"action": "insufficient_capital", "available": usdt_avail, "need": 5.0}
+
+    # 5. Размещаем (80% доступного, но не больше GATE_LENDING_MAX_USDT)
+    deploy = round(min(usdt_avail * 0.8, GATE_LENDING_MAX_USDT), 2)
+    if deploy < 5.0:
+        return {"action": "insufficient_capital", "available": usdt_avail, "need": 5.0}
+
+    # Размещаем чуть ниже рынка для быстрого заполнения
+    place_rate = round(daily_rate * 0.98, 8)
+    res = await gate_lending_place("USDT", deploy, place_rate, GATE_LENDING_DAYS)
+
+    if res["success"] and ALERT_CHAT_ID:
+        await _tg_send(int(ALERT_CHAT_ID),
+            f"🔷 <b>Gate.io Lending размещён!</b>\n\n"
+            f"Сумма: <code>${deploy:.2f}</code> USDT\n"
+            f"Ставка: <code>{place_rate*100:.4f}%</code>/день\n"
+            f"APR: <code>{res['apr']:.1f}%</code>\n"
+            f"Срок: <code>{GATE_LENDING_DAYS}</code> дней · auto-renew ✅\n\n"
+            f"<i>USDT работает у маржинальных трейдеров Gate.io</i>"
+        )
+    return res
+
+
+async def gate_get_ticker(symbol: str) -> float:
+    """GET /spot/tickers — цена пары (публичный эндпоинт, без подписи)."""
+    try:
+        url = f"{GATE_BASE_URL}/spot/tickers?currency_pair={symbol.replace('-', '_')}"
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(url, timeout=aiohttp.ClientTimeout(total=5))
+            data = await r.json()
+            if data and isinstance(data, list):
+                return float(data[0].get("last", 0))
+    except Exception:
+        pass
+    return 0.0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # v10.13.0: KuCoin Lending Pro — Margin Lending (20-50% APR peaks)
 # Lend USDT to margin traders. Rate spikes during volatile periods.
 # API: /api/v1/margin/lend (place), /api/v1/margin/market (rates),
@@ -1847,6 +2053,62 @@ async def _tg_lending(chat_id: int):
         await _tg_send(chat_id, "\n".join(lines))
     except Exception as e:
         await _tg_send(chat_id, f"❌ Ошибка lending: {e}")
+
+
+async def _tg_gate(chat_id: int):
+    """v10.18.0: /gate — Gate.io Lending статус, текущая ставка, активные ордера."""
+    try:
+        configured = bool(GATE_API_KEY and GATE_SECRET)
+        if not configured:
+            await _tg_send(chat_id,
+                "🔷 <b>Gate.io</b>\n\n"
+                "⚠️ API ключи не настроены\n\n"
+                "Добавь в Railway Variables:\n"
+                "<code>GATE_API_KEY</code> — твой Gate.io API ключ\n"
+                "<code>GATE_SECRET</code> — секрет\n"
+                "<code>GATE_LENDING_ENABLED</code> = true\n"
+                "<code>GATE_LENDING_MIN_APR</code> = 8.0 (порог % APR)\n"
+                "<code>GATE_LENDING_MAX_USDT</code> = 50\n\n"
+                "Где взять ключи: Gate.io → Account → API Management → Create API key\n"
+                "Права: <b>Spot Trade + Earn (Read+Write)</b>"
+            )
+            return
+
+        rate = await gate_lending_get_rate("USDT")
+        balance = await gate_get_spot_balance("USDT")
+        active = await gate_lending_get_active("USDT")
+        enabled_str = "✅ ВКЛ" if GATE_LENDING_ENABLED else "❌ ВЫКЛ"
+
+        lines = ["🔷 <b>Gate.io Lending & Earn</b>\n",
+                 f"<b>Статус:</b> {enabled_str}"]
+        if rate["success"]:
+            lines.append(f"<b>Ставка сейчас:</b> <code>{rate['daily_rate']*100:.4f}%</code>/день = <code>{rate['apr']:.1f}%</code> APR")
+        lines.append(f"<b>Порог входа:</b> {GATE_LENDING_MIN_APR:.0f}% APR")
+        lines.append(f"<b>Споt USDT:</b> <code>${balance:.2f}</code>")
+        lines.append(f"<b>Макс размещение:</b> ${GATE_LENDING_MAX_USDT:.0f} / {GATE_LENDING_DAYS}д\n")
+
+        if active:
+            total_lent = sum(float(o.get("amount", 0)) for o in active)
+            lines.append(f"📂 <b>Активные займы ({len(active)}) — ${total_lent:.2f} USDT:</b>")
+            for o in active[:5]:
+                amt = float(o.get("amount", 0))
+                rate_o = float(o.get("min_rate", 0))
+                apr_o = round(rate_o * 365 * 100, 1)
+                status = o.get("status", "?")
+                lines.append(f"  • <code>${amt:.2f}</code> @ {apr_o:.1f}% APR · {status}")
+        else:
+            lines.append("📂 Активных займов нет")
+
+        total_int = _gate_stats.get("total_interest", 0)
+        if total_int > 0:
+            lines.append(f"\n💰 Всего заработано: <code>${total_int:.4f}</code>")
+
+        if not GATE_LENDING_ENABLED:
+            lines.append("\n💡 <i>Включи: GATE_LENDING_ENABLED=true в Railway Variables</i>")
+
+        await _tg_send(chat_id, "\n".join(lines))
+    except Exception as e:
+        await _tg_send(chat_id, f"❌ Gate.io ошибка: {e}")
 
 
 async def bybit_earn_get_products(coin: str = "USDT") -> list:
@@ -3607,6 +3869,15 @@ async def earn_monitor_loop():
                     except Exception as lend_e:
                         log_activity(f"[lending] auto_place error: {lend_e}")
 
+                # v10.18.0: Gate.io Lending — every 4th cycle (~1 hour)
+                if GATE_LENDING_ENABLED and _earn_stats.get("_dci_cycle", 0) % 4 == 0:
+                    try:
+                        gate_lend_res = await gate_lending_auto_place()
+                        if gate_lend_res.get("action") not in ("disabled", "no_keys", "rate_too_low", "already_active"):
+                            log_activity(f"[gate] lending: {gate_lend_res}")
+                    except Exception as gate_lend_e:
+                        log_activity(f"[gate] lending error: {gate_lend_e}")
+
                 # v10.14.0: ByBit Snowball — every 4th cycle (~1 hour), sideways market
                 if SNOWBALL_ENABLED and _earn_stats.get("_dci_cycle", 0) % 4 == 0:
                     try:
@@ -4148,6 +4419,24 @@ async def yield_router_v2_scan() -> dict:
                 })
         except Exception:
             pass
+
+        # ── 8. Gate.io Lending ──────────────────────────────────────────────
+        # v10.18.0: Gate.io Lend & Earn — маржинальные трейдеры платят почасовую ставку
+        if GATE_API_KEY:
+            try:
+                gate_rate = await gate_lending_get_rate("USDT")
+                if gate_rate["success"] and gate_rate["apr"] > 0:
+                    scores.append({
+                        "product":    "Gate.io Lending",
+                        "apy_pct":    gate_rate["apr"],
+                        "score":      round(gate_rate["apr"] * 1.1, 2),  # slight bonus: hourly compounding
+                        "liquidity":  f"locked {GATE_LENDING_DAYS}d auto-renew",
+                        "regime_fit": "all markets",
+                        "enabled":    GATE_LENDING_ENABLED,
+                        "min_usdt":   5.0,
+                    })
+            except Exception:
+                pass
 
         # ── Rank by score ────────────────────────────────────────────────────
         scores.sort(key=lambda s: s["score"], reverse=True)
@@ -12173,6 +12462,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/dci":                 await _tg_dci(chat_id)
         elif cmd == "/dciplace":            await _tg_dci_place(chat_id)
         elif cmd == "/lending":             await _tg_lending(chat_id)
+        elif cmd == "/gate":                await _tg_gate(chat_id)
         elif cmd == "/snowball":            await _tg_snowball(chat_id)
         elif cmd == "/yrouter":             await _tg_yield_router(chat_id)
         elif cmd == "/portfolio":           await _tg_portfolio(chat_id)
