@@ -13078,6 +13078,133 @@ async def send_airdrop_digest():
         print(f"[airdrops] ошибка отправки дайджеста: {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
+# v10.18.2: NEWS ENGINE — RSS + Polymarket для дайджеста
+# Источники без API ключей: CoinDesk RSS, CoinTelegraph RSS
+# Polymarket: публичный GraphQL API — вероятности крипто событий
+# ══════════════════════════════════════════════════════════════════════════════
+
+_news_cache: dict = {"ts": 0, "headlines": [], "polymarket": []}
+_NEWS_CACHE_TTL = 3600  # 1 час — не долбим RSS каждый раз
+
+
+async def fetch_crypto_rss_headlines(max_items: int = 6) -> list[dict]:
+    """v10.18.2: Парсим RSS CoinDesk + CoinTelegraph — топ новости без API ключей.
+    Возвращает [{title, source, link, published}] отсортированных по свежести."""
+    if time.time() - _news_cache["ts"] < _NEWS_CACHE_TTL and _news_cache["headlines"]:
+        return _news_cache["headlines"]
+
+    feeds = [
+        ("CoinDesk",      "https://www.coindesk.com/arc/outboundfeeds/rss/"),
+        ("CoinTelegraph", "https://cointelegraph.com/rss"),
+        ("Decrypt",       "https://decrypt.co/feed"),
+    ]
+    headlines = []
+
+    for source, url in feeds:
+        try:
+            async with aiohttp.ClientSession() as s:
+                r = await s.get(url, timeout=aiohttp.ClientTimeout(total=8),
+                                headers={"User-Agent": "Mozilla/5.0 (compatible; QuantumTradeBot/1.0)"})
+                if r.status != 200:
+                    continue
+                text = await r.text()
+
+            # Простой XML-парсинг без feedparser
+            import re as _re
+            items = _re.findall(r'<item>(.*?)</item>', text, _re.DOTALL)
+            for item in items[:4]:
+                title_m = _re.search(r'<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>', item, _re.DOTALL)
+                link_m  = _re.search(r'<link>(.*?)</link>', item)
+                pub_m   = _re.search(r'<pubDate>(.*?)</pubDate>', item)
+                if title_m:
+                    title = title_m.group(1).strip()
+                    # Фильтруем нерелевантные
+                    skip_words = ["sponsored", "advertisement", "press release", "partner content"]
+                    if any(w in title.lower() for w in skip_words):
+                        continue
+                    headlines.append({
+                        "title":     title[:200],
+                        "source":    source,
+                        "link":      link_m.group(1).strip() if link_m else "",
+                        "published": pub_m.group(1).strip() if pub_m else "",
+                    })
+            await asyncio.sleep(0.3)
+        except Exception as e:
+            log_activity(f"[news_rss] {source} error: {e}")
+
+    # Deduplicate by similar titles and cap
+    seen = set()
+    unique = []
+    for h in headlines:
+        key = h["title"][:60].lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(h)
+
+    result = unique[:max_items]
+    if result:
+        _news_cache["headlines"] = result
+        _news_cache["ts"] = time.time()
+    return result
+
+
+async def fetch_polymarket_crypto(max_items: int = 4) -> list[dict]:
+    """v10.18.2: Polymarket публичный API — топ крипто-предсказания с вероятностями.
+    Endpoint: https://gamma-api.polymarket.com/markets
+    Возвращает [{question, yes_pct, volume_usd, end_date}]"""
+    if time.time() - _news_cache["ts"] < _NEWS_CACHE_TTL and _news_cache["polymarket"]:
+        return _news_cache["polymarket"]
+
+    try:
+        params = "active=true&closed=false&limit=20&tag_slug=crypto"
+        url = f"https://gamma-api.polymarket.com/markets?{params}"
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(url, timeout=aiohttp.ClientTimeout(total=8),
+                            headers={"User-Agent": "Mozilla/5.0 (compatible; QuantumTradeBot/1.0)"})
+            if r.status != 200:
+                return []
+            data = await r.json()
+
+        markets = []
+        for m in (data if isinstance(data, list) else data.get("markets", [])):
+            question = m.get("question", "")
+            if not question:
+                continue
+            # Probability: outcomePrices is list ["0.72", "0.28"] for [YES, NO]
+            prices = m.get("outcomePrices", [])
+            yes_pct = 0
+            if prices and len(prices) >= 1:
+                try:
+                    yes_pct = round(float(prices[0]) * 100, 1)
+                except Exception:
+                    pass
+            volume = m.get("volume", 0)
+            try:
+                volume = round(float(volume))
+            except Exception:
+                volume = 0
+            end_date = m.get("endDate", "")[:10] if m.get("endDate") else ""
+
+            if yes_pct > 0 and volume > 1000:  # фильтруем пустые рынки
+                markets.append({
+                    "question": question[:120],
+                    "yes_pct":  yes_pct,
+                    "volume":   volume,
+                    "end_date": end_date,
+                })
+
+        # Сортируем по объёму — самые популярные предсказания
+        markets.sort(key=lambda x: x["volume"], reverse=True)
+        result = markets[:max_items]
+        if result:
+            _news_cache["polymarket"] = result
+        return result
+    except Exception as e:
+        log_activity(f"[polymarket] fetch error: {e}")
+        return []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # AI CONTENT FACTORY v10.15.0 — Daily Crypto Digest
 # Генерирует ежедневный крипто-дайджест с MiroFish персонажами
 # Постит в Telegram канал каждый день в DIGEST_HOUR_UTC (9:00 МСК)
@@ -13095,10 +13222,12 @@ async def generate_crypto_digest() -> str:
         except Exception:
             return default
 
-    prices_data, fg_data, whale_data = await asyncio.gather(
-        _safe(_get_prices_with_fallback(), {"prices": {}}),
-        _safe(get_fear_greed(),            {"value": 50, "classification": "Neutral"}),
-        _safe(get_whale_signal("BTC"),     {"signal": "NEUTRAL", "score": 0}),
+    prices_data, fg_data, whale_data, news_headlines, poly_markets = await asyncio.gather(
+        _safe(_get_prices_with_fallback(),   {"prices": {}}),
+        _safe(get_fear_greed(),              {"value": 50, "classification": "Neutral"}),
+        _safe(get_whale_signal("BTC"),       {"signal": "NEUTRAL", "score": 0}),
+        _safe(fetch_crypto_rss_headlines(5), []),   # v10.18.2: RSS новости
+        _safe(fetch_polymarket_crypto(3),    []),   # v10.18.2: Polymarket предсказания
     )
 
     prices   = prices_data.get("prices", {})
@@ -13144,12 +13273,26 @@ async def generate_crypto_digest() -> str:
     if DEEPSEEK_API_KEY and time.time() > _deepseek_disabled_until:
         btc_price = prices.get("BTC-USDT", {}).get("price", 0)
         btc_chg   = prices.get("BTC-USDT", {}).get("change_24h", 0)
+        # v10.18.2: добавляем свежие новости и Polymarket в контекст для DeepSeek
+        news_ctx = ""
+        if news_headlines:
+            titles = "; ".join(f"[{h['source']}] {h['title']}" for h in news_headlines[:4])
+            news_ctx = f"\nСвежие новости: {titles}."
+        poly_ctx = ""
+        if poly_markets:
+            poly_lines = "; ".join(
+                f"{m['question']} → {m['yes_pct']}% YES (объём ${m['volume']:,})"
+                for m in poly_markets[:3]
+            )
+            poly_ctx = f"\nPolymarket предсказания: {poly_lines}."
+
         market_ctx = (
             f"Сегодня {_dt.date.today().strftime('%d %B %Y')}. "
             f"BTC ${btc_price:,.0f} ({btc_chg:+.1f}% за 24ч). "
             f"Fear & Greed: {fg_val} ({fg_cls}). "
             f"DXY: {dxy}, S&P: {sp500}. "
             f"Сигнал китов: {whale_sig}."
+            f"{news_ctx}{poly_ctx}"
         )
         for persona in digest_personas:
             try:
@@ -13217,12 +13360,37 @@ async def generate_crypto_digest() -> str:
             lines.append(f"")
         lines.append(f"━━━━━━━━━━━━━━━━━━━━")
 
+    # ── v10.18.2: Блок новостей из RSS ──────────────────────────────────────
+    if news_headlines:
+        lines.append(f"")
+        lines.append(f"📰 <b>Что произошло в мире крипто:</b>")
+        lines.append(f"")
+        for h in news_headlines[:4]:
+            src = h["source"]
+            title = h["title"]
+            lines.append(f"• [{src}] {title}")
+        lines.append(f"")
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━")
+
+    # ── v10.18.2: Блок Polymarket предсказаний ───────────────────────────
+    if poly_markets:
+        lines.append(f"")
+        lines.append(f"🔮 <b>Что ставит рынок предсказаний (Polymarket):</b>")
+        lines.append(f"")
+        for m in poly_markets[:3]:
+            bar_filled = int(m["yes_pct"] / 10)
+            bar = "█" * bar_filled + "░" * (10 - bar_filled)
+            vol_str = f"${m['volume']:,}" if m["volume"] < 1_000_000 else f"${m['volume']/1_000_000:.1f}M"
+            lines.append(f"• {m['question']}")
+            lines.append(f"  <code>{bar}</code> <b>{m['yes_pct']}%</b> «Да» · объём {vol_str}")
+            lines.append(f"")
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━")
+
     lines += [
         f"",
-        f"🔮 <i>Алгоритм непрерывно мониторит 50+ инструментов.</i>",
-        f"<i>Скоро поделимся результатами работы системы...</i>",
+        f"🤖 <i>QuantumTrade AI мониторит рынок 24/7.</i>",
         f"",
-        f"#крипто #bitcoin #дайджест #деньги",
+        f"#крипто #bitcoin #дайджест #деньги #polymarket",
     ]
 
     return "\n".join(lines)
