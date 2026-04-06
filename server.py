@@ -1569,6 +1569,11 @@ async def kucoin_earn_get_hold_assets(coin: str = "USDT") -> list:
 #      /api/v1/margin/lend/active-order (active), DELETE /api/v1/margin/lend (cancel)
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ── v10.15.0: AI Content Factory — Daily Crypto Digest ───────────────────────
+DIGEST_ENABLED     = os.getenv("DIGEST_ENABLED",    "false").lower() == "true"
+DIGEST_CHANNEL_ID  = os.getenv("DIGEST_CHANNEL_ID", "")   # e.g. @mychannel or -100123456789
+DIGEST_HOUR_UTC    = int(os.getenv("DIGEST_HOUR_UTC", "6"))  # 6 UTC = 9 MSK
+
 LENDING_ENABLED       = os.getenv("LENDING_ENABLED",     "false").lower() == "true"
 LENDING_MIN_APR       = float(os.getenv("LENDING_MIN_APR",  "10.0"))   # % APR threshold
 LENDING_MAX_USDT      = float(os.getenv("LENDING_MAX_USDT", "30.0"))   # max USDT to lend
@@ -10891,6 +10896,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/lending":             await _tg_lending(chat_id)
         elif cmd == "/snowball":            await _tg_snowball(chat_id)
         elif cmd == "/yrouter":             await _tg_yield_router(chat_id)
+        elif cmd == "/digest":              await _tg_digest(chat_id)
         elif cmd == "/audit":               await _tg_audit(chat_id)
         elif cmd == "/fills":               await _tg_fills(chat_id)
         elif cmd == "/agency":              await _tg_agency(chat_id)
@@ -11220,6 +11226,7 @@ async def startup():
     asyncio.create_task(_ws_price_feed())          # v8.3.3: WebSocket real-time prices
     asyncio.create_task(_arb_fast_scanner())       # v8.3.3: fast arb scanner (every 5s)
     asyncio.create_task(airdrop_digest_loop())
+    asyncio.create_task(crypto_digest_loop())   # v10.15.0: AI Content Factory
     asyncio.create_task(auto_scanner_loop())  # v7.4.4: health scanner
     asyncio.create_task(agency_agent_loop())  # v10.5.0: Agency Agents — 5 AI agents
     await get_airdrops()  # прогреваем кеш при старте
@@ -11457,6 +11464,210 @@ async def send_airdrop_digest():
         print("[airdrops] дайджест отправлен в Telegram")
     except Exception as e:
         print(f"[airdrops] ошибка отправки дайджеста: {e}")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AI CONTENT FACTORY v10.15.0 — Daily Crypto Digest
+# Генерирует ежедневный крипто-дайджест с MiroFish персонажами
+# Постит в Telegram канал каждый день в DIGEST_HOUR_UTC (9:00 МСК)
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def generate_crypto_digest() -> str:
+    """v10.15.0: Генерирует красивый крипто-дайджест для Telegram канала.
+    Использует реальные данные (цены, F&G, макро, киты) + 3 MiroFish персонажа."""
+    import datetime as _dt
+
+    # ── 1. Собираем данные параллельно ───────────────────────────────────────
+    async def _safe(coro, default, timeout=8.0):
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout)
+        except Exception:
+            return default
+
+    prices_data, fg_data, whale_data = await asyncio.gather(
+        _safe(_get_prices_with_fallback(), {"prices": {}}),
+        _safe(get_fear_greed(),            {"value": 50, "classification": "Neutral"}),
+        _safe(get_whale_signal(),          {"signal": "NEUTRAL", "score": 0}),
+    )
+
+    prices   = prices_data.get("prices", {})
+    fg_val   = fg_data.get("value", 50)
+    fg_cls   = fg_data.get("classification", "Neutral")
+    whale_sig = whale_data.get("signal", "NEUTRAL")
+    macro    = _macro_cache  # already cached
+
+    # ── 2. Форматируем цены топ-3 монет ──────────────────────────────────────
+    def _fmt_price(sym):
+        p = prices.get(sym, {})
+        price = p.get("price", 0)
+        chg   = p.get("change_24h", 0)
+        if not price:
+            return None
+        arrow = "🟢" if chg >= 0 else "🔴"
+        return f"{arrow} <b>{sym.replace('-USDT','')}</b>: <code>${price:,.0f}</code> ({chg:+.1f}%)"
+
+    price_lines = [l for l in [_fmt_price("BTC-USDT"), _fmt_price("ETH-USDT"), _fmt_price("SOL-USDT")] if l]
+    prices_block = "\n".join(price_lines) if price_lines else "⏳ данные загружаются"
+
+    # ── 3. F&G эмодзи ────────────────────────────────────────────────────────
+    fg_emoji = "😱" if fg_val <= 25 else "😨" if fg_val <= 40 else "😐" if fg_val <= 60 else "😄" if fg_val <= 75 else "🤑"
+
+    # ── 4. Кит сигнал ────────────────────────────────────────────────────────
+    whale_txt = {"BUY": "🐳 Киты накапливают — крупный капитал входит",
+                 "SELL": "🐳 Киты сбрасывают — осторожно на лонгах",
+                 "NEUTRAL": "🐳 Активность китов в норме"}.get(whale_sig, "🐳 Данные мониторятся")
+
+    # ── 5. Макро ─────────────────────────────────────────────────────────────
+    dxy   = macro.get("dxy",   "–")
+    sp500 = macro.get("sp500", "–")
+    macro_txt = f"DXY <code>{dxy}</code> · S&P <code>{sp500}</code>"
+
+    # ── 6. Комментарии 3-х MiroFish персонажей через DeepSeek ───────────────
+    digest_personas = [
+        next((p for p in MIROFISH_PERSONAS if p["id"] == "macro"),      MIROFISH_PERSONAS[4]),
+        next((p for p in MIROFISH_PERSONAS if p["id"] == "contrarian"),  MIROFISH_PERSONAS[2]),
+        next((p for p in MIROFISH_PERSONAS if p["id"] == "cycle_analyst"),MIROFISH_PERSONAS[7]),
+    ]
+
+    persona_comments = []
+    if DEEPSEEK_API_KEY and time.time() > _deepseek_disabled_until:
+        btc_price = prices.get("BTC-USDT", {}).get("price", 0)
+        btc_chg   = prices.get("BTC-USDT", {}).get("change_24h", 0)
+        market_ctx = (
+            f"Сегодня {_dt.date.today().strftime('%d %B %Y')}. "
+            f"BTC ${btc_price:,.0f} ({btc_chg:+.1f}% за 24ч). "
+            f"Fear & Greed: {fg_val} ({fg_cls}). "
+            f"DXY: {dxy}, S&P: {sp500}. "
+            f"Сигнал китов: {whale_sig}."
+        )
+        for persona in digest_personas:
+            try:
+                resp = await asyncio.wait_for(
+                    ai_call_deepseek(
+                        messages=[{"role": "user", "content":
+                            f"Ты — {persona['name']}. Твой стиль: {persona['style'][:200]}\n\n"
+                            f"Рыночная ситуация: {market_ctx}\n\n"
+                            f"Дай ОДИН короткий комментарий (2-3 предложения) о текущем рынке "
+                            f"в своём характерном стиле. Без заголовков, только текст."}],
+                        max_tokens=120,
+                    ),
+                    timeout=10.0
+                )
+                text = resp.get("content", "").strip()
+                if text:
+                    persona_comments.append((persona["name"], text))
+            except Exception:
+                pass
+
+    # ── 7. Собираем финальное сообщение ──────────────────────────────────────
+    today = _dt.date.today().strftime("%-d %B %Y")
+    weekday = ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"][_dt.date.today().weekday()]
+
+    lines = [
+        f"🌅 <b>Крипто Дайджест · {weekday} {today}</b>",
+        f"",
+        f"<b>📊 Рынок прямо сейчас:</b>",
+        prices_block,
+        f"",
+        f"{fg_emoji} <b>Fear & Greed:</b> <code>{fg_val}</code> — {fg_cls}",
+        f"{whale_txt}",
+        f"🌍 <b>Макро:</b> {macro_txt}",
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    if persona_comments:
+        lines.append(f"")
+        lines.append(f"<b>🎙 Что говорят эксперты:</b>")
+        lines.append(f"")
+        icons = ["🔬", "⚡", "📈"]
+        for i, (name, comment) in enumerate(persona_comments):
+            icon = icons[i] if i < len(icons) else "💬"
+            lines.append(f"{icon} <b>{name}:</b>")
+            lines.append(f"<i>{comment}</i>")
+            lines.append(f"")
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━")
+
+    lines += [
+        f"",
+        f"🔮 <i>Алгоритм непрерывно мониторит 50+ инструментов.</i>",
+        f"<i>Скоро поделимся результатами работы системы...</i>",
+        f"",
+        f"#крипто #bitcoin #дайджест #деньги",
+    ]
+
+    return "\n".join(lines)
+
+
+async def post_digest_to_channel() -> bool:
+    """v10.15.0: Генерирует и постит дайджест в канал. Возвращает True если успешно."""
+    if not DIGEST_CHANNEL_ID:
+        log_activity("[digest] DIGEST_CHANNEL_ID не задан — пропуск")
+        return False
+    try:
+        text = await generate_crypto_digest()
+        url  = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(url, json={
+                "chat_id":    DIGEST_CHANNEL_ID,
+                "text":       text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            }, timeout=aiohttp.ClientTimeout(total=15))
+            data = await r.json()
+        if data.get("ok"):
+            log_activity(f"[digest] ✅ posted to {DIGEST_CHANNEL_ID}")
+            return True
+        else:
+            log_activity(f"[digest] ❌ Telegram error: {data.get('description','?')}")
+            return False
+    except Exception as e:
+        log_activity(f"[digest] post error: {e}")
+        return False
+
+
+async def crypto_digest_loop():
+    """v10.15.0: Ежедневный постинг дайджеста в DIGEST_HOUR_UTC (по умолчанию 6 UTC = 9 МСК)."""
+    import datetime as _dt
+    await asyncio.sleep(60)  # дать серверу стартовать
+    log_activity(f"[digest] loop started — будет постить в {DIGEST_HOUR_UTC}:00 UTC каждый день")
+    posted_today: str = ""
+    while True:
+        try:
+            if DIGEST_ENABLED and DIGEST_CHANNEL_ID:
+                now_utc = _dt.datetime.utcnow()
+                today_str = now_utc.strftime("%Y-%m-%d")
+                # Постить один раз в день в нужный час
+                if now_utc.hour == DIGEST_HOUR_UTC and posted_today != today_str:
+                    log_activity(f"[digest] 🌅 запускаем ежедневный дайджест")
+                    ok = await post_digest_to_channel()
+                    if ok:
+                        posted_today = today_str
+        except Exception as e:
+            log_activity(f"[digest] loop error: {e}")
+        await asyncio.sleep(300)  # проверяем каждые 5 минут
+
+
+async def _tg_digest(chat_id: int):
+    """v10.15.0: /digest — показать превью дайджеста и опционально опубликовать."""
+    await _tg_send(chat_id, "🌅 <i>Генерирую дайджест...</i>")
+    try:
+        text = await generate_crypto_digest()
+        # Показываем превью владельцу
+        await _tg_send(chat_id, f"<b>📋 Превью дайджеста:</b>\n\n{text}")
+        if DIGEST_CHANNEL_ID:
+            ok = await post_digest_to_channel()
+            status = "✅ опубликован в канале!" if ok else "❌ ошибка публикации"
+            await _tg_send(chat_id, f"{status}\nКанал: <code>{DIGEST_CHANNEL_ID}</code>")
+        else:
+            await _tg_send(chat_id,
+                "⚙️ Канал не настроен.\n"
+                "Добавь в Railway Variables:\n"
+                "<code>DIGEST_CHANNEL_ID=@твой_канал</code>\n"
+                "<code>DIGEST_ENABLED=true</code>"
+            )
+    except Exception as e:
+        await _tg_send(chat_id, f"❌ Ошибка: {e}")
+
 
 async def airdrop_digest_loop():
     """Отправляет дайджест раз в 24ч (в 09:00 UTC)."""
