@@ -3135,6 +3135,24 @@ WHALE_CHANNEL_ID      = os.getenv("WHALE_CHANNEL_ID", "")   # e.g. @quantumtrade
 _recent_whale_alerts  = []  # Deque-like list with maxlen=20, stores alert history
 _whale_alert_cooldown = {}  # {symbol: last_timestamp} — prevent spam (5 min per symbol)
 _whale_alert_cooldown_secs = 300  # 5 minutes cooldown per symbol
+_channel_whale_cooldown: dict = {}  # v10.18.1: per-coin 30min channel cooldown (separate from bot cooldown)
+_CHANNEL_WHALE_COOLDOWN_SECS = 1800  # 30 min — канал не должен спамить одной монетой
+
+
+def _ru_plural(n: int, form1: str, form2: str, form5: str) -> str:
+    """Правильное русское склонение числительных.
+    form1=именительный ед. (1), form2=родительный ед. (2-4), form5=родительный мн. (5+)
+    Примеры: _ru_plural(10, 'автомобиль', 'автомобиля', 'автомобилей') → 'автомобилей'
+    """
+    n = abs(n) % 100
+    n1 = n % 10
+    if 11 <= n <= 19:
+        return form5
+    if n1 == 1:
+        return form1
+    if 2 <= n1 <= 4:
+        return form2
+    return form5
 
 
 async def bybit_snowball_get_products(coin: str = None) -> list:
@@ -7505,10 +7523,17 @@ async def send_whale_alert_to_channel(whale_data: dict) -> bool:
         direction = whale_data.get("direction", "UNKNOWN")  # BUY/SELL/NEUTRAL
         move_type = whale_data.get("type", "large_tx")
 
-        # Check cooldown — prevent spam (5 min per symbol)
+        # Check cooldown — prevent spam (5 min per symbol, bot-side)
         global _whale_alert_cooldown
         last_alert = _whale_alert_cooldown.get(symbol, 0)
         if time.time() - last_alert < _whale_alert_cooldown_secs:
+            return False
+
+        # v10.18.1: Отдельный 30-мин кулдаун для канала — не спамим одной монетой
+        global _channel_whale_cooldown
+        coin_key = symbol.replace("-USDT", "").replace("USDT", "")
+        last_channel = _channel_whale_cooldown.get(coin_key, 0)
+        if time.time() - last_channel < _CHANNEL_WHALE_COOLDOWN_SECS:
             return False
 
         # ── Human-readable coin name ──
@@ -7516,19 +7541,32 @@ async def send_whale_alert_to_channel(whale_data: dict) -> bool:
             "BTC": "Bitcoin", "ETH": "Ethereum", "SOL": "Solana",
             "XRP": "XRP (Ripple)", "BNB": "BNB", "ADA": "Cardano",
             "DOGE": "Dogecoin", "AVAX": "Avalanche", "LINK": "Chainlink",
+            "PEPE": "Pepe", "ARB": "Arbitrum",
         }
-        coin = symbol.replace("-USDT","").replace("USDT","")
+        coin = coin_key
         coin_full = coin_names.get(coin, coin)
 
-        # ── Analogies for amount ──
-        if amount_usd >= 10_000_000:
-            analogy = f"это как купить небольшой торговый центр"
-        elif amount_usd >= 1_000_000:
-            analogy = f"это как купить ~{int(amount_usd/150000)} квартир в Москве"
+        # ── v10.18.1: Правильные аналогии с русским склонением ──
+        if amount_usd >= 50_000_000:
+            analogy = "это как купить небольшой торговый центр"
+        elif amount_usd >= 10_000_000:
+            n_apt = int(amount_usd / 150_000)
+            analogy = f"это {n_apt} {_ru_plural(n_apt, 'квартира', 'квартиры', 'квартир')} в Москве"
+        elif amount_usd >= 2_000_000:
+            analogy = "это элитный особняк под Москвой"
+        elif amount_usd >= 500_000:
+            n_apt = int(amount_usd / 150_000)
+            n_apt = max(n_apt, 2)
+            analogy = f"это {n_apt} {_ru_plural(n_apt, 'квартира', 'квартиры', 'квартир')} в Москве"
         elif amount_usd >= 100_000:
-            analogy = f"это как купить {int(amount_usd/30000)} автомобиль(-я)"
+            n_cars = int(amount_usd / 30_000)
+            n_cars = max(n_cars, 2)
+            analogy = f"это {n_cars} {_ru_plural(n_cars, 'автомобиль', 'автомобиля', 'автомобилей')}"
+        elif amount_usd >= 30_000:
+            n_sal = int(amount_usd / 3_000)
+            analogy = f"это {n_sal} {_ru_plural(n_sal, 'средняя зарплата', 'средние зарплаты', 'средних зарплат')} в России"
         else:
-            analogy = f"это серьёзная сумма для одной сделки"
+            analogy = "это серьёзная сумма для одной сделки"
 
         # ── Sentiment blocks ──
         if direction == "BUY":
@@ -7596,6 +7634,7 @@ async def send_whale_alert_to_channel(whale_data: dict) -> bool:
 
         if data.get("ok"):
             _whale_alert_cooldown[symbol] = time.time()
+            _channel_whale_cooldown[coin_key] = time.time()  # v10.18.1: channel cooldown
             # Store in recent alerts (max 20)
             alert_record = {
                 "ts": datetime.utcnow().isoformat(),
