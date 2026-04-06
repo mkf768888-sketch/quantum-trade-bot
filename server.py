@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.19.4")
+app = FastAPI(title="QuantumTrade AI", version="10.19.5")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -3805,6 +3805,17 @@ async def earn_monitor_loop():
                                 f"<b>Держали:</b> {days} дней\n"
                                 f"<b>Доход (оценка):</b> <code>${earned:.4f}</code>\n\n"
                                 f"📌 /dci — подробности"
+                            )
+                        # v10.19.5 Wave5A: post DCI result to public channel (social proof)
+                        if WHALE_CHANNEL_ID and BOT_TOKEN and earned > 0:
+                            dir_ru = "📉 Выкуп на падении" if direction == "BuyLow" else "📈 Продажа на росте"
+                            days_text = f"{days:.1f}" if days < 1 else f"{int(days)}"
+                            await _tg_send(int(WHALE_CHANNEL_ID),
+                                f"✅ <b>DCI — сделка закрыта!</b>\n\n"
+                                f"Стратегия: {dir_ru} ({coin}/USDT)\n"
+                                f"Вложено: <code>${amount:.2f}</code> · APY <b>{apy:.0f}%</b>\n"
+                                f"Срок: {days_text} д · Доход: <code>+${earned:.4f}</code>\n\n"
+                                f"<i>🤖 QuantumTrade AI работает круглосуточно</i>"
                             )
                 except Exception as settle_e:
                     log_activity(f"[dci_mon] settlement check error: {settle_e}")
@@ -14688,7 +14699,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.19.4",
+        "version": "10.19.5",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -15660,7 +15671,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.19.4",
+        "version": "10.19.5",
     }
 
 @app.get("/api/setup-webhook")
@@ -15871,7 +15882,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.19.4",
+        "version": "10.19.5",
     }
 
 @app.get("/api/dashboard")
