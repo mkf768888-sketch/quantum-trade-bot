@@ -11730,16 +11730,26 @@ async def _tg_balance(chat_id: int):
         except Exception:
             pass
 
-    bb_earn = _earn_stats.get("bybit_subscribed", 0)
+    # v10.19.5: Query real ByBit Earn balance (includes yield estimation fix)
+    bb_earn_real = 0.0
+    try:
+        bb_holds = await bybit_earn_get_positions("USDT")
+        bb_earn_real = sum(float(h.get("amount", 0) or 0) for h in bb_holds)
+    except Exception:
+        bb_earn_real = sum(p["amount"] for p in _earn_positions if p["exchange"] == "bybit")
+    bb_earn = bb_earn_real
+
     dci_positions = _dci_stats.get("positions", [])
     dci_invested = sum(p.get("amount", 0) for p in dci_positions)
     dci_count = len(dci_positions)
     bb_unified_idle = max(0, bb_usdt - ROUTER_ARB_RESERVE_USDT - ROUTER_TRADE_RESERVE_USDT - bb_earn - dci_invested)
     bb_total_visible = bb_usdt + bb_funding + bb_earn
+    bb_earn_est = any(getattr(h, "_estimated", h.get("_estimated", False)) for h in (bb_holds if bb_earn_real > 0 else []))
 
     lines.append(f"\n🔵 <b>ByBit</b>  (всего видимо: <code>${bb_total_visible:.2f}</code>)")
     lines.append(f"  Unified (торговля): <code>${bb_usdt:.2f}</code>")
-    lines.append(f"  FlexEarn: <code>${bb_earn:.2f}</code> ✅ зарабатывает")
+    earn_est_mark = " ⚠️ est." if bb_earn_est else ""
+    lines.append(f"  FlexEarn: <code>${bb_earn:.2f}</code>{earn_est_mark} ✅ зарабатывает")
     lines.append(f"  DCI: <code>${dci_invested:.2f}</code> ({dci_count} поз.) 🚀 ~985% APY")
     lines.append(f"  Unified idle: <code>${bb_unified_idle:.2f}</code>")
     if bb_funding > 0:
