@@ -1457,6 +1457,7 @@ _earn_rates_cache = {"ts": 0, "data": {}}  # cache APR data for 10 min
 # v10.11.5 C-08: Locks for shared mutable state (earn_monitor_loop + dci_auto_place + Telegram handlers)
 _earn_lock = asyncio.Lock()
 _dci_lock  = asyncio.Lock()
+_last_fund_to_unified_ts: float = 0.0  # v10.17.1: cooldown anti-pingpong FUND↔UNIFIED
 
 
 async def kucoin_earn_get_savings_products(coin: str = "USDT") -> list:
@@ -3507,10 +3508,14 @@ async def earn_monitor_loop():
 
                 # v10.11.3: Auto-transfer ByBit Funding → Unified if DCI needs USDT.
                 # Funds deposited via blockchain land in FUND, not UNIFIED.
-                # DCI reads UNIFIED — so we auto-move idle Funding USDT every cycle.
+                # v10.17.1: 4h cooldown — prevents ping-pong when DCI (Step 3.6) moves UNIFIED→FUND
+                # and earn_monitor immediately moves it back.
+                global _last_fund_to_unified_ts
                 try:
+                    _now_ts = time.time()
                     bb_funding_bal = await bybit_get_funding_usdt()
-                    if bb_funding_bal >= 5.0:
+                    _fund_cooldown_ok = (_now_ts - _last_fund_to_unified_ts) > 14400  # 4 hours
+                    if bb_funding_bal >= 5.0 and _fund_cooldown_ok:
                         # Check how much is already in UNIFIED
                         unified_bals = await _dci_get_fund_balances()
                         unified_usdt = unified_bals.get("USDT", 0.0)
@@ -3522,6 +3527,7 @@ async def earn_monitor_loop():
                             if xfer_amount >= 5.0:
                                 xfer_res = await bybit_transfer_fund_to_unified(xfer_amount)
                                 if xfer_res["success"]:
+                                    _last_fund_to_unified_ts = _now_ts
                                     log_activity(
                                         f"[dci_mon] 💸 auto-transferred ${xfer_amount:.2f} USDT "
                                         f"FUND→UNIFIED (funding_bal=${bb_funding_bal:.2f})"
@@ -3532,6 +3538,8 @@ async def earn_monitor_loop():
                                             f"FUND → UNIFIED: <code>${xfer_amount:.2f}</code> USDT\n"
                                             f"Теперь DCI может разместить эти средства"
                                         )
+                        else:
+                            log_activity(f"[dci_mon] FUND=${bb_funding_bal:.2f} — cooldown or UNIFIED has enough, skip transfer")
                 except Exception as fund_e:
                     log_activity(f"[dci_mon] funding transfer check error: {fund_e}")
 
@@ -14504,7 +14512,7 @@ async def _agent_risk() -> list:
                         f"Self-learning должен был повысить порог."})
 
         # 2e. Balance adequacy + portfolio breakdown
-        # v10.17.0: use combined KC+BB balance — KC alone is often $0 after reserves
+        # v10.17.1: use KC + BB UNIFIED + BB FUND — money may be in FUND for DCI
         try:
             bal = await get_balance()
             kc_usdt = bal.get("available_usdt", 0) if bal.get("success") else 0
@@ -14513,7 +14521,11 @@ async def _agent_risk() -> list:
                 bb_usdt_risk = bb_bal.get("total_usdt", 0) if bb_bal.get("success") else 0
             except Exception:
                 bb_usdt_risk = 0
-            usdt = kc_usdt + bb_usdt_risk
+            try:
+                bb_fund_risk = await bybit_get_funding_usdt()
+            except Exception:
+                bb_fund_risk = 0
+            usdt = kc_usdt + bb_usdt_risk + bb_fund_risk
             if usdt < 5 and AUTOPILOT:
                 # Get full portfolio picture for actionable advice
                 spot_assets = []
