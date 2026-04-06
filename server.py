@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.19.3")
+app = FastAPI(title="QuantumTrade AI", version="10.19.4")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -2971,12 +2971,15 @@ async def dci_auto_place_idle() -> dict:
                 return {"placed": placed, "best_apy": _opt_apy, "skipped": len(products) - 1, "direction": direction, "fg_val": fg_val}
 
             _last_err = res.get("error", "unknown API error")
-            # v10.12.3: VIP-restricted → skip to next candidate, otherwise abort
-            if "vip" in _last_err.lower() or "not vip" in _last_err.lower():
-                log_activity(f"[dci] ⏭ skipping VIP-only product {_attempt_opt['product_id']}: {_last_err}")
+            _err_lc = _last_err.lower()
+            # v10.12.3: VIP-restricted → skip to next candidate
+            # v10.19.4: amount_out_of_range / min / max → skip to next (product-specific constraint)
+            _skip_errors = ("vip", "not vip", "amount out of range", "min:", "purchase share")
+            if any(kw in _err_lc for kw in _skip_errors):
+                log_activity(f"[dci] ⏭ skipping product {_attempt_opt['product_id']} ({_last_err[:80]})")
                 continue
             else:
-                log_activity(f"[dci] place_order failed (non-VIP error): {_last_err}")
+                log_activity(f"[dci] place_order failed (non-retriable error): {_last_err}")
                 return {"placed": [], "best_apy": _opt_apy, "skipped": len(products) - 1,
                         "reason": f"API error: {_last_err}", "direction": direction, "fg_val": fg_val}
 
@@ -3881,6 +3884,15 @@ async def earn_monitor_loop():
                                     f"[dci_mon] ✅ auto-placed {p['direction']} "
                                     f"${p['amount']:.2f} {p['coin']} APY={p['apy_pct']:.2f}% F&G={fg_val}"
                                 )
+                                if ALERT_CHAT_ID:  # v10.19.4: notify admin on auto-placement
+                                    await _tg_send(int(ALERT_CHAT_ID),
+                                        f"🎯 <b>DCI авто-размещение!</b>\n\n"
+                                        f"<b>{p['direction']}</b> · "
+                                        f"<code>${p['amount']:.2f}</code> USDT\n"
+                                        f"Монета: <b>{p['coin']}</b>\n"
+                                        f"APY: <b>{p['apy_pct']:.2f}%</b>\n"
+                                        f"F&amp;G: {fg_val}"
+                                    )
                         elif dci_result.get("reason"):
                             log_activity(f"[dci_mon] skip: {dci_result['reason']}")
                     except Exception as dci_e:
@@ -14676,7 +14688,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.19.3",
+        "version": "10.19.4",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -15648,7 +15660,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.19.3",
+        "version": "10.19.4",
     }
 
 @app.get("/api/setup-webhook")
@@ -15859,7 +15871,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.19.3",
+        "version": "10.19.4",
     }
 
 @app.get("/api/dashboard")
