@@ -30,6 +30,7 @@ version: v10.14.0
 - [[ByBit Earn subscribe пробовать UNIFIED потом FUND]]
 - [[Earn поиск продуктов без coin фильтра как fallback]]
 - [[DeepSeek оплата через PayPal с помощью товарища]]
+- [[2026-04-06-APR-normalization-KuCoin]] ← v10.16.3
 
 ## Баги и фиксы
 - [[LunarCrush 429 death spiral кеш никогда не заполняется при rate limit]]
@@ -40,7 +41,8 @@ version: v10.14.0
 - [[Smart Money Router двойное резервирование tradeable=0]]
 - [[ByBit DCI orderType должен быть Stake а не BuyLow SellHigh]] ← v10.9.23
 - [[KuCoin DCI endpoint 400100 официально недоступен]] ← v10.9.22
-- [[ByBit DCI orderDirection обязателен в теле запроса]] ← NEW v10.10.1
+- [[ByBit DCI orderDirection обязателен в теле запроса]] ← v10.10.1
+- [[Invalid-Date-activity_log-ts-timezone]] ← v10.16.3
 
 ## Паттерны
 - [[earn monitor loop фоновая задача каждые 15 минут]]
@@ -61,7 +63,8 @@ version: v10.14.0
 - [[2026-04-03 v10.9.4 command center и двойное резервирование]]
 - [[2026-04-05 v10.9-v10.10 DCI финализация и три апгрейда]]
 - [[2026-04-06 v10.12.2-v10.12.6 DCI fix chain и passive income focus]]
-- [[2026-04-06 v10.13-v10.14 passive income suite завершён]] ← NEW
+- [[2026-04-06 v10.13-v10.14 passive income suite завершён]]
+- [[2026-04-06-v10.16-audit-ui]] — v10.16.x аудит и UI апгрейд ← NEW
 
 ## Текущие приоритеты
 → см. [[текущие приоритеты]]

@@ -4,7 +4,7 @@
 > Архитектура: GSD v2 Wave Execution
 
 ## Текущее состояние бота
-- **Версия:** 10.14.0 (deployed на Railway)
+- **Версия:** 10.16.5 (deployed на Railway)
 - **Автопилот:** включён, Q≥77 (динамический через self-learning)
 - **Арбитраж:** ARB_EXEC_ENABLED=False (hardcoded off — баланс <$500)
 - **Биржи:** KuCoin Spot + ByBit Spot (dual-exchange routing)
@@ -35,9 +35,10 @@ Passive Income Suite полностью реализован (v10.13-v10.14).
 ```
 Completed: Wave 1A (Earn Engine), Wave 1A+ (DCI ByBit full), Security Audit,
            Wave 2A (Smart Filters), DCI fix chain v10.12.2-v10.12.6,
-           Wave 1B (KuCoin Lending Pro), Wave 1C (Snowball + Yield Router v2)
-Current:   Passive Income Suite задеплоен — сбор данных
-Next:      Включить LENDING_ENABLED + SNOWBALL_ENABLED → UI дашборд
+           Wave 1B (KuCoin Lending Pro), Wave 1C (Snowball + Yield Router v2),
+           Wave 2A Audit (v10.16 fixes + UI)
+Current:   Wave 2B — ATR trailing stop + 30% coin allocation + Whale Alerts
+Next:      Whale Alerts интеграция в Telegram, Balance $0 debug
 Blocked:   Binance/OKX API keys (Wave 3A multi-exchange)
 ```
 
@@ -106,14 +107,17 @@ EARN_ENABLED=true / ARB_RESERVE_USDT=3 / SPOT_BUY_MIN_USDT=5
 - `/winrate` — win rate по монетам из PostgreSQL
 - `/balance` — балансы KuCoin + ByBit + Earn + DCI
 
-## Ближайшие задачи (следующая сессия)
-1. Включить `LENDING_ENABLED=true` в Railway Variables
-2. `/yrouter` — первый живой APY рейтинг
-3. Включить `SNOWBALL_ENABLED=true` когда F&G 30-65
-4. UI для Passive Income (Mini App / dashboard)
-5. Авто-ротация капитала в Yield Router v2
+## Ближайшие задачи (Wave 2B, следующая сессия)
+1. ATR trailing stop — динамический trail по волатильности (не фиксированный 1%)
+2. Max portfolio allocation — не более 30% в одну монету, guard в spot_monitor_loop
+3. Whale Alerts → Telegram канал (telegram_whale_detector_jobs)
+4. Balance $0 debug — KuCoin/ByBit показывает $0 в overview но корректно в portfolio
+5. Авто-ротация капитала в Yield Router v2 (не только скан, но и переложение)
 
 ## Obsidian vault
-- Vault: vault/ — 30+ заметок
+- Vault: vault/ — 35+ заметок
 - Текущие приоритеты: vault/00-home/текущие приоритеты.md
-- Последняя сессия: vault/sessions/2026-04-06 v10.13-v10.14 passive income suite завершён.md
+- Последняя сессия: vault/sessions/2026-04-06-v10.16-audit-ui.md
+- Новые знания:
+  - vault/knowledge/decisions/2026-04-06-APR-normalization-KuCoin.md
+  - vault/knowledge/debugging/Invalid-Date-activity_log-ts-timezone.md
