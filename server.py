@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.17.0")
+app = FastAPI(title="QuantumTrade AI", version="10.17.3")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -14515,10 +14515,10 @@ async def _agent_risk() -> list:
                         f"Self-learning должен был повысить порог."})
 
         # 2e. Balance adequacy + portfolio breakdown
-        # v10.17.1: use KC + BB UNIFIED + BB FUND — money may be in FUND for DCI
+        # v10.17.2: use KC total_usdt + BB UNIFIED + BB FUND — money may be in FUND for DCI
         try:
             bal = await get_balance()
-            kc_usdt = bal.get("available_usdt", 0) if bal.get("success") else 0
+            kc_usdt = bal.get("total_usdt", 0) if bal.get("success") else 0  # was "available_usdt" — wrong key
             try:
                 bb_bal = await bybit_get_balance()
                 bb_usdt_risk = bb_bal.get("total_usdt", 0) if bb_bal.get("success") else 0
