@@ -4124,10 +4124,11 @@ async def yield_router_v2_get_deployed() -> dict:
         except Exception:
             pass
         try:
-            bb_bal = await asyncio.wait_for(bybit_get_spot_balance(), timeout=8.0)
-            for coin in bb_bal.get("result", {}).get("list", [{}])[0].get("coin", []):
-                if coin.get("coin") == "USDT":
-                    deployed["free_bybit"] = float(coin.get("availableToWithdraw", 0))
+            bb_bal = await asyncio.wait_for(bybit_get_balance(), timeout=8.0)
+            if bb_bal.get("success"):
+                for coin, info in bb_bal.get("balances", {}).items():
+                    if coin == "USDT":
+                        deployed["free_bybit"] = float(info.get("available", 0))
         except Exception:
             pass
         # ── Определяем текущий "активный" продукт (по сумме) ──────────────────
@@ -4260,7 +4261,7 @@ async def yield_router_v2_auto_rebalance() -> dict:
             if bb_flex:
                 best_p = max(bb_flex, key=lambda p: float(str(p.get("estimateApr","0")).rstrip("%") or 0))
                 sub = await bybit_earn_subscribe(best_p["productId"], round(place_amount, 2))
-                place_result = {"success": sub.get("retCode") == 0, "raw": sub}
+                place_result = {"success": sub.get("success", False), "raw": sub}
 
         if place_result.get("success"):
             _yrouter_last_rebalance = time.time()
@@ -4463,7 +4464,7 @@ async def portfolio_ai_analyze(snap: dict) -> str:
                         max_tokens=60,
                     ), timeout=8.0
                 )
-                opinion = resp.get("content", "").strip()
+                opinion = resp.get("text", "").strip()
                 if opinion:
                     mf_opinions.append(f"{persona['name']}: {opinion}")
             except Exception:
@@ -4528,7 +4529,7 @@ async def portfolio_ai_analyze(snap: dict) -> str:
             ),
             timeout=18.0,
         )
-        return resp.get("content", "").strip() or _portfolio_rule_based_advice(snap)
+        return resp.get("text", "").strip() or _portfolio_rule_based_advice(snap)
     except Exception as e:
         log_activity(f"[portfolio] AI analyze error: {e}")
         return _portfolio_rule_based_advice(snap)
@@ -12106,7 +12107,7 @@ async def generate_crypto_digest() -> str:
                     ),
                     timeout=10.0
                 )
-                text = resp.get("content", "").strip()
+                text = resp.get("text", "").strip()
                 if text:
                     persona_comments.append((persona["name"], text))
             except Exception:
@@ -12262,18 +12263,26 @@ async def crypto_digest_loop():
             if DIGEST_ENABLED and DIGEST_CHANNEL_ID:
                 now_utc = _dt.datetime.utcnow()
                 today_str = now_utc.strftime("%Y-%m-%d")
-                # Утренний дайджест
-                if now_utc.hour == DIGEST_HOUR_UTC and f"{today_str}-morning" not in posted_slots:
-                    log_activity(f"[digest] 🌅 утренний дайджест")
-                    ok = await post_digest_to_channel()
-                    if ok:
-                        posted_slots.add(f"{today_str}-morning")
-                # Вечерний срез
-                if now_utc.hour == DIGEST_HOUR_UTC_2 and f"{today_str}-evening" not in posted_slots:
-                    log_activity(f"[digest] 🌆 вечерний срез рынка")
-                    ok = await post_digest_to_channel(evening=True)
-                    if ok:
-                        posted_slots.add(f"{today_str}-evening")
+                # Guard: если часы одинаковые, оставляем только "morning" для безопасности
+                if DIGEST_HOUR_UTC == DIGEST_HOUR_UTC_2:
+                    if now_utc.hour == DIGEST_HOUR_UTC and f"{today_str}-morning" not in posted_slots:
+                        log_activity(f"[digest] 🌅 утренний дайджест (одновременно с вечеренним)")
+                        ok = await post_digest_to_channel()
+                        if ok:
+                            posted_slots.add(f"{today_str}-morning")
+                else:
+                    # Утренний дайджест
+                    if now_utc.hour == DIGEST_HOUR_UTC and f"{today_str}-morning" not in posted_slots:
+                        log_activity(f"[digest] 🌅 утренний дайджест")
+                        ok = await post_digest_to_channel()
+                        if ok:
+                            posted_slots.add(f"{today_str}-morning")
+                    # Вечерний срез
+                    if now_utc.hour == DIGEST_HOUR_UTC_2 and f"{today_str}-evening" not in posted_slots:
+                        log_activity(f"[digest] 🌆 вечерний срез рынка")
+                        ok = await post_digest_to_channel(evening=True)
+                        if ok:
+                            posted_slots.add(f"{today_str}-evening")
                 # Чистим старые слоты (оставляем только сегодня)
                 posted_slots = {s for s in posted_slots if s.startswith(today_str)}
         except Exception as e:
