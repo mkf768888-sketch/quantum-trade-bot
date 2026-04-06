@@ -8274,6 +8274,88 @@ async def _tg_earn_place(chat_id: int):
             f"(резерв: <code>${EARN_RESERVE_USDT}</code>)")
 
 
+async def _tg_winrate(chat_id: int):
+    """v10.12.5: /winrate — Win rate breakdown by symbol from PostgreSQL.
+    Shows top winners, top losers, best/worst coins to trade."""
+    await _tg_send(chat_id, "📊 <i>Считаю win rate по монетам из БД...</i>")
+    if not db.is_ready():
+        await _tg_send(chat_id, "❌ PostgreSQL не подключен")
+        return
+    try:
+        rows = await db.fetch("""
+            SELECT symbol,
+                   COUNT(*) FILTER (WHERE pnl_usdt > 0) AS wins,
+                   COUNT(*) FILTER (WHERE pnl_usdt <= 0) AS losses,
+                   COUNT(*) AS total,
+                   ROUND(SUM(pnl_usdt)::numeric, 4) AS total_pnl,
+                   ROUND(AVG(pnl_usdt)::numeric, 4) AS avg_pnl
+            FROM trades
+            WHERE status = 'closed' AND pnl_usdt IS NOT NULL
+            GROUP BY symbol
+            HAVING COUNT(*) >= 1
+            ORDER BY (COUNT(*) FILTER (WHERE pnl_usdt > 0))::float / NULLIF(COUNT(*),0) DESC
+        """)
+        if not rows:
+            await _tg_send(chat_id, "📭 Нет завершённых сделок в БД.\nКак только бот совершит первые сделки — здесь появится статистика.")
+            return
+
+        total_trades = sum(r["total"] for r in rows)
+        total_wins   = sum(r["wins"]  for r in rows)
+        total_pnl    = sum(float(r["total_pnl"] or 0) for r in rows)
+        overall_wr   = (total_wins / total_trades * 100) if total_trades else 0
+
+        bar_filled = int(overall_wr / 10)
+        wr_bar = "🟩" * bar_filled + "⬜" * (10 - bar_filled)
+
+        lines = [
+            f"📊 <b>Win Rate по монетам</b>",
+            f"━━━━━━━━━━━━━━━━━━━━━━",
+            f"<b>Общий:</b> {wr_bar} <code>{overall_wr:.1f}%</code>",
+            f"<b>Сделок:</b> {total_trades} · <b>PnL:</b> <code>${total_pnl:+.2f}</code>",
+            f"",
+        ]
+
+        # Top 10 by win rate (min 2 trades for reliability)
+        reliable = [r for r in rows if r["total"] >= 2]
+        if reliable:
+            lines.append("🏆 <b>Лучшие монеты:</b>")
+            for r in reliable[:5]:
+                wr = (r["wins"] / r["total"] * 100) if r["total"] else 0
+                pnl = float(r["total_pnl"] or 0)
+                emoji = "🟢" if pnl >= 0 else "🔴"
+                lines.append(
+                    f"  {emoji} <b>{r['symbol']}</b>: "
+                    f"<code>{wr:.0f}%</code> WR · "
+                    f"{r['wins']}W/{r['losses']}L · "
+                    f"PnL <code>${pnl:+.2f}</code>"
+                )
+
+        # Bottom 3 losers (min 2 trades)
+        losers = sorted(reliable, key=lambda r: (r["wins"] / r["total"]) if r["total"] else 0)[:3]
+        if losers and losers[0]["losses"] > 0:
+            lines.append(f"")
+            lines.append("⚠️ <b>Слабые монеты (избегать):</b>")
+            for r in losers:
+                wr = (r["wins"] / r["total"] * 100) if r["total"] else 0
+                pnl = float(r["total_pnl"] or 0)
+                lines.append(
+                    f"  🔴 <b>{r['symbol']}</b>: "
+                    f"<code>{wr:.0f}%</code> WR · "
+                    f"{r['wins']}W/{r['losses']}L · "
+                    f"PnL <code>${pnl:+.2f}</code>"
+                )
+
+        # Single-trade symbols note
+        singles = [r for r in rows if r["total"] == 1]
+        if singles:
+            lines.append(f"")
+            lines.append(f"<i>📌 {len(singles)} монет с 1 сделкой — статистика накапливается</i>")
+
+        await _tg_send(chat_id, "\n".join(lines))
+    except Exception as e:
+        await _tg_send(chat_id, f"❌ Ошибка winrate: {e}")
+
+
 async def _tg_audit(chat_id: int):
     """v10.4: Full PnL audit from PostgreSQL. Shows REAL numbers, not cached _perf_stats."""
     await _tg_send(chat_id, "🔍 <i>Запускаю полный аудит из PostgreSQL...</i>")
@@ -9563,6 +9645,24 @@ async def _tg_ai_ask(chat_id: int, question: str):
     except Exception as e:
         await _tg_send(chat_id, f"❌ Ошибка AI консультанта: {e}")
 
+class TelegramNotifyRequest(BaseModel):
+    message: str
+    chat_id: Optional[int] = None
+    parse_mode: str = "HTML"
+
+@app.post("/api/telegram/notify")
+async def telegram_notify(req: TelegramNotifyRequest, _: str = Depends(verify_api_key)):
+    """v10.12.5: Send arbitrary message to Telegram (used by quantum-bot-monitor and external tools).
+    Uses ALERT_CHAT_ID by default, or chat_id from request body."""
+    target = req.chat_id or (int(ALERT_CHAT_ID) if ALERT_CHAT_ID else None)
+    if not target:
+        return {"ok": False, "error": "no chat_id configured (set ALERT_CHAT_ID in Railway)"}
+    if not req.message:
+        return {"ok": False, "error": "message is empty"}
+    await _tg_send(target, req.message, parse_mode=req.parse_mode)
+    return {"ok": True, "chat_id": target, "length": len(req.message)}
+
+
 @app.post("/api/telegram/callback")
 async def telegram_callback(req: TelegramUpdate):
     global MIN_Q_SCORE, COOLDOWN, AUTOPILOT, SYSTEM_PAUSED, _pause_ts, _pause_reason
@@ -9599,6 +9699,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
             return {"ok": True}
         if cmd in ["/start", "/menu"]:     await _tg_main_menu(chat_id)
         elif cmd == "/stats":               await _tg_stats(chat_id)
+        elif cmd == "/winrate":             await _tg_winrate(chat_id)
         elif cmd == "/reset_stats":         await _tg_reset_stats(chat_id)
         elif cmd in ["/airdrops", "/air"]: await _tg_airdrops(chat_id)
         elif cmd == "/settings":            await _tg_settings(chat_id)
