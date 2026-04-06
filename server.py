@@ -11210,7 +11210,7 @@ async def startup():
                 )
                 await s.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
-                    json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": webapp_url + "?v=830"}}},
+                    json={"menu_button": {"type": "web_app", "text": "🔮 Управление", "web_app": {"url": webapp_url + "/center?v=1014"}}},
                     timeout=aiohttp.ClientTimeout(total=10)
                 )
         except Exception as e:
