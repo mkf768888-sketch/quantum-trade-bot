@@ -9970,19 +9970,25 @@ async def _tg_health(chat_id: int):
         _safe_health(get_balance("kucoin"),           {"total_usdt": 0}),
         _safe_health(bybit_get_balance(),             {"total_usdt": 0}),
         _safe_health(get_fear_greed(),                {"value": "?", "classification": "?"}),
-        _safe_health(earn_get_best_rate("USDT"),      {}),
         _safe_health(bybit_earn_get_positions("USDT"), []),
     )
+    best_earn = {}  # filled from cache below — no extra API call
 
     kc_usdt = kc_bal.get("total_usdt", 0)
     bb_usdt = bb_bal.get("total_usdt", 0)
     fg_val  = fg_data.get("value", "?")
     fg_cls  = fg_data.get("classification", "?")
+    # v10.14.2: use cached earn rate — avoids blocking KuCoin API call
     try:
-        earn_txt = f"{best_earn['exchange'].upper()} {best_earn['apr']:.2f}% APR"
+        cached_earn = _earn_rates_cache.get("data", {}).get("USDT", {})
+        if cached_earn and cached_earn.get("apr", 0) > 0:
+            earn_txt = f"{cached_earn['exchange'].upper()} {cached_earn['apr']:.2f}% APR (кеш)"
+        else:
+            earn_txt = "⏳ нет данных"
     except Exception:
         earn_txt = "?"
     try:
+        bb_earn_pos = bb_earn_pos  # from gather above
         bb_earn_amt = sum(float(p.get("amount", p.get("totalAmount", 0)) or 0) for p in bb_earn_pos)
         earn_locked = f"${bb_earn_amt:.2f} в BB Earn"
     except Exception:
