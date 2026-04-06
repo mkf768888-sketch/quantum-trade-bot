@@ -2763,6 +2763,270 @@ async def double_win_auto_place(usdt_amount: float) -> dict:
         return {"success": False, "reason": str(e)}
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# v10.14.0: ByBit Snowball — Range-bound structured product
+# Mechanism: earn enhanced coupon if price stays in [knock-in, knock-out] range.
+# Knock-out (price rises above ceiling) → early termination, keep coupon.
+# Knock-in  (price drops below floor)  → coupon stopped, capital returned.
+# Principal-protected: user always gets USDT back (minus potential opportunity cost).
+# Best suited for sideways/consolidating markets.
+# API pattern: same as DCI/DoubleWin → /v5/earn/advance/* with category=Snowball
+# ══════════════════════════════════════════════════════════════════════════════
+
+SNOWBALL_ENABLED    = os.getenv("SNOWBALL_ENABLED", "false").lower() == "true"
+SNOWBALL_MIN_APY    = float(os.getenv("SNOWBALL_MIN_APY", "15.0"))   # min APY% to place
+SNOWBALL_MAX_USDT   = float(os.getenv("SNOWBALL_MAX_USDT", "20.0"))  # max $ per position
+SNOWBALL_MIN_USDT   = float(os.getenv("SNOWBALL_MIN_USDT", "5.0"))   # min $ to trigger
+
+_snowball_stats: dict = {
+    "subscriptions": 0,
+    "errors": 0,
+    "total_invested": 0.0,
+    "positions": [],
+    "last_check": 0.0,
+}
+
+
+async def bybit_snowball_get_products(coin: str = None) -> list:
+    """v10.14.0: GET available Snowball products from ByBit Advanced Earn.
+    category=Snowball — range-bound product with knock-in/knock-out mechanics.
+    Returns parsed list sorted by APY desc."""
+    params: dict = {"category": "Snowball"}
+    if coin:
+        params["coin"] = coin
+    try:
+        res = await bybit_request("GET", "/v5/earn/advance/product", params)
+        if not res:
+            log_activity("[snowball] get_products: empty response")
+            return []
+        items = res.get("result", {}).get("list", [])
+        products = []
+        for item in items:
+            try:
+                apy_str = str(item.get("estimateApy", item.get("apy", "0"))).replace("%", "").strip()
+                apy_val = float(apy_str) if apy_str else 0.0
+                if apy_val < 1 and "%" not in str(item.get("estimateApy", "")):
+                    apy_val *= 100   # 0.25 → 25%
+                products.append({
+                    "product_id": item.get("productId", ""),
+                    "coin":        item.get("coin", "USDT"),
+                    "apy_pct":     round(apy_val, 2),
+                    "min_amount":  float(item.get("minAmount", "1")),
+                    "max_amount":  float(item.get("maxAmount", "10000")),
+                    "duration":    item.get("duration", "?"),
+                    "knock_in":    item.get("knockInPrice",  item.get("knockIn",  "?")),
+                    "knock_out":   item.get("knockOutPrice", item.get("knockOut", "?")),
+                    "status":      item.get("status", "?"),
+                    "raw":         item,
+                })
+            except (ValueError, TypeError) as parse_e:
+                log_activity(f"[snowball] product parse error: {parse_e}")
+                continue
+        products.sort(key=lambda p: p["apy_pct"], reverse=True)
+        _snowball_stats["last_check"] = time.time()
+        if products:
+            best = products[0]
+            log_activity(
+                f"[snowball] found {len(products)} products, best APY={best['apy_pct']}% "
+                f"({best['coin']} {best['duration']}, KI={best['knock_in']}, KO={best['knock_out']})"
+            )
+        else:
+            log_activity("[snowball] no Snowball products available")
+        return products
+    except Exception as e:
+        _snowball_stats["errors"] += 1
+        log_activity(f"[snowball] get_products error: {e}")
+        return []
+
+
+async def bybit_snowball_get_positions() -> list:
+    """v10.14.0: GET active Snowball positions."""
+    try:
+        res = await bybit_request("GET", "/v5/earn/advance/orders", {"category": "Snowball"})
+        if not res:
+            return []
+        items = res.get("result", {}).get("list", [])
+        positions = []
+        for item in items:
+            positions.append({
+                "order_id":   item.get("orderId", ""),
+                "product_id": item.get("productId", ""),
+                "coin":       item.get("coin", "?"),
+                "amount":     float(item.get("amount", 0)),
+                "apy":        item.get("estimateApy", item.get("apy", "?")),
+                "status":     item.get("status", "?"),
+                "knock_in":   item.get("knockInPrice",  "?"),
+                "knock_out":  item.get("knockOutPrice", "?"),
+                "create_time": item.get("createdTime", ""),
+            })
+        _snowball_stats["positions"] = positions
+        return positions
+    except Exception as e:
+        _snowball_stats["errors"] += 1
+        log_activity(f"[snowball] get_positions error: {e}")
+        return []
+
+
+async def snowball_auto_place(usdt_amount: float) -> dict:
+    """v10.14.0: Auto-place best Snowball order on ByBit.
+    Strategy:
+      - Only when F&G between 30–65 (sideways/neutral market — Snowball works best)
+      - Pick highest APY product that meets SNOWBALL_MIN_APY threshold
+      - Invest up to SNOWBALL_MAX_USDT, prefer FUND account
+    Returns {success, order_id, product_id, apy_pct, amount, reason}."""
+    if not SNOWBALL_ENABLED:
+        return {"success": False, "reason": "SNOWBALL_ENABLED=false"}
+    if usdt_amount < SNOWBALL_MIN_USDT:
+        return {"success": False, "reason": f"amount ${usdt_amount:.2f} < min ${SNOWBALL_MIN_USDT}"}
+
+    try:
+        # Market regime check: Snowball best in sideways markets (F&G 30-65)
+        fg_data = await get_fear_greed()
+        fg_val = fg_data.get("value", 50)
+        if fg_val < 25 or fg_val > 70:
+            return {
+                "success": False,
+                "reason": f"market_regime: F&G={fg_val} outside Snowball range [25-70] — too trending"
+            }
+
+        products = await bybit_snowball_get_products("USDT")
+        if not products:
+            return {"success": False, "reason": "no Snowball products available"}
+
+        # Filter: APY >= min threshold, status subscribable
+        eligible = [
+            p for p in products
+            if p["apy_pct"] >= SNOWBALL_MIN_APY
+            and p.get("status") in ("Subscribing", "1", "Active", None, "")
+            and p["min_amount"] <= usdt_amount
+        ]
+        if not eligible:
+            top = products[0]["apy_pct"] if products else 0
+            return {"success": False, "reason": f"no_eligible: best APY={top:.1f}% < min {SNOWBALL_MIN_APY}%"}
+
+        best = eligible[0]  # already sorted by APY desc
+        invest = round(min(usdt_amount * 0.8, SNOWBALL_MAX_USDT, best["max_amount"]), 2)
+        invest = max(invest, best["min_amount"])
+
+        if invest > usdt_amount + 0.5:
+            return {"success": False, "reason": f"insufficient_capital: need ${invest:.2f}, have ${usdt_amount:.2f}"}
+
+        log_activity(
+            f"[snowball] placing ${invest:.2f} USDT, APY={best['apy_pct']}%, "
+            f"product={best['product_id']}, KI={best['knock_in']}, KO={best['knock_out']}, F&G={fg_val}"
+        )
+
+        order_link_id = f"sb_{int(time.time())}_{random.randint(1000, 9999)}"
+        body = {
+            "category":    "Snowball",
+            "productId":   str(best["product_id"]),
+            "coin":        "USDT",
+            "amount":      str(round(invest, 8)),
+            "orderType":   "Stake",
+            "accountType": "FUND",
+            "orderLinkId": order_link_id,
+        }
+
+        log_activity(f"[snowball] place_order req: {json.dumps(body)}")
+        res = await bybit_request("POST", "/v5/earn/advance/place-order", body)
+
+        if res and res.get("retCode") == 0:
+            oid = res.get("result", {}).get("orderId", order_link_id)
+            _snowball_stats["subscriptions"] += 1
+            _snowball_stats["total_invested"] += invest
+            log_activity(
+                f"[snowball] ✅ placed ${invest:.2f} USDT, APY={best['apy_pct']}%, orderId={oid}"
+            )
+            if ALERT_CHAT_ID:
+                await _tg_send(int(ALERT_CHAT_ID),
+                    f"🔵 <b>Snowball размещён!</b>\n\n"
+                    f"<b>Вложено:</b> <code>${invest:.2f}</code> USDT\n"
+                    f"<b>APY:</b> <code>{best['apy_pct']:.1f}%</code>\n"
+                    f"<b>Период:</b> {best['duration']}\n"
+                    f"<b>Knock-in:</b> {best['knock_in']} | <b>Knock-out:</b> {best['knock_out']}\n"
+                    f"<b>F&G:</b> {fg_val} — боковик, Snowball активен\n"
+                    f"📌 /snowball — детали"
+                )
+            return {
+                "success":    True,
+                "order_id":   oid,
+                "product_id": best["product_id"],
+                "apy_pct":    best["apy_pct"],
+                "amount":     invest,
+                "knock_in":   best["knock_in"],
+                "knock_out":  best["knock_out"],
+                "fg_val":     fg_val,
+            }
+
+        # Fallback: UNIFIED account
+        body["accountType"] = "UNIFIED"
+        res2 = await bybit_request("POST", "/v5/earn/advance/place-order", body)
+        if res2 and res2.get("retCode") == 0:
+            oid = res2.get("result", {}).get("orderId", order_link_id)
+            _snowball_stats["subscriptions"] += 1
+            _snowball_stats["total_invested"] += invest
+            log_activity(f"[snowball] ✅ placed (UNIFIED) ${invest:.2f} USDT APY={best['apy_pct']}% orderId={oid}")
+            return {
+                "success":    True,
+                "order_id":   oid,
+                "product_id": best["product_id"],
+                "apy_pct":    best["apy_pct"],
+                "amount":     invest,
+            }
+
+        err_msg = (res or res2 or {}).get("retMsg", "unknown error")
+        _snowball_stats["errors"] += 1
+        log_activity(f"[snowball] ❌ place_order failed: {err_msg}")
+        return {"success": False, "reason": err_msg}
+
+    except Exception as e:
+        _snowball_stats["errors"] += 1
+        log_activity(f"[snowball] auto_place error: {e}")
+        return {"success": False, "reason": str(e)}
+
+
+async def _tg_snowball(chat_id: int):
+    """v10.14.0: /snowball — Telegram handler: show status + positions."""
+    try:
+        positions = await bybit_snowball_get_positions()
+        products  = await bybit_snowball_get_products("USDT")
+
+        pos_text = ""
+        if positions:
+            pos_text = "\n<b>📋 Активные позиции:</b>\n"
+            for p in positions:
+                pos_text += (
+                    f"  • {p['coin']} ${p['amount']:.2f} APY={p['apy']}% "
+                    f"| KI={p['knock_in']} KO={p['knock_out']} | {p['status']}\n"
+                )
+        else:
+            pos_text = "\n<i>Нет активных позиций</i>\n"
+
+        prod_text = ""
+        if products:
+            prod_text = "\n<b>🛒 Доступные продукты (топ-3):</b>\n"
+            for p in products[:3]:
+                prod_text += (
+                    f"  • {p['coin']} {p['duration']} APY={p['apy_pct']}% "
+                    f"| KI={p['knock_in']} KO={p['knock_out']}\n"
+                )
+
+        status_emoji = "✅" if SNOWBALL_ENABLED else "❌"
+        msg = (
+            f"🔵 <b>ByBit Snowball v10.14</b> {status_emoji}\n\n"
+            f"<b>Статус:</b> {'Включён' if SNOWBALL_ENABLED else 'Выключен'}\n"
+            f"<b>Мин APY:</b> {SNOWBALL_MIN_APY}% | <b>Макс $:</b> ${SNOWBALL_MAX_USDT}\n"
+            f"<b>Вложено всего:</b> ${_snowball_stats['total_invested']:.2f}\n"
+            f"<b>Размещений:</b> {_snowball_stats['subscriptions']} | "
+            f"<b>Ошибок:</b> {_snowball_stats['errors']}"
+            f"{pos_text}{prod_text}\n"
+            f"💡 Snowball активен при F&G 25-70 (боковой рынок)"
+        )
+        await _tg_send(chat_id, msg)
+    except Exception as e:
+        await _tg_send(chat_id, f"❌ Snowball error: {e}")
+
+
 async def earn_get_best_rate(coin: str = "USDT") -> dict:
     """Compare APR across all exchanges, return the best option.
     Returns: {exchange, product_id, apr, min_amount, product_name}"""
@@ -3248,6 +3512,31 @@ async def earn_monitor_loop():
                     except Exception as lend_e:
                         log_activity(f"[lending] auto_place error: {lend_e}")
 
+                # v10.14.0: ByBit Snowball — every 4th cycle (~1 hour), sideways market
+                if SNOWBALL_ENABLED and _earn_stats.get("_dci_cycle", 0) % 4 == 0:
+                    try:
+                        bb_fund = await bybit_get_funding_usdt()
+                        if bb_fund >= SNOWBALL_MIN_USDT:
+                            sb_res = await snowball_auto_place(bb_fund)
+                            if sb_res.get("success") or sb_res.get("reason"):
+                                log_activity(f"[snowball] auto_place: {sb_res}")
+                    except Exception as sb_e:
+                        log_activity(f"[snowball] auto_place error: {sb_e}")
+
+                # v10.14.0: Yield Router v2 — every 4th cycle, log best opportunity
+                if _earn_stats.get("_dci_cycle", 0) % 4 == 0:
+                    try:
+                        yr_data = await yield_router_v2_scan()
+                        if yr_data.get("success") and yr_data.get("recommendation"):
+                            rec = yr_data["recommendation"]
+                            log_activity(
+                                f"[yield_router_v2] 🏆 best: {rec['product']} "
+                                f"APY={rec['apy_pct']:.1f}% score={rec['score']:.1f} "
+                                f"F&G={yr_data['fg_val']} ({yr_data['market_regime']})"
+                            )
+                    except Exception as yr_e:
+                        log_activity(f"[yield_router_v2] scan error: {yr_e}")
+
                 # v10.10: Q-Score auto-tune — every ~7 days (672 cycles = 4/hr * 24h * 7d)
                 if _earn_stats.get("_dci_cycle", 0) % 672 == 1:
                     try:
@@ -3577,6 +3866,227 @@ async def smart_money_post_sell(exchange: str):
             log_activity(f"[router] post-SELL routing: {actions_str}")
     except Exception as e:
         log_activity(f"[router] post-SELL routing error: {e}")
+
+
+async def yield_router_v2_scan() -> dict:
+    """v10.14.0: Yield Router v2 — compare APY across ALL passive income products.
+
+    Products compared (USDT capital):
+      1. ByBit DCI        — 100-900% APY, structured, 1-14d, BuyLow/SellHigh
+      2. Funding Arb      — variable %, delta-neutral, ongoing
+      3. ByBit Snowball   — 10-50% APY, sideways market, range-bound
+      4. ByBit DoubleWin  — 5-30% APY, structured
+      5. KuCoin Lending   — 5-50% APY daily margin lending
+      6. ByBit Flex Earn  — 0.5-5% APY, liquid
+      7. KuCoin Flex Earn — 0.5-3% APY, liquid
+
+    Returns ranking + recommendation for idle capital deployment.
+    Does NOT auto-rotate (that's earn_monitor_loop's job) — only reports."""
+    try:
+        scores = []
+        fg_data = await get_fear_greed()
+        fg_val = fg_data.get("value", 50)
+        sideways = 30 <= fg_val <= 65
+        trending = fg_val < 25 or fg_val > 70
+
+        # ── 1. ByBit DCI ─────────────────────────────────────────────────────
+        if DCI_ENABLED:
+            try:
+                dci_products = await bybit_dci_get_products()
+                if dci_products:
+                    # Find best APY for current direction
+                    best_dci = max(dci_products, key=lambda p: float(p.get("apyE8", p.get("apy", 0) or 0)))
+                    apy_raw = float(best_dci.get("apyE8", 0))
+                    dci_apy = round(apy_raw / 1e8 * 100, 2) if apy_raw > 100 else round(apy_raw, 2)
+                    # regime fit: DCI works in all markets, best in trending
+                    regime_bonus = 1.2 if trending else 1.0
+                    scores.append({
+                        "product":     "ByBit DCI",
+                        "apy_pct":     dci_apy,
+                        "score":       round(dci_apy * regime_bonus, 2),
+                        "liquidity":   "locked 1-14d",
+                        "regime_fit":  "all markets (best trending)",
+                        "enabled":     True,
+                        "min_usdt":    float(best_dci.get("minAmount", 5)),
+                    })
+            except Exception:
+                pass
+
+        # ── 2. Funding Arb ───────────────────────────────────────────────────
+        if FUNDING_ARB_ENABLED:
+            try:
+                fa_rates = await bybit_get_funding_rates_all()  # {symbol: rate_decimal}
+                if fa_rates:
+                    best_rate = max(fa_rates.values())
+                    # Annualised: funding every 8h = 3× per day × 365
+                    fa_apy = round(abs(best_rate) * 3 * 365 * 100, 2)
+                    # regime fit: best in ranging/low-volatility
+                    regime_bonus = 1.1 if sideways else 0.9
+                    scores.append({
+                        "product":     "Funding Arb",
+                        "apy_pct":     fa_apy,
+                        "score":       round(fa_apy * regime_bonus, 2),
+                        "liquidity":   "semi-liquid (can close anytime)",
+                        "regime_fit":  "sideways + low vol (best range)",
+                        "enabled":     True,
+                        "min_usdt":    10.0,
+                    })
+            except Exception:
+                pass
+
+        # ── 3. ByBit Snowball ────────────────────────────────────────────────
+        try:
+            sb_products = await bybit_snowball_get_products("USDT")
+            if sb_products:
+                best_sb = sb_products[0]
+                # regime fit: ONLY sideways market
+                regime_bonus = 1.3 if sideways else 0.4
+                scores.append({
+                    "product":     "ByBit Snowball",
+                    "apy_pct":     best_sb["apy_pct"],
+                    "score":       round(best_sb["apy_pct"] * regime_bonus, 2),
+                    "liquidity":   f"locked {best_sb['duration']}",
+                    "regime_fit":  "sideways ONLY (F&G 25-70)",
+                    "enabled":     SNOWBALL_ENABLED,
+                    "min_usdt":    best_sb["min_amount"],
+                })
+        except Exception:
+            pass
+
+        # ── 4. ByBit DoubleWin ───────────────────────────────────────────────
+        if DOUBLE_WIN_ENABLED:
+            try:
+                dw_products = await bybit_double_win_get_products("USDT")
+                if dw_products:
+                    best_dw = max(dw_products, key=lambda p: p["apy_pct"])
+                    regime_bonus = 1.1
+                    scores.append({
+                        "product":     "ByBit DoubleWin",
+                        "apy_pct":     best_dw["apy_pct"],
+                        "score":       round(best_dw["apy_pct"] * regime_bonus, 2),
+                        "liquidity":   f"locked {best_dw['duration']}",
+                        "regime_fit":  "all markets",
+                        "enabled":     True,
+                        "min_usdt":    best_dw["min_amount"],
+                    })
+            except Exception:
+                pass
+
+        # ── 5. KuCoin Lending ────────────────────────────────────────────────
+        if LENDING_ENABLED:
+            try:
+                lend_rate = await kucoin_lending_get_market_rate("USDT")
+                if lend_rate.get("daily_rate", 0) > 0:
+                    lend_apy = round(lend_rate["daily_rate"] * 365 * 100, 2)
+                    scores.append({
+                        "product":     "KuCoin Lending",
+                        "apy_pct":     lend_apy,
+                        "score":       round(lend_apy * 1.0, 2),
+                        "liquidity":   f"locked {LENDING_TERM_DAYS}d (cancel anytime)",
+                        "regime_fit":  "all markets",
+                        "enabled":     True,
+                        "min_usdt":    5.0,
+                    })
+            except Exception:
+                pass
+
+        # ── 6. ByBit Flex Earn ───────────────────────────────────────────────
+        try:
+            bb_flex = await bybit_earn_get_products("USDT")
+            if bb_flex:
+                best_bb = max(bb_flex, key=lambda p: float(
+                    str(p.get("estimateApr", "0")).rstrip("%") or 0
+                ))
+                apr_str = str(best_bb.get("estimateApr", "0")).rstrip("%")
+                bb_apy = float(apr_str) if apr_str else 0.0
+                if bb_apy < 1:
+                    bb_apy *= 100
+                scores.append({
+                    "product":     "ByBit Flex Earn",
+                    "apy_pct":     round(bb_apy, 2),
+                    "score":       round(bb_apy * 1.0, 2),
+                    "liquidity":   "instant redeem",
+                    "regime_fit":  "all markets (buffer)",
+                    "enabled":     EARN_ENABLED,
+                    "min_usdt":    float(best_bb.get("minStakeAmount", 1)),
+                })
+        except Exception:
+            pass
+
+        # ── 7. KuCoin Flex Earn ──────────────────────────────────────────────
+        try:
+            kc_flex = await kucoin_earn_get_savings_products("USDT")
+            if kc_flex:
+                best_kc = max(kc_flex, key=lambda p: float(p.get("returnRate", 0) or 0))
+                kc_apy = round(float(best_kc.get("returnRate", 0) or 0) * 100, 2)
+                scores.append({
+                    "product":     "KuCoin Flex Earn",
+                    "apy_pct":     kc_apy,
+                    "score":       round(kc_apy * 1.0, 2),
+                    "liquidity":   "instant redeem",
+                    "regime_fit":  "all markets (buffer)",
+                    "enabled":     EARN_ENABLED,
+                    "min_usdt":    float(best_kc.get("userLowerLimit", 1)),
+                })
+        except Exception:
+            pass
+
+        # ── Rank by score ────────────────────────────────────────────────────
+        scores.sort(key=lambda s: s["score"], reverse=True)
+        enabled_scores = [s for s in scores if s["enabled"]]
+        recommendation = enabled_scores[0] if enabled_scores else None
+
+        return {
+            "success":        True,
+            "fg_val":         fg_val,
+            "market_regime":  "sideways" if sideways else "trending" if trending else "neutral",
+            "ranking":        scores,
+            "recommendation": recommendation,
+            "ts":             time.time(),
+        }
+
+    except Exception as e:
+        log_activity(f"[yield_router_v2] scan error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def _tg_yield_router(chat_id: int):
+    """v10.14.0: /yrouter — Telegram handler: Yield Router v2 full APY snapshot."""
+    try:
+        data = await yield_router_v2_scan()
+        if not data.get("success"):
+            await _tg_send(chat_id, f"❌ Yield Router error: {data.get('error','?')}")
+            return
+
+        fg_val = data["fg_val"]
+        regime = data["market_regime"]
+        ranking = data.get("ranking", [])
+        rec = data.get("recommendation")
+
+        regime_emoji = {"sideways": "↔️", "trending": "📈", "neutral": "⚖️"}.get(regime, "❓")
+        lines = [
+            f"📊 <b>Yield Router v2</b>\n",
+            f"<b>F&G:</b> {fg_val} {regime_emoji} {regime.upper()}\n",
+            f"\n<b>🏆 APY Ranking:</b>\n",
+        ]
+        for i, s in enumerate(ranking, 1):
+            flag = "✅" if s["enabled"] else "🔒"
+            star = " ⭐" if rec and s["product"] == rec["product"] else ""
+            lines.append(
+                f"  {i}. {flag} <b>{s['product']}</b>{star}\n"
+                f"      APY {s['apy_pct']:.1f}% · Score {s['score']:.1f} · {s['liquidity']}\n"
+            )
+
+        if rec:
+            lines.append(
+                f"\n<b>💡 Рекомендация:</b>\n"
+                f"  → <b>{rec['product']}</b> — APY {rec['apy_pct']:.1f}%\n"
+                f"  Мин. вход: ${rec['min_usdt']:.0f} · {rec['regime_fit']}"
+            )
+
+        await _tg_send(chat_id, "".join(lines))
+    except Exception as e:
+        await _tg_send(chat_id, f"❌ /yrouter error: {e}")
 
 
 async def smart_money_router_loop():
@@ -10351,6 +10861,8 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/dci":                 await _tg_dci(chat_id)
         elif cmd == "/dciplace":            await _tg_dci_place(chat_id)
         elif cmd == "/lending":             await _tg_lending(chat_id)
+        elif cmd == "/snowball":            await _tg_snowball(chat_id)
+        elif cmd == "/yrouter":             await _tg_yield_router(chat_id)
         elif cmd == "/audit":               await _tg_audit(chat_id)
         elif cmd == "/fills":               await _tg_fills(chat_id)
         elif cmd == "/agency":              await _tg_agency(chat_id)

@@ -22,6 +22,8 @@
 | Advanced TA | MACD, BB, Stoch, ADX, OBV (pandas-ta) | `calc_advanced_ta()` |
 | Funding Arb v10.12.7 | ByBit delta-neutral: spot long + perp short | `funding_arb_open()`, `funding_arb_close()`, `funding_arb_auto_check()` |
 | KuCoin Lending v10.13.0 | Margin lending USDT, 10-50% APR | `kucoin_lending_auto_place()`, `kucoin_lending_get_market_rate()` |
+| ByBit Snowball v10.14.0 | Range-bound structured product, sideways market | `snowball_auto_place()`, `bybit_snowball_get_products()` |
+| Yield Router v2 v10.14.0 | APY comparison across all 7 products + recommendation | `yield_router_v2_scan()`, `/yrouter` Telegram |
 
 ## AI Tiers (v10.1 — cost protection)
 - **DeepSeek V3** — единственный AI в торговом цикле. NO Claude fallback!
@@ -45,12 +47,13 @@ RISK_PER_TRADE=0.08 / MIN_Q_SCORE=77 / MAX_OPEN_POSITIONS=2
 ARB_RESERVE_USDT=3 / SPOT_BUY_MIN_USDT=5
 FUNDING_ARB_ENABLED=false / FUNDING_ARB_MIN_RATE=0.01 / FUNDING_ARB_MAX_USDT=50
 LENDING_ENABLED=false / LENDING_MIN_APR=10.0 / LENDING_MAX_USDT=30.0 / LENDING_TERM_DAYS=7
+SNOWBALL_ENABLED=false / SNOWBALL_MIN_APY=15.0 / SNOWBALL_MAX_USDT=20.0 / SNOWBALL_MIN_USDT=5.0
 ```
 
 ## Telegram Commands
 /start, /stats, /mirofish, /sentiment, /analyze, /macro, /balance, /positions,
 /settings, /diag, /ask, /buy, /sell, /arb, /xarb, /bybit, /spot,
-/dci, /dciplace, /lending, /fundarb, /earn, /earnplace, /health, /router
+/dci, /dciplace, /lending, /snowball, /yrouter, /fundarb, /earn, /earnplace, /health, /router
 
 ## Q-Score (0–100)
 ```
