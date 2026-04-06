@@ -1294,7 +1294,7 @@ async def bybit_transfer_fund_to_unified(amount: float) -> dict:
         body = {
             "transferId": str(_uuid.uuid4()),
             "coin": "USDT",
-            "amount": str(round(amount, 2)),
+            "amount": f"{amount:.2f}",  # v10.19.4: strict 2-decimal format
             "fromAccountType": "FUND",
             "toAccountType": "UNIFIED",
         }
@@ -1320,7 +1320,7 @@ async def bybit_transfer_unified_to_fund(amount: float) -> dict:
         body = {
             "transferId": str(_uuid.uuid4()),
             "coin": "USDT",
-            "amount": str(round(amount, 2)),
+            "amount": f"{amount:.2f}",  # v10.19.4: strict 2-decimal format
             "fromAccountType": "UNIFIED",
             "toAccountType": "FUND",
         }
@@ -2167,7 +2167,7 @@ async def bybit_earn_subscribe(product_id: str, amount: float, coin: str = "USDT
             "category": "FlexibleSaving",
             "productId": str(product_id),
             "coin": coin,
-            "amount": str(round(amount, 2)),
+            "amount": f"{amount:.2f}",  # v10.19.4: "20.00" not "20.0" — ByBit strict format
             "orderType": "Stake",
             "accountType": account_type,
             "orderLinkId": order_link_id,  # v10.2.3: fix "Empty order link ID"
@@ -3114,7 +3114,7 @@ async def double_win_auto_place(usdt_amount: float) -> dict:
             "category": "DoubleWin",
             "productId": str(best["product_id"]),
             "coin": "USDT",
-            "amount": str(round(invest, 8)),
+            "amount": f"{invest:.2f}",  # v10.19.4: "20.00" not "20.0" — ByBit strict format
             "orderType": "Stake",
             "accountType": "FUND",
             "orderLinkId": order_link_id,
