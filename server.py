@@ -1,10 +1,15 @@
 """
-QuantumTrade AI - FastAPI Backend v10.11.5
+QuantumTrade AI - FastAPI Backend v10.17.0
 Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
 Changelog:
+v10.17.0: FIX — DCI "Balance not enough": funds sit in UNIFIED, DCI order debits FUND.
+          NEW: bybit_transfer_unified_to_fund(amount) — moves USDT from UNIFIED → FUND.
+          FIX: dci_auto_place_idle now auto-transfers UNIFIED→FUND before placing order.
+          FIX — USDT floor calculation ignored KC Earn ($107+): ALL BUY signals blocked.
+          FIX: _total_portfolio now includes _earn_positions USDT for accurate floor %.
 v10.10.3: FIX — DCI place_order: Invalid coin.
           For BuyLow direction, ByBit expects the INVESTED coin (USDT), not the
           base coin (ETH). Was passing best_option["coin"] (= "ETH").
@@ -1305,6 +1310,32 @@ async def bybit_transfer_fund_to_unified(amount: float) -> dict:
         return {"success": False, "error": str(e)}
 
 
+async def bybit_transfer_unified_to_fund(amount: float) -> dict:
+    """v10.17.0: Transfer USDT from ByBit UNIFIED → FUND account.
+    UNIFIED = trading account. FUND = structured products / DCI account.
+    ByBit DCI orders require accountType=FUND, so idle USDT in UNIFIED
+    must be moved here before placing DCI orders."""
+    import uuid as _uuid
+    try:
+        body = {
+            "transferId": str(_uuid.uuid4()),
+            "coin": "USDT",
+            "amount": str(round(amount, 2)),
+            "fromAccountType": "UNIFIED",
+            "toAccountType": "FUND",
+        }
+        res = await bybit_request("POST", "/v5/asset/transfer/inter-transfer", body)
+        if res["success"]:
+            log_activity(f"[bybit] UNIFIED→FUND transfer OK: ${amount:.2f} USDT")
+            return {"success": True, "amount": amount}
+        err = res.get("error", "unknown")
+        log_activity(f"[bybit] UNIFIED→FUND transfer FAIL: {err}")
+        return {"success": False, "error": err}
+    except Exception as e:
+        log_activity(f"[bybit] transfer_unified_to_fund error: {e}")
+        return {"success": False, "error": str(e)}
+
+
 async def bybit_get_ticker(symbol: str) -> float:
     """Get last price for symbol on ByBit. Symbol format: BTCUSDT (no dash)."""
     bb_symbol = symbol.replace("-", "")
@@ -2361,6 +2392,32 @@ async def dci_auto_place_idle() -> dict:
                     log_activity(f"[dci] no Flex Savings USDT positions found (positions={len(earn_positions)})")
             except Exception as e:
                 log_activity(f"[dci] redeem-before-dci error: {e}")
+
+        # Step 3.6 (v10.17.0): UNIFIED→FUND auto-transfer.
+        # ByBit DCI orders debit from FUND account, but funds after earn redemptions
+        # and regular deposits land in UNIFIED. Transfer needed amount to FUND first.
+        if direction == "BuyLow" and usdt_free >= 5.0:
+            try:
+                fund_usdt = await bybit_get_funding_usdt()
+                needed = min(usdt_free, DCI_MAX_INVEST_USDT)
+                if fund_usdt < needed:
+                    transfer_amount = round(min(needed - fund_usdt + 0.5, usdt_free), 2)
+                    log_activity(
+                        f"[dci] FUND=${fund_usdt:.2f} < needed=${needed:.2f} — "
+                        f"transferring ${transfer_amount:.2f} UNIFIED→FUND"
+                    )
+                    tr = await bybit_transfer_unified_to_fund(transfer_amount)
+                    if tr["success"]:
+                        await asyncio.sleep(2)  # wait for transfer to settle
+                        fund_balances = await _dci_get_fund_balances()
+                        usdt_free = fund_balances.get("USDT", 0.0)
+                        log_activity(f"[dci] post-transfer UNIFIED→FUND: USDT=${usdt_free:.2f}")
+                    else:
+                        log_activity(f"[dci] UNIFIED→FUND transfer failed: {tr.get('error','?')}")
+                else:
+                    log_activity(f"[dci] FUND=${fund_usdt:.2f} sufficient, no transfer needed")
+            except Exception as _tr_e:
+                log_activity(f"[dci] UNIFIED→FUND check error: {_tr_e}")
 
         # Step 4: Find best product for the chosen direction
         best_apy = 0.0
@@ -8251,14 +8308,20 @@ async def auto_trade_cycle():
         # ── v10.7: Capital Protection — prevent aggressive USDT drain ─────────
         if action == "BUY":
             # 1) USDT Floor: keep minimum % of portfolio in USDT
-            _total_portfolio = total_usdt + sum(
+            # v10.17.0: include KC/BB Earn positions in portfolio so floor is accurate.
+            # Without this, $107 in KC Earn was invisible → floor 28% instead of ~18% → all buys blocked.
+            _earn_usdt_val = sum(
+                p.get("amount", 0) for p in _earn_positions
+                if p.get("coin") == "USDT"
+            )
+            _total_portfolio = total_usdt + _earn_usdt_val + sum(
                 t.get("usdt_size", 0) for t in trade_log if t.get("status") == "open"
             )
             if _total_portfolio > 0:
                 _usdt_ratio = total_usdt / _total_portfolio
                 if _usdt_ratio < USDT_FLOOR_PCT:
                     log_activity(f"[cycle] {symbol}: SKIP BUY — USDT floor {_usdt_ratio:.0%} < {USDT_FLOOR_PCT:.0%} "
-                                 f"(USDT=${total_usdt:.1f} portfolio=${_total_portfolio:.1f})")
+                                 f"(USDT=${total_usdt:.1f} portfolio=${_total_portfolio:.1f} earn=${_earn_usdt_val:.1f})")
                     continue
 
             # 2) Daily buy limit: max N buys per rolling 24h
