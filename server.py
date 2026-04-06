@@ -3890,14 +3890,36 @@ async def yield_router_v2_scan() -> dict:
         trending = fg_val < 25 or fg_val > 70
 
         # ── 1. ByBit DCI ─────────────────────────────────────────────────────
+        # NOTE: bybit_dci_get_products() returns product list WITHOUT apyE8 —
+        # that field only exists in bybit_dci_get_quote(). So we use cached
+        # APY from _dci_stats positions, then try a quick quote, then fallback.
         if DCI_ENABLED:
             try:
                 dci_products = await bybit_dci_get_products()
                 if dci_products:
-                    # Find best APY for current direction
-                    best_dci = max(dci_products, key=lambda p: float(p.get("apyE8", p.get("apy", 0) or 0)))
-                    apy_raw = float(best_dci.get("apyE8", 0))
-                    dci_apy = round(apy_raw / 1e8 * 100, 2) if apy_raw > 100 else round(apy_raw, 2)
+                    # 1) Try cached APY from active DCI position
+                    dci_apy = 0.0
+                    dci_positions = _dci_stats.get("positions", [])
+                    if dci_positions:
+                        cached = float(dci_positions[0].get("apy_pct", 0))
+                        if cached > 0:
+                            dci_apy = cached
+                    # 2) Try quick quote from first product
+                    if dci_apy == 0:
+                        try:
+                            q = await asyncio.wait_for(
+                                bybit_dci_get_quote(str(dci_products[0].get("productId", ""))),
+                                timeout=5.0
+                            )
+                            opts = q.get("buyLowPrice", []) + q.get("sellHighPrice", [])
+                            if opts:
+                                best_opt = max(opts, key=lambda x: int(x.get("apyE8", 0)))
+                                dci_apy = round(int(best_opt.get("apyE8", 0)) / 1e8 * 100, 2)
+                        except Exception:
+                            pass
+                    # 3) Fallback to configured minimum
+                    if dci_apy == 0:
+                        dci_apy = float(DCI_MIN_APY_PCT)
                     # regime fit: DCI works in all markets, best in trending
                     regime_bonus = 1.2 if trending else 1.0
                     scores.append({
@@ -3907,7 +3929,7 @@ async def yield_router_v2_scan() -> dict:
                         "liquidity":   "locked 1-14d",
                         "regime_fit":  "all markets (best trending)",
                         "enabled":     True,
-                        "min_usdt":    float(best_dci.get("minAmount", 5)),
+                        "min_usdt":    5.0,
                     })
             except Exception:
                 pass
@@ -3991,6 +4013,8 @@ async def yield_router_v2_scan() -> dict:
                 pass
 
         # ── 6. ByBit Flex Earn ───────────────────────────────────────────────
+        # NOTE: ByBit estimateApr is already in % format (e.g. "0.6" = 0.6%, "1.5" = 1.5%)
+        # Do NOT multiply by 100 — that was the 60% bug.
         try:
             bb_flex = await bybit_earn_get_products("USDT")
             if bb_flex:
@@ -3999,8 +4023,7 @@ async def yield_router_v2_scan() -> dict:
                 ))
                 apr_str = str(best_bb.get("estimateApr", "0")).rstrip("%")
                 bb_apy = float(apr_str) if apr_str else 0.0
-                if bb_apy < 1:
-                    bb_apy *= 100
+                # estimateApr already in percentage — no conversion needed
                 scores.append({
                     "product":     "ByBit Flex Earn",
                     "apy_pct":     round(bb_apy, 2),
@@ -9936,26 +9959,34 @@ async def _tg_health(chat_id: int):
 
     await _tg_send(chat_id, "🔄 <i>Проверяю системы...</i>")
 
-    # ── Balances ──
-    kc_bal  = await get_balance("kucoin")
-    bb_bal  = await bybit_get_balance()
+    # ── v10.14.1: Parallel fetch with timeouts (was sequential → hung on slow API) ──
+    async def _safe_health(coro, default, timeout=8.0):
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout)
+        except Exception:
+            return default
+
+    kc_bal, bb_bal, fg_data, best_earn, bb_earn_pos = await asyncio.gather(
+        _safe_health(get_balance("kucoin"),           {"total_usdt": 0}),
+        _safe_health(bybit_get_balance(),             {"total_usdt": 0}),
+        _safe_health(get_fear_greed(),                {"value": "?", "classification": "?"}),
+        _safe_health(earn_get_best_rate("USDT"),      {}),
+        _safe_health(bybit_earn_get_positions("USDT"), []),
+    )
+
     kc_usdt = kc_bal.get("total_usdt", 0)
     bb_usdt = bb_bal.get("total_usdt", 0)
-
-    # ── F&G ──
+    fg_val  = fg_data.get("value", "?")
+    fg_cls  = fg_data.get("classification", "?")
     try:
-        fg_data = await get_fear_greed()
-        fg_val  = fg_data.get("value", "?")
-        fg_cls  = fg_data.get("classification", "?")
-    except Exception:
-        fg_val, fg_cls = "?", "?"
-
-    # ── Earn best rate ──
-    try:
-        best_earn = await earn_get_best_rate("USDT")
         earn_txt = f"{best_earn['exchange'].upper()} {best_earn['apr']:.2f}% APR"
     except Exception:
         earn_txt = "?"
+    try:
+        bb_earn_amt = sum(float(p.get("amount", p.get("totalAmount", 0)) or 0) for p in bb_earn_pos)
+        earn_locked = f"${bb_earn_amt:.2f} в BB Earn"
+    except Exception:
+        earn_locked = "?"
 
     # ── DCI ──
     dci_last = _dci_stats.get("last_check", 0)
@@ -9978,18 +10009,9 @@ async def _tg_health(chat_id: int):
     open_pos = [t for t in trade_log if t.get("status") == "open"]
     pos_syms = ", ".join(t["symbol"].replace("-USDT","") for t in open_pos[:4]) if open_pos else "нет"
 
-    # ── API health (quick ping) ──
-    bb_ok = _bybit_stats.get("errors", 0) == 0 or _bybit_stats.get("calls", 0) > _bybit_stats.get("errors", 0) * 5
+    # ── API health (from in-memory stats, instant) ──
     bb_api = f"✅ ({_bybit_stats['calls']} calls, {_bybit_stats['errors']} err)"
     kc_api = "✅ OK"
-
-    # ── ByBit earn positions ──
-    try:
-        bb_earn_pos = await bybit_earn_get_positions("USDT")
-        bb_earn_amt = sum(float(p.get("amount", p.get("totalAmount", 0)) or 0) for p in bb_earn_pos)
-        earn_locked = f"${bb_earn_amt:.2f} в BB Earn"
-    except Exception:
-        earn_locked = "?"
 
     ts_str = _dt.datetime.now().strftime("%d.%m.%Y %H:%M")
     lines = [
