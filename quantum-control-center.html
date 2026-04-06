@@ -306,6 +306,31 @@ body{padding-bottom:calc(var(--nav) + 8px);-webkit-font-smoothing:antialiased}
 </style>
 </head>
 <body>
+
+<!-- ══ API KEY OVERLAY ══════════════════════════════════════════ -->
+<div id="keyOverlay" style="display:none;position:fixed;inset:0;z-index:999;background:rgba(3,0,15,.97);backdrop-filter:blur(24px);flex-direction:column;align-items:center;justify-content:center;padding:24px">
+  <div style="width:100%;max-width:340px;background:rgba(20,10,50,.85);border:1px solid rgba(124,58,237,.4);border-radius:20px;padding:28px 22px;box-shadow:0 0 60px rgba(124,58,237,.25)">
+    <div style="text-align:center;margin-bottom:20px">
+      <div style="font-size:36px;margin-bottom:8px">🔮</div>
+      <div style="font-size:18px;font-weight:800;background:linear-gradient(135deg,#fbbf24,#9f67ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">QuantumTrade</div>
+      <div style="font-size:12px;color:rgba(150,185,230,.7);margin-top:4px">Центр Управления</div>
+    </div>
+    <div style="font-size:12px;color:rgba(150,185,230,.8);margin-bottom:10px;font-weight:600">🔑 API Ключ</div>
+    <div style="font-size:11px;color:rgba(90,120,170,.7);margin-bottom:14px;line-height:1.5">Введи свой <code style="background:rgba(124,58,237,.2);padding:1px 5px;border-radius:4px;color:#9f67ff">API_SECRET</code> из Railway Variables. Сохранится в браузере — вводить один раз.</div>
+    <input id="keyInput" type="password"
+      placeholder="Вставь API_SECRET..."
+      autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+      style="width:100%;padding:12px 14px;border-radius:12px;border:1px solid rgba(124,58,237,.4);background:rgba(10,6,30,.8);color:rgba(215,228,255,.95);font-size:13px;font-family:-apple-system,'Inter',sans-serif;outline:none;margin-bottom:14px;-webkit-text-security:disc"
+      onkeydown="if(event.key==='Enter')saveApiKey()"
+    />
+    <button onclick="saveApiKey()"
+      style="width:100%;padding:13px;border-radius:12px;border:none;background:linear-gradient(135deg,#7c3aed,#9f67ff);color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:-apple-system,'Inter',sans-serif;box-shadow:0 4px 20px rgba(124,58,237,.4);transition:opacity .2s"
+      onmousedown="this.style.opacity='.8'" onmouseup="this.style.opacity='1'"
+    >Войти в Центр Управления →</button>
+    <div style="text-align:center;margin-top:14px;font-size:10px;color:rgba(90,120,170,.5)">Ключ хранится только в твоём браузере · Не передаётся третьим лицам</div>
+  </div>
+</div>
+
 <div class="qbg"></div>
 
 <!-- ТИКЕР ЦЕН -->
@@ -330,6 +355,10 @@ body{padding-bottom:calc(var(--nav) + 8px);-webkit-font-smoothing:antialiased}
         <span class="status-dot"></span>
         <span id="pilotLabel">...</span>
       </div>
+      <button onclick="showKeySetup()" title="Сменить API ключ"
+        style="width:30px;height:30px;border-radius:50%;border:1px solid rgba(124,58,237,.35);background:rgba(124,58,237,.12);color:rgba(159,103,255,.8);font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s;flex-shrink:0"
+        onmouseenter="this.style.background='rgba(124,58,237,.25)'" onmouseleave="this.style.background='rgba(124,58,237,.12)'"
+      >⚙</button>
     </div>
   </div>
 
@@ -598,18 +627,41 @@ const BASE = (()=>{
   try{const t=window.Telegram?.WebApp;if(t?.initDataUnsafe?.start_param)return'https://'+t.initDataUnsafe.start_param;}catch(e){}
   return window.location.origin;
 })();
-const API_KEY = (() => {
-  try { return window.Telegram?.WebApp?.initDataUnsafe?.user?.id ? '' : (localStorage.getItem('qt_key') || ''); } catch(e){return '';}
-})();
 
-const H = {'X-API-Key': API_KEY, 'Content-Type':'application/json'};
+// API_KEY — читается динамически из localStorage (меняется при сохранении)
+function getApiKey(){ try{return localStorage.getItem('qt_key')||'';}catch(e){return '';} }
+function getHeaders(){ return {'X-API-Key':getApiKey(),'Content-Type':'application/json'}; }
 
 async function api(path, opts={}){
   try{
-    const r = await fetch(BASE+path, {headers:H, signal:AbortSignal.timeout(12000), ...opts});
+    const r = await fetch(BASE+path, {headers:getHeaders(), signal:AbortSignal.timeout(12000), ...opts});
     if(!r.ok) return null;
     return r.json();
   }catch(e){return null;}
+}
+
+// ══ API KEY SETUP ═══════════════════════════════════════════
+function showKeySetup(){
+  const overlay = document.getElementById('keyOverlay');
+  if(overlay) overlay.style.display='flex';
+}
+function hideKeySetup(){
+  const overlay = document.getElementById('keyOverlay');
+  if(overlay) overlay.style.display='none';
+}
+function saveApiKey(){
+  const inp = document.getElementById('keyInput');
+  const key = inp?.value?.trim();
+  if(!key){showToast('⚠️ Введи API ключ');return;}
+  try{localStorage.setItem('qt_key', key);}catch(e){}
+  hideKeySetup();
+  showToast('✅ Ключ сохранён — загружаем данные...');
+  init();
+}
+function clearApiKey(){
+  try{localStorage.removeItem('qt_key');}catch(e){}
+  showToast('🔑 Ключ удалён');
+  showKeySetup();
 }
 
 // ══ STATE ═══════════════════════════════════════════════════
@@ -1029,6 +1081,12 @@ async function refresh(){
 // ══ INIT ════════════════════════════════════════════════════
 async function init(){
   try{window.Telegram?.WebApp?.expand?.();}catch(e){}
+  // Если нет ключа — показать экран ввода и остановиться
+  if(!getApiKey()){
+    showKeySetup();
+    return;
+  }
+  if(_refreshTimer) clearInterval(_refreshTimer);
   await refresh();
   // Yield router load in background
   renderYieldRouter();

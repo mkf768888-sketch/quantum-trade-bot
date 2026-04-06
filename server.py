@@ -11797,8 +11797,9 @@ async def serve_control_center():
 
 
 @app.get("/api/yield-router")
-async def yield_router_api(_auth=Depends(verify_api_key)):
-    """v10.14.0: Yield Router v2 — full APY comparison across all passive income products."""
+async def yield_router_api():
+    """v10.14.0: Yield Router v2 — full APY comparison. Public read-only (no auth needed).
+    Returns non-sensitive market data: APY rates, regime, product ranking."""
     return await yield_router_v2_scan()
 
 
@@ -12538,11 +12539,11 @@ async def setup_webhook(request: Request, _auth=Depends(verify_api_key)):
             )
             results["commands"] = await r2.json()
 
-            # 3. v7.4.4: Кнопка меню → Railway Mini App с ?v= для сброса кеша Telegram
-            versioned_url = f"{webapp_url}?v=830"
+            # 3. v10.14.0: Кнопка меню → Quantum Control Center /center
+            center_url = f"{webapp_url}/center?v=1014"
             r3 = await s.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/setChatMenuButton",
-                json={"menu_button": {"type": "web_app", "text": "🖥️ Дашборд", "web_app": {"url": versioned_url}}},
+                json={"menu_button": {"type": "web_app", "text": "🔮 Управление", "web_app": {"url": center_url}}},
                 timeout=aiohttp.ClientTimeout(total=10)
             )
             results["menu_button"] = await r3.json()
