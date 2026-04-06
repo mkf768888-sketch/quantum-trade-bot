@@ -1572,7 +1572,8 @@ async def kucoin_earn_get_hold_assets(coin: str = "USDT") -> list:
 # ── v10.15.0: AI Content Factory — Daily Crypto Digest ───────────────────────
 DIGEST_ENABLED     = os.getenv("DIGEST_ENABLED",    "false").lower() == "true"
 DIGEST_CHANNEL_ID  = os.getenv("DIGEST_CHANNEL_ID", "")   # e.g. @mychannel or -100123456789
-DIGEST_HOUR_UTC    = int(os.getenv("DIGEST_HOUR_UTC", "6"))  # 6 UTC = 9 MSK
+DIGEST_HOUR_UTC    = int(os.getenv("DIGEST_HOUR_UTC", "6"))   # 6 UTC = 9 MSK — утренний дайджест
+DIGEST_HOUR_UTC_2  = int(os.getenv("DIGEST_HOUR_UTC_2", "15")) # 15 UTC = 18 MSK — вечерний срез
 
 LENDING_ENABLED       = os.getenv("LENDING_ENABLED",     "false").lower() == "true"
 LENDING_MIN_APR       = float(os.getenv("LENDING_MIN_APR",  "10.0"))   # % APR threshold
@@ -11616,13 +11617,66 @@ async def generate_crypto_digest() -> str:
     return "\n".join(lines)
 
 
-async def post_digest_to_channel() -> bool:
-    """v10.15.0: Генерирует и постит дайджест в канал. Возвращает True если успешно."""
+async def generate_evening_snapshot() -> str:
+    """v10.15.2: Короткий вечерний срез рынка — как закрывается день."""
+    import datetime as _dt
+    async def _safe(coro, default, timeout=8.0):
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout)
+        except Exception:
+            return default
+    prices_data, fg_data = await asyncio.gather(
+        _safe(_get_prices_with_fallback(), {"prices": {}}),
+        _safe(get_fear_greed(), {"value": 50, "classification": "Neutral"}),
+    )
+    prices = prices_data.get("prices", {})
+    fg_val = fg_data.get("value", 50)
+    fg_cls = fg_data.get("classification", "Neutral")
+    fg_emoji = "😱" if fg_val <= 25 else "😨" if fg_val <= 40 else "😐" if fg_val <= 60 else "😄" if fg_val <= 75 else "🤑"
+    def _fmt(sym):
+        p = prices.get(sym, {})
+        price = p.get("price", 0)
+        chg = p.get("change_24h", 0)
+        if not price: return None
+        arrow = "🟢" if chg >= 0 else "🔴"
+        return f"{arrow} {sym.replace('-USDT','')}: <code>${price:,.0f}</code> ({chg:+.1f}%)"
+    lines_p = [l for l in [_fmt("BTC-USDT"), _fmt("ETH-USDT"), _fmt("SOL-USDT")] if l]
+    today = _dt.date.today().strftime("%-d %B %Y")
+    weekday = ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"][_dt.date.today().weekday()]
+    # Итог дня на основе F&G
+    if fg_val <= 25:
+        summary = "День прошёл под знаком страха. Рынок давит на слабые руки — умные деньги наблюдают."
+    elif fg_val >= 70:
+        summary = "Рынок завершает день в эйфории. Осторожно — жадность исторически предшествует коррекциям."
+    else:
+        btc_chg = prices.get("BTC-USDT", {}).get("change_24h", 0)
+        if btc_chg > 2:
+            summary = "Позитивный день для крипты. BTC держит импульс, альты следуют за лидером."
+        elif btc_chg < -2:
+            summary = "Давление продавцов сохраняется. Ключевые уровни поддержки под угрозой."
+        else:
+            summary = "Боковое движение. Рынок в нерешительности — ждём триггера от макро или новостей."
+    lines = [
+        f"🌆 <b>Вечерний срез · {weekday} {today}</b>",
+        f"",
+        "\n".join(lines_p) if lines_p else "⏳ данные загружаются",
+        f"",
+        f"{fg_emoji} F&G: <code>{fg_val}</code> — {fg_cls}",
+        f"",
+        f"<i>{summary}</i>",
+        f"",
+        f"#крипто #bitcoin #вечер",
+    ]
+    return "\n".join(lines)
+
+
+async def post_digest_to_channel(evening: bool = False) -> bool:
+    """v10.15.2: Постит дайджест (утро) или срез (вечер) в канал."""
     if not DIGEST_CHANNEL_ID:
         log_activity("[digest] DIGEST_CHANNEL_ID не задан — пропуск")
         return False
     try:
-        text = await generate_crypto_digest()
+        text = await generate_evening_snapshot() if evening else await generate_crypto_digest()
         url  = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         async with aiohttp.ClientSession() as s:
             r = await s.post(url, json={
@@ -11633,7 +11687,8 @@ async def post_digest_to_channel() -> bool:
             }, timeout=aiohttp.ClientTimeout(total=15))
             data = await r.json()
         if data.get("ok"):
-            log_activity(f"[digest] ✅ posted to {DIGEST_CHANNEL_ID}")
+            label = "вечерний срез" if evening else "утренний дайджест"
+            log_activity(f"[digest] ✅ {label} опубликован в {DIGEST_CHANNEL_ID}")
             return True
         else:
             log_activity(f"[digest] ❌ Telegram error: {data.get('description','?')}")
@@ -11644,22 +11699,30 @@ async def post_digest_to_channel() -> bool:
 
 
 async def crypto_digest_loop():
-    """v10.15.0: Ежедневный постинг дайджеста в DIGEST_HOUR_UTC (по умолчанию 6 UTC = 9 МСК)."""
+    """v10.15.2: Постинг дайджеста 2 раза в день — утро (DIGEST_HOUR_UTC) и вечер (DIGEST_HOUR_UTC_2)."""
     import datetime as _dt
     await asyncio.sleep(60)  # дать серверу стартовать
-    log_activity(f"[digest] loop started — будет постить в {DIGEST_HOUR_UTC}:00 UTC каждый день")
-    posted_today: str = ""
+    log_activity(f"[digest] loop started — посты в {DIGEST_HOUR_UTC}:00 UTC (утро) и {DIGEST_HOUR_UTC_2}:00 UTC (вечер)")
+    posted_slots: set = set()  # "YYYY-MM-DD-morning" / "YYYY-MM-DD-evening"
     while True:
         try:
             if DIGEST_ENABLED and DIGEST_CHANNEL_ID:
                 now_utc = _dt.datetime.utcnow()
                 today_str = now_utc.strftime("%Y-%m-%d")
-                # Постить один раз в день в нужный час
-                if now_utc.hour == DIGEST_HOUR_UTC and posted_today != today_str:
-                    log_activity(f"[digest] 🌅 запускаем ежедневный дайджест")
+                # Утренний дайджест
+                if now_utc.hour == DIGEST_HOUR_UTC and f"{today_str}-morning" not in posted_slots:
+                    log_activity(f"[digest] 🌅 утренний дайджест")
                     ok = await post_digest_to_channel()
                     if ok:
-                        posted_today = today_str
+                        posted_slots.add(f"{today_str}-morning")
+                # Вечерний срез
+                if now_utc.hour == DIGEST_HOUR_UTC_2 and f"{today_str}-evening" not in posted_slots:
+                    log_activity(f"[digest] 🌆 вечерний срез рынка")
+                    ok = await post_digest_to_channel(evening=True)
+                    if ok:
+                        posted_slots.add(f"{today_str}-evening")
+                # Чистим старые слоты (оставляем только сегодня)
+                posted_slots = {s for s in posted_slots if s.startswith(today_str)}
         except Exception as e:
             log_activity(f"[digest] loop error: {e}")
         await asyncio.sleep(300)  # проверяем каждые 5 минут
