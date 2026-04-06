@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.19.0")
+app = FastAPI(title="QuantumTrade AI", version="10.19.3")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -2359,7 +2359,7 @@ async def bybit_dci_place_order(
         "category": "DualAssets",
         "productId": str(product_id),
         "coin": coin,
-        "amount": str(round(amount, 2)),  # v10.11.4: 2 decimal places — ByBit rejects >2 (purchase_share_decimal precision error)
+        "amount": f"{amount:.2f}",  # v10.19.3: always 2 decimal places e.g. "20.00" not "20.0" — ByBit strict format
         "orderType": "Stake",            # top-level, like FlexibleSaving
         "accountType": "FUND",           # required
         "orderLinkId": order_link_id,
@@ -2724,6 +2724,7 @@ async def dci_auto_place_idle() -> dict:
                         log_activity(f"[dci] UNIFIED→FUND transfer failed: {tr.get('error','?')}")
                 else:
                     log_activity(f"[dci] FUND=${fund_usdt:.2f} sufficient, no transfer needed")
+                    usdt_free = fund_usdt  # v10.19.3: DCI debits from FUND, use FUND balance for capital
             except Exception as _tr_e:
                 log_activity(f"[dci] UNIFIED→FUND check error: {_tr_e}")
 
@@ -14675,7 +14676,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.19.0",
+        "version": "10.19.3",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -15647,7 +15648,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.19.0",
+        "version": "10.19.3",
     }
 
 @app.get("/api/setup-webhook")
@@ -15858,7 +15859,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.19.0",
+        "version": "10.19.3",
     }
 
 @app.get("/api/dashboard")
