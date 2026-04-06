@@ -4144,9 +4144,14 @@ async def yield_router_v2_get_deployed() -> dict:
             if deployed["earn_usdt"] > 0:
                 deployed["current_product"] = "ByBit/KuCoin Flex Earn"
                 if _earn_positions:
-                    aprs = [float(p.get("apr", 0)) for p in _earn_positions if p.get("apr")]
+                    # APR может быть decimal (0.13) или percentage (13.0) — нормализуем
+                    aprs = []
+                    for p in _earn_positions:
+                        apr_raw = float(p.get("apr", 0))
+                        if apr_raw > 0:
+                            aprs.append(apr_raw if apr_raw >= 1 else apr_raw * 100)
                     if aprs:
-                        deployed["current_apy"] = round(max(aprs) * 100, 2)
+                        deployed["current_apy"] = round(max(aprs), 2)
 
         deployed["total_deployed"] = round(deployed["lending_usdt"] + deployed["earn_usdt"], 2)
         deployed["total_free"]     = round(deployed["free_kucoin"] + deployed["free_bybit"], 2)
@@ -4478,16 +4483,19 @@ async def portfolio_ai_analyze(snap: dict) -> str:
             dci_apy   = max((float(p.get("apy_pct", 0)) for p in dci_positions), default=0)
             dci_summary = f"• ByBit DCI активен: ${dci_total:.2f} под {dci_apy:.0f}% APY — НЕ трогать!\n"
 
-        # ── 4. KuCoin Earn позиции (BTC в DCI) ───────────────────────────────
+        # ── 4. KuCoin/ByBit Earn позиции (включая структурные продукты) ─────────
         kc_earn_summary = ""
         if _earn_positions:
             for pos in _earn_positions:
                 amt  = float(pos.get("amount", 0))
-                apr  = float(pos.get("apr", 0)) * 100
+                # APR может быть decimal (0.13) или percentage (13.0) — нормализуем
+                apr_raw = float(pos.get("apr", 0))
+                apr  = apr_raw if apr_raw >= 1 else apr_raw * 100
                 coin = pos.get("coin", "?")
                 exch = pos.get("exchange", "?")
                 if amt > 0:
-                    kc_earn_summary += f"• {exch} Earn: {coin} ${amt:.2f} под {apr:.1f}% APY\n"
+                    apy_str = f"{apr:.0f}% APY" if apr > 0 else "APY загружается"
+                    kc_earn_summary += f"• {exch} Earn: {coin} ${amt:.2f} под {apy_str}\n"
 
         # ── 5. Lending позиции ────────────────────────────────────────────────
         lending_summary = ""
@@ -4505,8 +4513,24 @@ async def portfolio_ai_analyze(snap: dict) -> str:
         mf_block = "\n".join(mf_opinions) if mf_opinions else "агенты недоступны"
 
         # ── 7. Финальный промт с полным контекстом ────────────────────────────
+        # Дополнительный контекст: если Earn позиции с высоким APY — отметить явно
+        high_apy_earn_note = ""
+        if _earn_positions:
+            max_earn_apy = 0.0
+            for _p in _earn_positions:
+                _ar = float(_p.get("apr", 0))
+                _ar_pct = _ar if _ar >= 1 else _ar * 100
+                if _ar_pct > max_earn_apy:
+                    max_earn_apy = _ar_pct
+            if max_earn_apy > 20:
+                high_apy_earn_note = (
+                    f"\n⚠️ ВАЖНО: KuCoin Earn позиции являются СТРУКТУРНЫМИ продуктами "
+                    f"(аналог DCI/Dual Investment) с APY {max_earn_apy:.0f}%+. "
+                    f"Это ЗАБЛОКИРОВАННЫЙ капитал как DCI — НЕ рекомендуй менять на стандартный стейкинг 3-5%!"
+                )
+
         prompt = (
-            f"Ты — крипто-фонд менеджер с 15-летним опытом. Управляешь портфелем ${total:.0f}.\n\n"
+            f"Ты — крипто-фонд менеджер с 15-летним опытом. Управляешь портфелем ${total:.0f}.{high_apy_earn_note}\n\n"
             f"АКТИВНЫЕ ПРОДУКТЫ (уже работают — учти это!):\n"
             f"{dci_summary}{kc_earn_summary}{lending_summary}"
             f"• Свободные монеты: {coins_summary}\n"
@@ -4518,7 +4542,7 @@ async def portfolio_ai_analyze(snap: dict) -> str:
             f"• DXY: {macro.get('dxy','—')}, S&P500: {macro.get('sp500','—')}\n\n"
             f"МНЕНИЯ AI-АГЕНТОВ СИСТЕМЫ:\n{mf_block}\n\n"
             f"Дай 3-4 КОНКРЕТНЫХ рекомендации с учётом уже активных продуктов. "
-            f"Если DCI/Earn уже работает хорошо — подтверди это, не предлагай менять. "
+            f"Если DCI/Earn уже работает на высоком APY — подтверди и похвали, не предлагай менять. "
             f"Фокус на свободных средствах и оптимизации. Каждый пункт с эмодзи, без вступлений."
         )
 
@@ -4577,7 +4601,15 @@ async def _tg_portfolio(chat_id: int):
         lines.append(f"  🪙 Монеты (спот):    <code>{alloc.get('coins_trading',0):.1f}%</code> — ${snap['usdt_trading']:.2f}")
         if snap.get("usdt_dci", 0) > 0:
             lines.append(f"  🎯 DCI (locked):     <code>{alloc.get('dci',0):.1f}%</code> — ${snap['usdt_dci']:.2f} @ {snap.get('dci_apy',0):.0f}% APY ✨")
-        lines.append(f"  💰 Earn/Lending:     <code>{alloc.get('earn_lending',0):.1f}%</code> — ${snap['usdt_earn'] + snap['usdt_lending']:.2f}")
+        # Earn строка: показываем APY если позиции есть
+        _earn_apy_parts = []
+        for _p in _earn_positions:
+            _ar = float(_p.get("apr", 0))
+            _ar_pct = _ar if _ar >= 1 else _ar * 100
+            if _ar_pct > 0:
+                _earn_apy_parts.append(f"{_ar_pct:.0f}%")
+        _earn_apy_str = f" @ {'/'.join(set(_earn_apy_parts))} APY ✨" if _earn_apy_parts else ""
+        lines.append(f"  💰 Earn/Lending:     <code>{alloc.get('earn_lending',0):.1f}%</code> — ${snap['usdt_earn'] + snap['usdt_lending']:.2f}{_earn_apy_str}")
         lines.append(f"  📉 Фьючерсы:         <code>{alloc.get('futures',0):.1f}%</code> — ${snap['usdt_futures']:.2f}")
         lines.append(f"  😴 Idle USDT:        <code>{alloc.get('idle',0):.1f}%</code> — ${snap['total_usdt_idle']:.2f}")
         lines.append(f"")
@@ -4597,9 +4629,22 @@ async def _tg_portfolio(chat_id: int):
             if amt > 0:
                 lines.append(f"  {'🔵' if exch=='kucoin' else '🟡'} {exch}: <code>${amt:.2f}</code> свободно")
         if snap["usdt_earn"] > 0:
-            lines.append(f"  📦 Earn: <code>${snap['usdt_earn']:.2f}</code>")
+            # Показываем детали каждой earn позиции с APY
+            if _earn_positions:
+                for _ep in _earn_positions:
+                    _ep_amt = float(_ep.get("amount", 0))
+                    _ep_apr = float(_ep.get("apr", 0))
+                    _ep_apy = _ep_apr if _ep_apr >= 1 else _ep_apr * 100
+                    _ep_exch = "🔵" if _ep.get("exchange") == "kucoin" else "🟡"
+                    _apy_tag = f" @ <b>{_ep_apy:.0f}%</b> APY" if _ep_apy > 0 else ""
+                    if _ep_amt > 0:
+                        lines.append(f"  {_ep_exch} Earn: <code>${_ep_amt:.2f}</code>{_apy_tag}")
+            else:
+                lines.append(f"  📦 Earn: <code>${snap['usdt_earn']:.2f}</code>")
         if snap["usdt_lending"] > 0:
-            lines.append(f"  🏦 Lending: <code>${snap['usdt_lending']:.2f}</code>")
+            _lend_apr = max((float(p.get("apr", 0)) for p in _lending_positions), default=0)
+            _lend_tag = f" @ <b>{_lend_apr:.1f}%</b> APR" if _lend_apr > 0 else ""
+            lines.append(f"  🏦 Lending: <code>${snap['usdt_lending']:.2f}</code>{_lend_tag}")
         lines.append(f"")
 
         # AI советы
