@@ -1839,9 +1839,12 @@ DIGEST_HOUR_UTC_2  = int(os.getenv("DIGEST_HOUR_UTC_2", "15")) # 15 UTC = 18 MSK
 
 LENDING_ENABLED       = os.getenv("LENDING_ENABLED",     "false").lower() == "true"
 LENDING_MIN_APR       = float(os.getenv("LENDING_MIN_APR",  "10.0"))   # % APR threshold
-LENDING_MAX_USDT      = float(os.getenv("LENDING_MAX_USDT", "80.0"))   # max USDT to lend (v10.20.0: raised 30→80 for $100 balance)
+LENDING_MAX_USDT      = float(os.getenv("LENDING_MAX_USDT", "100.0"))  # max USDT to lend (v10.20.5: raised 80→100)
 LENDING_TERM_DAYS     = int(os.getenv("LENDING_TERM_DAYS",  "7"))      # 7 or 14 days
 LENDING_AUTO_RENEW    = os.getenv("LENDING_AUTO_RENEW",  "true").lower() == "true"
+# v10.20.5: KC Flex Earn → Lending rebalancer
+# Keep only KC_FLEX_EARN_BUFFER_USDT in Flex (instant liquidity), rest → Lending (10-50% APR)
+KC_FLEX_EARN_BUFFER_USDT = float(os.getenv("KC_FLEX_EARN_BUFFER_USDT", "15.0"))
 
 # ── Yield Router v2 Auto-Rotation (v10.16.0) ─────────────────────────────────
 YROUTER_AUTO_ENABLED        = os.getenv("YROUTER_AUTO_ENABLED",        "false").lower() == "true"
@@ -2041,6 +2044,147 @@ async def kucoin_lending_auto_place() -> dict:
         "apr": apr, "deploy": deploy,
         "error": res.get("error"),
     }
+
+
+async def kc_flex_to_lending_rebalance() -> dict:
+    """v10.20.5: Rebalancer — moves excess KuCoin Flex Earn → KuCoin Lending.
+
+    Strategy: Keep only KC_FLEX_EARN_BUFFER_USDT in Flex (instant liquidity
+    for BUY orders). Anything above buffer → redeem → auto-place in Lending
+    at 10-50% APR (vs Flex 0.7% APY). Net effect: idle capital starts earning.
+
+    Called: earn_monitor_loop every 4th cycle (~60 min), and /rebalance cmd.
+    Safety: never redeems below KC_FLEX_EARN_BUFFER_USDT. Never runs if Lending
+    already has active orders (would double-count capital)."""
+    if not LENDING_ENABLED or not EARN_ENABLED:
+        return {"action": "disabled", "reason": "LENDING_ENABLED or EARN_ENABLED=false"}
+
+    # Measure KC Flex Earn balance from _earn_positions cache
+    kc_flex_positions = [
+        p for p in _earn_positions
+        if p.get("exchange") == "kucoin" and p.get("coin") == "USDT"
+    ]
+    kc_flex_total = sum(float(p.get("amount", 0)) for p in kc_flex_positions)
+    log_activity(f"[rebalance] KC Flex Earn: ${kc_flex_total:.2f}, buffer target=${KC_FLEX_EARN_BUFFER_USDT:.0f}")
+
+    # Skip if nothing meaningful to rebalance (hysteresis: only act if >$10 excess)
+    excess = kc_flex_total - KC_FLEX_EARN_BUFFER_USDT
+    if excess < 10.0:
+        return {"action": "no_action", "flex_total": kc_flex_total,
+                "buffer": KC_FLEX_EARN_BUFFER_USDT, "excess": excess}
+
+    # Check if Lending already has active orders — if yes, don't interfere
+    active_lending = await kucoin_lending_get_active_orders("USDT")
+    if active_lending:
+        return {"action": "lending_active", "orders": len(active_lending),
+                "flex_total": kc_flex_total,
+                "reason": "Lending already active, skip rebalance"}
+
+    # Find position to redeem from
+    redeem_amount = min(round(excess, 2), LENDING_MAX_USDT)
+    redeemed = 0.0
+    for pos in list(kc_flex_positions):
+        if redeemed >= redeem_amount:
+            break
+        pos_amount = float(pos.get("amount", 0))
+        to_redeem = round(min(pos_amount, redeem_amount - redeemed), 2)
+        if to_redeem < 1.0:
+            continue
+        res = await kucoin_earn_redeem(pos.get("order_id", ""), to_redeem)
+        if res.get("success"):
+            redeemed += to_redeem
+            log_activity(f"[rebalance] ✅ redeemed ${to_redeem:.2f} KC Flex → free USDT")
+        else:
+            log_activity(f"[rebalance] ⚠️ redeem failed: {res.get('error','?')}")
+            break
+
+    if redeemed < 1.0:
+        return {"action": "redeem_failed", "flex_total": kc_flex_total}
+
+    # Wait for funds to settle, then place in Lending
+    await asyncio.sleep(3)
+    lend_res = await kucoin_lending_auto_place()
+    placed = lend_res.get("action") == "placed"
+    apr = lend_res.get("apr", 0)
+    log_activity(
+        f"[rebalance] KC Flex→Lending: redeemed=${redeemed:.2f} "
+        f"lending={'placed' if placed else 'failed'} APR={apr:.1f}%"
+    )
+
+    if placed and ALERT_CHAT_ID:
+        await _tg_send(int(ALERT_CHAT_ID),
+            f"⚡ <b>Авторебаланс: KC Flex→Lending</b>\n\n"
+            f"Было в Flex Earn: <code>${kc_flex_total:.2f}</code> @ 0.7% APY\n"
+            f"Буфер оставлен: <code>${KC_FLEX_EARN_BUFFER_USDT:.0f}</code>\n"
+            f"Переведено: <code>${redeemed:.2f}</code> → Lending @ <code>{apr:.1f}%</code> APR\n\n"
+            f"<i>Каждый доллар теперь работает эффективнее</i>"
+        )
+
+    return {
+        "action": "rebalanced" if placed else "redeem_ok_lending_failed",
+        "redeemed": redeemed, "apr": apr,
+        "flex_before": kc_flex_total,
+        "flex_after": kc_flex_total - redeemed,
+    }
+
+
+async def _tg_rebalance(chat_id: int):
+    """v10.20.5: /rebalance — Force KC Flex→Lending rebalance + show allocation."""
+    await _tg_send(chat_id, "⚡ <i>Анализирую распределение капитала...</i>")
+    try:
+        # Run rebalance
+        rb = await kc_flex_to_lending_rebalance()
+        action = rb.get("action", "unknown")
+
+        # Build report
+        kc_flex_after = rb.get("flex_after", rb.get("flex_before", 0))
+        redeemed = rb.get("redeemed", 0)
+        apr = rb.get("apr", 0)
+        flex_before = rb.get("flex_before", 0)
+
+        if action == "rebalanced":
+            status_line = (
+                f"✅ <b>Ребаланс выполнен!</b>\n"
+                f"Flex было: <code>${flex_before:.2f}</code> → <code>${kc_flex_after:.2f}</code>\n"
+                f"Переведено: <code>${redeemed:.2f}</code> → Lending @ <code>{apr:.1f}%</code> APR"
+            )
+        elif action == "no_action":
+            excess = rb.get("excess", 0)
+            status_line = (
+                f"ℹ️ <b>Ребаланс не нужен</b>\n"
+                f"KC Flex: <code>${flex_before:.2f}</code>, буфер: <code>${KC_FLEX_EARN_BUFFER_USDT:.0f}</code>\n"
+                f"Излишек: <code>${excess:.2f}</code> (порог $10)"
+            )
+        elif action == "lending_active":
+            status_line = (
+                f"ℹ️ <b>Lending уже активен</b> ({rb.get('orders',0)} ордер(а))\n"
+                f"KC Flex: <code>${flex_before:.2f}</code>"
+            )
+        elif action == "disabled":
+            status_line = f"⚠️ LENDING_ENABLED или EARN_ENABLED = false в Railway"
+        else:
+            status_line = f"⚠️ <code>{action}</code>"
+
+        # Current allocation summary
+        kc_lending_total = sum(float(p.get("size", p.get("amount", 0))) for p in _lending_positions)
+        kc_flex_now = sum(float(p.get("amount", 0)) for p in _earn_positions
+                         if p.get("exchange") == "kucoin" and p.get("coin") == "USDT")
+        bb_flex_now = sum(float(p.get("amount", 0)) for p in _earn_positions
+                         if p.get("exchange") == "bybit" and p.get("coin") == "USDT")
+
+        await _tg_send(chat_id,
+            f"⚡ <b>Ребаланс капитала</b>\n\n"
+            f"{status_line}\n\n"
+            f"<b>Текущее распределение:</b>\n"
+            f"🏦 KC Lending: <code>${kc_lending_total:.2f}</code>\n"
+            f"💰 KC Flex Earn: <code>${kc_flex_now:.2f}</code>\n"
+            f"💰 BB Flex Earn: <code>${bb_flex_now:.2f}</code>\n\n"
+            f"<i>Буфер KC Flex: ${KC_FLEX_EARN_BUFFER_USDT:.0f} USDT (для мгновенных BUY ордеров)</i>\n"
+            f"📌 /balance | /lending | /yrouter"
+        )
+    except Exception as e:
+        log_activity(f"[tg] rebalance error: {e}")
+        await _tg_send(chat_id, f"❌ Ошибка ребаланса: {e}")
 
 
 async def _tg_lending(chat_id: int):
@@ -4012,6 +4156,17 @@ async def earn_monitor_loop():
                             log_activity(f"[lending] auto_place: {lend_res}")
                     except Exception as lend_e:
                         log_activity(f"[lending] auto_place error: {lend_e}")
+
+                # v10.20.5: KC Flex→Lending rebalancer — every 4th cycle (~1 hour)
+                # Moves excess Flex Earn capital (above KC_FLEX_EARN_BUFFER_USDT=$15) into Lending
+                # Flex APY 0.7% << Lending APR 10-50% — idle capital should not sleep in Flex
+                if LENDING_ENABLED and EARN_ENABLED and _earn_stats.get("_dci_cycle", 0) % 4 == 0:
+                    try:
+                        rb_res = await kc_flex_to_lending_rebalance()
+                        if rb_res.get("action") not in ("no_action", "disabled", "lending_active"):
+                            log_activity(f"[rebalance] kc_flex→lending: {rb_res}")
+                    except Exception as rb_e:
+                        log_activity(f"[rebalance] error: {rb_e}")
 
                 # v10.18.0: Gate.io Lending — every 4th cycle (~1 hour)
                 if GATE_LENDING_ENABLED and _earn_stats.get("_dci_cycle", 0) % 4 == 0:
@@ -12804,6 +12959,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/dci":                 await _tg_dci(chat_id)
         elif cmd == "/dciplace":            await _tg_dci_place(chat_id)
         elif cmd == "/lending":             await _tg_lending(chat_id)
+        elif cmd == "/rebalance":           await _tg_rebalance(chat_id)
         elif cmd == "/gate":                await _tg_gate(chat_id)
         elif cmd == "/snowball":            await _tg_snowball(chat_id)
         elif cmd == "/yrouter":             await _tg_yield_router(chat_id)
@@ -14968,7 +15124,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.20.4",
+        "version": "10.20.5",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -15941,7 +16097,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.20.4",
+        "version": "10.20.5",
     }
 
 @app.get("/api/setup-webhook")
@@ -16152,7 +16308,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.20.4",
+        "version": "10.20.5",
     }
 
 @app.get("/api/dashboard")
