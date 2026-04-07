@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.20.1")
+app = FastAPI(title="QuantumTrade AI", version="10.20.2")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -12674,20 +12674,18 @@ async def telegram_notify(req: TelegramNotifyRequest, _: str = Depends(verify_ap
 async def telegram_callback(req: TelegramUpdate, request: Request):
     global MIN_Q_SCORE, COOLDOWN, AUTOPILOT, SYSTEM_PAUSED, _pause_ts, _pause_reason
 
-    # v10.19.9 C-1: Validate Telegram webhook secret (X-Telegram-Bot-Api-Secret-Token header)
-    # Previously removed because it "blocked all messages" — real cause was misconfigured Railway var.
-    # Now: if TG_WEBHOOK_SECRET is set → enforce; if not set → allow but warn (backward compat)
+    # v10.20.2: TG_WEBHOOK_SECRET — warn-only, never block.
+    # History: was enforced in v10.19.9 → same bug as always: Telegram doesn't send the header
+    # unless the webhook was registered WITH the secret via /api/setup-webhook. If TG_WEBHOOK_SECRET
+    # exists in Railway but webhook wasn't re-registered, ALL messages are silently dropped.
+    # Fix: log mismatch as warning, but always continue processing. Security = ADMIN_CHAT_IDS whitelist.
     if TG_WEBHOOK_SECRET:
         tg_secret_hdr = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
         if tg_secret_hdr != TG_WEBHOOK_SECRET:
-            log_activity(f"[webhook] ⛔ Invalid secret from {request.client.host if request.client else '?'} — rejected")
-            return {"ok": True}  # Return 200 so Telegram doesn't retry endlessly
-    else:
-        # No secret configured — log warning once per restart (not every message)
-        global _webhook_no_secret_warned
-        if not _webhook_no_secret_warned:
-            log_activity("[webhook] ⚠️ TG_WEBHOOK_SECRET not set — webhook is unprotected! Set it in Railway Variables.")
-            _webhook_no_secret_warned = True
+            global _webhook_no_secret_warned
+            if not _webhook_no_secret_warned:
+                log_activity("[webhook] ⚠️ TG_WEBHOOK_SECRET mismatch — call POST /api/setup-webhook to register. Processing anyway.")
+                _webhook_no_secret_warned = True
 
     # v10.19.9: Deduplicate by update_id (Telegram retries failed updates with the same ID)
     if req.update_id:
@@ -14933,7 +14931,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.20.1",
+        "version": "10.20.2",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -15905,7 +15903,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.20.1",
+        "version": "10.20.2",
     }
 
 @app.get("/api/setup-webhook")
@@ -16116,7 +16114,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.20.1",
+        "version": "10.20.2",
     }
 
 @app.get("/api/dashboard")
