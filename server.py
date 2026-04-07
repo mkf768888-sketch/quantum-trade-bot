@@ -1838,7 +1838,7 @@ DIGEST_HOUR_UTC    = int(os.getenv("DIGEST_HOUR_UTC", "6"))   # 6 UTC = 9 MSK �
 DIGEST_HOUR_UTC_2  = int(os.getenv("DIGEST_HOUR_UTC_2", "15")) # 15 UTC = 18 MSK — вечерний срез
 
 LENDING_ENABLED       = os.getenv("LENDING_ENABLED",     "false").lower() == "true"
-LENDING_MIN_APR       = float(os.getenv("LENDING_MIN_APR",  "10.0"))   # % APR threshold
+LENDING_MIN_APR       = float(os.getenv("LENDING_MIN_APR",   "5.0"))   # % APR threshold (v10.20.7: 10→5, low F&G reduces demand/rates)
 LENDING_MAX_USDT      = float(os.getenv("LENDING_MAX_USDT", "100.0"))  # max USDT to lend (v10.20.5: raised 80→100)
 LENDING_TERM_DAYS     = int(os.getenv("LENDING_TERM_DAYS",  "7"))      # 7 or 14 days
 LENDING_AUTO_RENEW    = os.getenv("LENDING_AUTO_RENEW",  "true").lower() == "true"
@@ -2153,10 +2153,21 @@ async def _tg_rebalance(chat_id: int):
         action = rb.get("action", "unknown")
 
         # Build report
-        kc_flex_after = rb.get("flex_after", rb.get("flex_before", 0))
+        # v10.20.7: use "flex_total" as fallback for "flex_before" (no_action returns flex_total)
+        kc_flex_after = rb.get("flex_after", rb.get("flex_total", rb.get("flex_before", 0)))
         redeemed = rb.get("redeemed", 0)
         apr = rb.get("apr", 0)
-        flex_before = rb.get("flex_before", 0)
+        flex_before = rb.get("flex_before", rb.get("flex_total", 0))
+
+        # Also show KC Trading free balance for context
+        try:
+            _kc_bal = await get_balance()
+            _kc_trading_free = sum(
+                float(a.get("available", 0)) for a in _kc_bal.get("accounts", [])
+                if a.get("currency") == "USDT" and a.get("type") in ("trade", "main")
+            ) if _kc_bal.get("success") else 0
+        except Exception:
+            _kc_trading_free = 0
 
         if action == "rebalanced":
             status_line = (
@@ -2169,7 +2180,8 @@ async def _tg_rebalance(chat_id: int):
             status_line = (
                 f"ℹ️ <b>Ребаланс не нужен</b>\n"
                 f"KC Flex: <code>${flex_before:.2f}</code>, буфер: <code>${KC_FLEX_EARN_BUFFER_USDT:.0f}</code>\n"
-                f"Излишек: <code>${excess:.2f}</code> (порог $10)"
+                f"KC Trading (свободно): <code>${_kc_trading_free:.2f}</code>\n"
+                f"Излишек Flex: <code>${excess:.2f}</code> (порог $10)"
             )
         elif action == "lending_active":
             status_line = (
@@ -15173,7 +15185,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.20.6",
+        "version": "10.20.7",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -16146,7 +16158,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.20.6",
+        "version": "10.20.7",
     }
 
 @app.get("/api/setup-webhook")
@@ -16357,7 +16369,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.20.6",
+        "version": "10.20.7",
     }
 
 @app.get("/api/dashboard")
