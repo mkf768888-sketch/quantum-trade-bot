@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.20.2")
+app = FastAPI(title="QuantumTrade AI", version="10.20.3")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -3817,6 +3817,23 @@ async def earn_monitor_loop():
                         earned = s.get("est_earnings_usdt", 0)
                         # Telegram push notification on settlement
                         if ALERT_CHAT_ID:
+                            # v10.20.3: fetch current coin price to show real value
+                            coin_line = ""
+                            if direction == "BuyLow" and coin and coin != "USDT":
+                                try:
+                                    coin_price = await bybit_get_ticker(f"{coin}USDT")
+                                    if coin_price > 0:
+                                        # estimate coins received: invested / strike_price ≈ invested / current_price
+                                        # (exact amount is on ByBit; this is a good estimate)
+                                        coin_qty_est = round(amount / coin_price, 4)
+                                        coin_usd = round(coin_qty_est * coin_price, 2)
+                                        coin_line = (
+                                            f"\n<b>Получено ~:</b> <code>{coin_qty_est} {coin}</code>"
+                                            f" = <b>${coin_usd:.2f}</b>"
+                                            f" (${coin_price:.4f}/{coin})"
+                                        )
+                                except Exception:
+                                    pass
                             await _tg_send(int(ALERT_CHAT_ID),
                                 f"🏁 <b>DCI позиция закрыта!</b>\n\n"
                                 f"<b>Тип:</b> {direction}\n"
@@ -3824,7 +3841,8 @@ async def earn_monitor_loop():
                                 f"<b>Вложено:</b> <code>${amount:.2f}</code>\n"
                                 f"<b>APY:</b> <code>{apy:.2f}%</code>\n"
                                 f"<b>Держали:</b> {days} дней\n"
-                                f"<b>Доход (оценка):</b> <code>${earned:.4f}</code>\n\n"
+                                f"<b>Доход (оценка):</b> <code>${earned:.4f}</code>"
+                                f"{coin_line}\n\n"
                                 f"📌 /dci — подробности"
                             )
                         # v10.19.5 Wave5A: post DCI result to public channel (social proof)
@@ -11636,10 +11654,22 @@ async def _tg_dci(chat_id: int):
             h_apy = h.get("apy_pct", 0)
             h_days = h.get("days_held", "?")
             h_earn = h.get("est_earnings_usdt", 0)
+            # v10.20.3: show coin amount received + current USD value
+            h_coin_qty = h.get("coin_received_qty", 0)
+            coin_val_str = ""
+            if h_coin_qty and h_coin != "USDT":
+                try:
+                    coin_price = await bybit_get_ticker(f"{h_coin}USDT")
+                    if coin_price > 0:
+                        coin_usd = round(h_coin_qty * coin_price, 2)
+                        coin_val_str = f"\n    💎 Получено: <code>{h_coin_qty:.4f} {h_coin}</code> = <b>${coin_usd:.2f}</b> (${coin_price:.4f}/{h_coin})"
+                except Exception:
+                    pass
             lines.append(
                 f"  ✅ {h_dir} ${h_amt:.2f} {h_coin} "
                 f"({h_days}д, APY={h_apy:.1f}%) "
                 f"+${h_earn:.4f}"
+                f"{coin_val_str}"
             )
 
     # Session stats
@@ -14931,7 +14961,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.20.2",
+        "version": "10.20.3",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -15805,22 +15835,23 @@ async def agency_run_cycle() -> dict:
     }
 
 async def db_cleanup_loop():
-    """v10.9.5: Daily cleanup of high-volume tables to prevent Railway volume growth.
-    Runs 6h after startup (let data accumulate first), then every 24h.
-    At 77% capacity with 500MB volume — this is urgent."""
-    await asyncio.sleep(6 * 3600)  # first run after 6h
+    """v10.20.3: Cleanup high-volume tables to prevent Railway Postgres disk overflow.
+    First run: 30 min after startup (urgent — was 6h).
+    Then: every 6h (was 24h — too rare for fast-growing tables).
+    """
+    await asyncio.sleep(30 * 60)  # v10.20.3: first run after 30 min (was 6h)
     while True:
         try:
             deleted = await db.cleanup_old_data()
             total = sum(deleted.values())
+            sizes = await db.get_table_sizes()
+            size_str = " | ".join(f"{t}: {v['rows']}r {v['size']}" for t, v in list(sizes.items())[:5])
+            print(f"[db_cleanup] 🧹 удалено {total} строк. {size_str}", flush=True)
             if total > 0:
-                sizes = await db.get_table_sizes()
-                size_str = " | ".join(f"{t}: {v['rows']}r {v['size']}" for t, v in sizes.items())
-                print(f"[db_cleanup] 🧹 удалено {total} строк. Таблицы: {size_str}", flush=True)
-                await notify(f"🧹 <b>DB Cleanup</b>: удалено {total} строк\n{chr(10).join(f'  {k}: -{v}' for k, v in deleted.items() if v > 0)}")
+                await notify(f"🧹 <b>DB Cleanup</b>: -{total} строк\n{chr(10).join(f'  {k}: -{v}' for k, v in deleted.items() if v > 0)}\n{size_str}")
         except Exception as e:
             print(f"[db_cleanup] error: {e}", flush=True)
-        await asyncio.sleep(24 * 3600)  # every 24h
+        await asyncio.sleep(6 * 3600)  # v10.20.3: every 6h (was 24h)
 
 
 async def agency_agent_loop():
@@ -15903,7 +15934,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.20.2",
+        "version": "10.20.3",
     }
 
 @app.get("/api/setup-webhook")
@@ -16114,7 +16145,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.20.2",
+        "version": "10.20.3",
     }
 
 @app.get("/api/dashboard")
@@ -16366,6 +16397,21 @@ async def toggle_autopilot(state: str, _auth=Depends(verify_api_key)):  # v8.3.0
     AUTOPILOT = state.lower() in ("on", "true", "1", "yes")
     await notify(f"⚙️ Автопилот {'включён ✅' if AUTOPILOT else 'выключен 🔴'} (Mini App)")
     return {"autopilot": AUTOPILOT, "ok": True}
+
+@app.post("/api/db/cleanup")
+async def api_db_cleanup(_auth=Depends(verify_api_key)):
+    """v10.20.3: Trigger DB cleanup manually. Returns deleted rows + table sizes."""
+    deleted = await db.cleanup_old_data()
+    sizes = await db.get_table_sizes()
+    total = sum(deleted.values())
+    return {"ok": True, "deleted_rows": total, "by_table": deleted, "sizes": sizes}
+
+@app.get("/api/db/sizes")
+async def api_db_sizes(_auth=Depends(verify_api_key)):
+    """v10.20.3: Show PostgreSQL table sizes (disk usage diagnostics)."""
+    sizes = await db.get_table_sizes()
+    total_rows = sum(v["rows"] for v in sizes.values())
+    return {"ok": True, "tables": sizes, "total_rows": total_rows}
 
 @app.websocket("/ws/live")
 async def ws_live(websocket: WebSocket, token: str = None):

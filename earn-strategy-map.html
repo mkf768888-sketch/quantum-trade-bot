@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>QuantumTrade — Карта Earn-стратегий</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: #0d1117; color: #e6edf3; padding: 24px; }
+  h1 { font-size: 22px; color: #58a6ff; margin-bottom: 6px; }
+  .subtitle { color: #8b949e; font-size: 13px; margin-bottom: 32px; }
+
+  /* SECTION */
+  .section { margin-bottom: 40px; }
+  .section-title { font-size: 16px; font-weight: 700; color: #f0f6fc; border-left: 3px solid #58a6ff; padding-left: 10px; margin-bottom: 18px; }
+
+  /* PRODUCT CARDS */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 18px; position: relative; }
+  .card.active { border-color: #238636; }
+  .card.partial { border-color: #9e6a03; }
+  .card.missing { border-color: #6e40c9; opacity: 0.75; }
+
+  .badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; margin-bottom: 8px; }
+  .badge.green { background: #1a4731; color: #3fb950; }
+  .badge.yellow { background: #3d2100; color: #e3b341; }
+  .badge.blue { background: #1c2d4d; color: #58a6ff; }
+  .badge.purple { background: #2d1f47; color: #bc8cff; }
+  .badge.red { background: #3d1c1c; color: #f85149; }
+
+  .card-title { font-size: 15px; font-weight: 700; color: #f0f6fc; margin-bottom: 4px; }
+  .card-exchange { font-size: 12px; color: #8b949e; margin-bottom: 10px; }
+  .card-apy { font-size: 24px; font-weight: 800; color: #3fb950; margin-bottom: 8px; }
+  .card-apy span { font-size: 13px; color: #8b949e; font-weight: 400; }
+  .card-desc { font-size: 12px; color: #8b949e; line-height: 1.5; margin-bottom: 10px; }
+
+  .status-row { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 8px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .dot.green { background: #3fb950; }
+  .dot.yellow { background: #e3b341; }
+  .dot.red { background: #f85149; }
+  .dot.purple { background: #bc8cff; }
+
+  /* ELI5 SECTION */
+  .eli5-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+  .eli5-card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 18px; }
+  .eli5-emoji { font-size: 32px; margin-bottom: 10px; display: block; }
+  .eli5-title { font-size: 14px; font-weight: 700; color: #f0f6fc; margin-bottom: 8px; }
+  .eli5-text { font-size: 12px; color: #8b949e; line-height: 1.6; }
+  .eli5-arrow { color: #58a6ff; font-weight: 700; }
+
+  /* FLOW DIAGRAM */
+  .flow { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 20px; }
+  .flow-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  .flow-box { background: #1c2d4d; border: 1px solid #388bfd; border-radius: 6px; padding: 6px 12px; font-size: 12px; color: #58a6ff; white-space: nowrap; }
+  .flow-box.green { background: #1a4731; border-color: #238636; color: #3fb950; }
+  .flow-box.yellow { background: #3d2100; border-color: #9e6a03; color: #e3b341; }
+  .flow-box.gray { background: #21262d; border-color: #30363d; color: #8b949e; }
+  .flow-box.purple { background: #2d1f47; border-color: #6e40c9; color: #bc8cff; }
+  .flow-arrow { color: #8b949e; font-size: 16px; }
+
+  /* TABLE */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { background: #21262d; color: #8b949e; padding: 8px 12px; text-align: left; }
+  td { padding: 8px 12px; border-bottom: 1px solid #21262d; }
+  tr:hover td { background: #161b22; }
+  .check { color: #3fb950; }
+  .cross { color: #f85149; }
+  .half { color: #e3b341; }
+
+  .action-list { list-style: none; }
+  .action-list li { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; border-bottom: 1px solid #21262d; font-size: 13px; }
+  .action-list li:last-child { border-bottom: none; }
+  .step-num { background: #1c2d4d; color: #58a6ff; border-radius: 50%; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; margin-top: 1px; }
+  .action-list li span.text { color: #e6edf3; }
+  .action-list li span.sub { color: #8b949e; font-size: 11px; display: block; }
+
+  .highlight-box { background: #1a4731; border: 1px solid #238636; border-radius: 8px; padding: 14px 18px; margin-top: 16px; }
+  .highlight-box p { font-size: 13px; color: #3fb950; line-height: 1.6; }
+</style>
+</head>
+<body>
+
+<h1>🤖 QuantumTrade — Карта Earn-стратегий</h1>
+<p class="subtitle">v10.20.0 · 2026-04-07 · Инвентаризация + объяснение простыми словами</p>
+
+<!-- ═══════════════════════════════════════════ ELI5 ═══════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">🧒 Объяснение как 5-летнему ребёнку</div>
+  <div class="eli5-grid">
+
+    <div class="eli5-card">
+      <span class="eli5-emoji">🏦</span>
+      <div class="eli5-title">KuCoin Lending — «Дай монетки взаймы»</div>
+      <div class="eli5-text">
+        Ты даёшь $64 другим трейдерам в аренду <span class="eli5-arrow">→</span>
+        они берут на 7 дней чтобы торговать <span class="eli5-arrow">→</span>
+        каждый день тебе капает % <span class="eli5-arrow">→</span>
+        через 7 дней деньги + проценты возвращаются автоматически<br><br>
+        <b style="color:#3fb950">10–50% годовых.</b> Деньги всегда твои, риск почти нулевой.
+      </div>
+    </div>
+
+    <div class="eli5-card">
+      <span class="eli5-emoji">🪙</span>
+      <div class="eli5-title">ByBit DCI — «Купи дёшево / Продай дорого»</div>
+      <div class="eli5-text">
+        Ставишь $20 на неделю <span class="eli5-arrow">→</span>
+        выбираешь монету (BTC/ETH/SOL) и «цену исполнения» <span class="eli5-arrow">→</span>
+        если цена упала до твоей отметки — автоматически покупаешь монету дёшево <span class="eli5-arrow">→</span>
+        если не упала — забираешь $20 + очень высокий % просто за ожидание<br><br>
+        <b style="color:#3fb950">100–900% годовых.</b> Работает неделю, потом заново.
+      </div>
+    </div>
+
+    <div class="eli5-card">
+      <span class="eli5-emoji">⚡</span>
+      <div class="eli5-title">Funding Rate Arb — «Получай плату за равновесие»</div>
+      <div class="eli5-text">
+        На бирже есть «ставка финансирования» — каждые 8 часов трейдеры лонгов платят трейдерам шортов <span class="eli5-arrow">→</span>
+        ты одновременно покупаешь монету (спот) и открываешь шорт (фьючерс) <span class="eli5-arrow">→</span>
+        цена тебе не важна, ты нейтрален <span class="eli5-arrow">→</span>
+        каждые 8 часов тебе платят ставку автоматически<br><br>
+        <b style="color:#3fb950">10–60% годовых.</b> Без риска цены — только доход с ставки.
+      </div>
+    </div>
+
+    <div class="eli5-card">
+      <span class="eli5-emoji">🎡</span>
+      <div class="eli5-title">ByBit Snowball — «Заработай пока рынок скучает»</div>
+      <div class="eli5-text">
+        Ставишь $20 на диапазон цены <span class="eli5-arrow">→</span>
+        пока цена «прыгает» внутри коридора — ты зарабатываешь % <span class="eli5-arrow">→</span>
+        если цена вышла за коридор («нокаут») — сделка закрывается с прибылью <span class="eli5-arrow">→</span>
+        если цена пробила дно («нокин») — получаешь монету вместо USDT<br><br>
+        <b style="color:#e3b341">15–50% годовых.</b> Только в боковом рынке! Сейчас F&G=11 — не подходит.
+      </div>
+    </div>
+
+    <div class="eli5-card">
+      <span class="eli5-emoji">🌀</span>
+      <div class="eli5-title">Gate.io Lending — «Такой же банк, другая биржа»</div>
+      <div class="eli5-text">
+        То же самое что KuCoin Lending, только на Gate.io <span class="eli5-arrow">→</span>
+        даёшь USDT взаймы маржинальным трейдерам <span class="eli5-arrow">→</span>
+        получаешь % каждый день<br><br>
+        <b style="color:#bc8cff">8–30% годовых.</b> Код написан ✅, API ключей пока нет ❌.
+      </div>
+    </div>
+
+    <div class="eli5-card">
+      <span class="eli5-emoji">🗂️</span>
+      <div class="eli5-title">Субаккаунты — «Разные кошельки в одном кармане»</div>
+      <div class="eli5-text">
+        На одной бирже создаёшь несколько «дочерних» аккаунтов <span class="eli5-arrow">→</span>
+        у каждого свои API ключи <span class="eli5-arrow">→</span>
+        бот управляет всеми одновременно <span class="eli5-arrow">→</span>
+        торговля на одном, лендинг на другом, арбитраж на третьем<br><br>
+        <b style="color:#58a6ff">Польза:</b> изоляция рисков + больше лимитов + параллельные стратегии.
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ FLOW ═══════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">💰 Как деньги работают прямо сейчас (маршрут капитала)</div>
+  <div class="flow">
+
+    <div class="flow-row">
+      <div class="flow-box">💵 Твои USDT</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box green">KuCoin Main</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box yellow">$64 Lending (10–50% APR)</div>
+      <div class="flow-arrow">→ 7 дней →</div>
+      <div class="flow-box green">Авто-возврат + %</div>
+    </div>
+
+    <div class="flow-row">
+      <div class="flow-box green">KuCoin Main</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box yellow">$36 остаток на торговлю / резерв</div>
+    </div>
+
+    <div class="flow-row" style="margin-top:12px">
+      <div class="flow-box">💵 Твои USDT</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box green">ByBit FUND</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box yellow">$20 DCI (100–900% APR)</div>
+      <div class="flow-arrow">→ 7 дней →</div>
+      <div class="flow-box green">Авто-реинвест</div>
+    </div>
+
+    <div class="flow-row">
+      <div class="flow-box green">ByBit UNIFIED</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box yellow">≤$20 Funding Arb (10–60% APR)</div>
+      <div class="flow-arrow">→ каждые 8ч →</div>
+      <div class="flow-box green">Ставка финансирования</div>
+    </div>
+
+    <div class="flow-row" style="margin-top:12px; opacity:0.5">
+      <div class="flow-box gray">Gate.io (нет ключей)</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box gray">Lending (8–30%)</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box purple">🔒 Требует регистрации</div>
+    </div>
+
+    <div class="flow-row" style="opacity:0.5">
+      <div class="flow-box gray">OKX Dual Invest (не написан)</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box purple">🔒 Требует разработки</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ INVENTORY ═══════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">📦 Инвентаризация — что есть и чего не хватает</div>
+  <table>
+    <thead>
+      <tr>
+        <th>Продукт</th>
+        <th>Биржа</th>
+        <th>APY</th>
+        <th>Код</th>
+        <th>API ключи</th>
+        <th>Включён</th>
+        <th>Telegram команда</th>
+        <th>Авто</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><b>KuCoin Lending</b></td>
+        <td>KuCoin</td>
+        <td style="color:#3fb950">10–50%</td>
+        <td class="check">✅ Готов</td>
+        <td class="check">✅ Есть</td>
+        <td class="half">⚠️ Нужно Railway</td>
+        <td><code>/lending</code></td>
+        <td class="check">✅ Авто</td>
+      </tr>
+      <tr>
+        <td><b>ByBit DCI</b></td>
+        <td>ByBit</td>
+        <td style="color:#3fb950">100–900%</td>
+        <td class="check">✅ Готов</td>
+        <td class="check">✅ Есть</td>
+        <td class="check">✅ Работает</td>
+        <td><code>/dci /dciplace</code></td>
+        <td class="check">✅ Авто</td>
+      </tr>
+      <tr>
+        <td><b>Funding Rate Arb</b></td>
+        <td>ByBit</td>
+        <td style="color:#3fb950">10–60%</td>
+        <td class="check">✅ Готов</td>
+        <td class="check">✅ Есть</td>
+        <td class="half">⚠️ Нужно Railway</td>
+        <td><code>/fundarb</code></td>
+        <td class="check">✅ Авто</td>
+      </tr>
+      <tr>
+        <td><b>ByBit Snowball</b></td>
+        <td>ByBit</td>
+        <td style="color:#e3b341">15–50%</td>
+        <td class="check">✅ Готов</td>
+        <td class="check">✅ Есть</td>
+        <td class="half">⏸ Пауза (F&G=11)</td>
+        <td><code>/snowball</code></td>
+        <td class="check">✅ Авто</td>
+      </tr>
+      <tr>
+        <td><b>Yield Router v2</b></td>
+        <td>Все</td>
+        <td style="color:#3fb950">Авто-лучший</td>
+        <td class="check">✅ Готов</td>
+        <td class="check">✅ Есть</td>
+        <td class="check">✅ Работает</td>
+        <td><code>/yrouter</code></td>
+        <td class="check">✅ Авто</td>
+      </tr>
+      <tr style="opacity:0.7">
+        <td><b>Gate.io Lending</b></td>
+        <td>Gate.io</td>
+        <td style="color:#e3b341">8–30%</td>
+        <td class="check">✅ Готов</td>
+        <td class="cross">❌ Нет ключей</td>
+        <td class="cross">❌ Выкл</td>
+        <td><code>/lending</code> (разд)</td>
+        <td class="half">⚠️ Нужны ключи</td>
+      </tr>
+      <tr style="opacity:0.5">
+        <td><b>OKX Dual Invest</b></td>
+        <td>OKX</td>
+        <td style="color:#3fb950">50–500%</td>
+        <td class="cross">❌ Нет кода</td>
+        <td class="cross">❌ Нет</td>
+        <td class="cross">❌ Нет</td>
+        <td>—</td>
+        <td class="cross">❌</td>
+      </tr>
+      <tr style="opacity:0.5">
+        <td><b>Binance Earn / Simple</b></td>
+        <td>Binance</td>
+        <td style="color:#8b949e">3–15%</td>
+        <td class="cross">❌ Нет кода</td>
+        <td class="cross">❌ Нет</td>
+        <td class="cross">❌ Нет</td>
+        <td>—</td>
+        <td class="cross">❌</td>
+      </tr>
+      <tr style="opacity:0.5">
+        <td><b>KuCoin/ByBit Субаккаунты</b></td>
+        <td>KuCoin/ByBit</td>
+        <td style="color:#8b949e">+объём</td>
+        <td class="cross">❌ Нет кода</td>
+        <td class="cross">❌ Нет</td>
+        <td class="cross">❌ Нет</td>
+        <td>—</td>
+        <td class="cross">❌</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ═══════════════════════════════════════════ NEXT STEPS ═══════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">🚀 Что делаем прямо сейчас (приоритеты)</div>
+  <div class="flow">
+    <ul class="action-list">
+      <li>
+        <div class="step-num">1</div>
+        <div>
+          <span class="text">🔑 Railway Variables — добавить 2 строки</span>
+          <span class="sub">LENDING_ENABLED=true · FUNDING_ARB_ENABLED=true (это всё — код уже готов)</span>
+        </div>
+      </li>
+      <li>
+        <div class="step-num">2</div>
+        <div>
+          <span class="text">🌀 Gate.io — зарегистрироваться + верифицироваться + добавить GATE_API_KEY в Railway</span>
+          <span class="sub">Код уже написан, нужны только ключи → сразу 8–30% APR на дополнительный лендинг</span>
+        </div>
+      </li>
+      <li>
+        <div class="step-num">3</div>
+        <div>
+          <span class="text">🪙 OKX Dual Invest — разработать интеграцию</span>
+          <span class="sub">Аналог ByBit DCI но с мин. $10 (у ByBit $20) → больше сделок с малым капиталом. Приоритет!</span>
+        </div>
+      </li>
+      <li>
+        <div class="step-num">4</div>
+        <div>
+          <span class="text">🎡 Snowball — включить когда F&G вернётся к 40+</span>
+          <span class="sub">Сейчас Extreme Fear (11) = направленный рынок. Боковик нужен для Snowball.</span>
+        </div>
+      </li>
+      <li>
+        <div class="step-num">5</div>
+        <div>
+          <span class="text">🗂️ Субаккаунты — разработать поддержку (средний приоритет)</span>
+          <span class="sub">KuCoin: 1 аккаунт = торговля + 1 аккаунт = лендинг. ByBit: 1 = FUND/DCI + 1 = Funding Arb.</span>
+        </div>
+      </li>
+    </ul>
+  </div>
+
+  <div class="highlight-box">
+    <p>
+      ⚡ <b>Прямо сейчас нужно только одно:</b> зайти в Railway → Variables и поставить
+      <code style="background:#0d1117; padding:2px 6px; border-radius:4px;">LENDING_ENABLED=true</code> +
+      <code style="background:#0d1117; padding:2px 6px; border-radius:4px;">FUNDING_ARB_ENABLED=true</code>.
+      Код уже задеплоен (v10.20.0), бот запустит оба продукта на следующем цикле (≤60 минут).
+    </p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ COMPARISON ═══════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">📊 Сравнение: Торговля vs Earn</div>
+  <div class="flow">
+    <table>
+      <thead>
+        <tr>
+          <th>Метод</th>
+          <th>Доходность</th>
+          <th>Риск</th>
+          <th>Усилий</th>
+          <th>Минимум $</th>
+          <th>Рекомендация</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Спотовая торговля</td>
+          <td style="color:#e3b341">0–30% мес (непредсказуемо)</td>
+          <td style="color:#f85149">Высокий</td>
+          <td>🤖 Авто</td>
+          <td>$5</td>
+          <td style="color:#e3b341">Оставить, но не фокус</td>
+        </tr>
+        <tr>
+          <td>Фьючерсы</td>
+          <td style="color:#f85149">+++ или -$$$ (с плечом)</td>
+          <td style="color:#f85149">Очень высокий</td>
+          <td>🤖 Авто</td>
+          <td>$10</td>
+          <td style="color:#f85149">Минимальный размер</td>
+        </tr>
+        <tr>
+          <td><b>KuCoin Lending</b></td>
+          <td style="color:#3fb950"><b>10–50% год (стабильно)</b></td>
+          <td style="color:#3fb950">Почти нет</td>
+          <td>🤖 Авто</td>
+          <td>$5</td>
+          <td style="color:#3fb950"><b>✅ Приоритет!</b></td>
+        </tr>
+        <tr>
+          <td><b>ByBit DCI</b></td>
+          <td style="color:#3fb950"><b>100–900% год</b></td>
+          <td style="color:#e3b341">Средний (можно получить монету)</td>
+          <td>🤖 Авто</td>
+          <td>$20</td>
+          <td style="color:#3fb950"><b>✅ Топ-1 по APY!</b></td>
+        </tr>
+        <tr>
+          <td><b>Funding Arb</b></td>
+          <td style="color:#3fb950"><b>10–60% год (стабильно)</b></td>
+          <td style="color:#3fb950">Минимальный (нейтральный)</td>
+          <td>🤖 Авто</td>
+          <td>$10</td>
+          <td style="color:#3fb950"><b>✅ Лучший risk/reward!</b></td>
+        </tr>
+        <tr>
+          <td>Gate.io Lending</td>
+          <td style="color:#e3b341">8–30% год</td>
+          <td style="color:#3fb950">Почти нет</td>
+          <td>🤖 Авто</td>
+          <td>$1</td>
+          <td style="color:#58a6ff">🔑 Нужны ключи</td>
+        </tr>
+        <tr>
+          <td>OKX Dual Invest</td>
+          <td style="color:#3fb950">50–500% год</td>
+          <td style="color:#e3b341">Средний (как DCI)</td>
+          <td>⚒️ Разработать</td>
+          <td>$10</td>
+          <td style="color:#bc8cff">🔒 Нужна разработка</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<p style="color:#30363d; font-size:11px; text-align:center; margin-top:32px;">
+  QuantumTrade AI v10.20.0 · 2026-04-07 · Стратегический обзор
+</p>
+
+</body>
+</html>

@@ -879,15 +879,15 @@ async def migrate_from_json(trade_log: list, perf_stats: dict):
 # ── v10.9.5: Auto-cleanup — prevent volume growth ──────────────────────────
 
 async def cleanup_old_data() -> dict:
-    """v10.9.5: Delete old data from high-volume tables to prevent disk growth.
-    Retention policy:
-      - signals:         30 days  (logs every 15min × 9 pairs = ~26k rows/month)
-      - q_score_history: 30 days  (same frequency)
-      - mirofish_memory: 14 days  (AI memory, recent is enough)
-      - whale_events:    14 days  (market context, recent is enough)
-      - macro_snapshots: 14 days  (hourly snapshots)
-      - fg_history:      90 days  (low frequency, keep longer for analytics)
-      - trades (closed): 180 days (keep 6 months of trade history)
+    """v10.20.3: Delete old data from high-volume tables — Railway Postgres disk overflow fix.
+    Retention policy (aggressive — Railway free tier has ~500MB limit):
+      - signals:         7 days   (was 30 — biggest table: 15min × 9 pairs = ~26k rows/month)
+      - q_score_history: 7 days   (was 30)
+      - mirofish_memory: 7 days   (was 14)
+      - whale_events:    7 days   (was 14)
+      - macro_snapshots: 7 days   (was 14)
+      - fg_history:      30 days  (was 90)
+      - trades (closed): 90 days  (was 180)
     Runs VACUUM ANALYZE after cleanup to actually reclaim disk space.
     """
     if not is_ready():
@@ -895,36 +895,37 @@ async def cleanup_old_data() -> dict:
     deleted = {}
     try:
         async with _pool.acquire() as conn:
-            r = await conn.execute("DELETE FROM signals WHERE ts < NOW() - INTERVAL '30 days'")
+            r = await conn.execute("DELETE FROM signals WHERE ts < NOW() - INTERVAL '7 days'")
             deleted["signals"] = int(r.split()[-1])
 
-            r = await conn.execute("DELETE FROM q_score_history WHERE ts < NOW() - INTERVAL '30 days'")
+            r = await conn.execute("DELETE FROM q_score_history WHERE ts < NOW() - INTERVAL '7 days'")
             deleted["q_score_history"] = int(r.split()[-1])
 
-            r = await conn.execute("DELETE FROM mirofish_memory WHERE ts < NOW() - INTERVAL '14 days'")
+            r = await conn.execute("DELETE FROM mirofish_memory WHERE ts < NOW() - INTERVAL '7 days'")
             deleted["mirofish_memory"] = int(r.split()[-1])
 
-            r = await conn.execute("DELETE FROM whale_events WHERE ts < NOW() - INTERVAL '14 days'")
+            r = await conn.execute("DELETE FROM whale_events WHERE ts < NOW() - INTERVAL '7 days'")
             deleted["whale_events"] = int(r.split()[-1])
 
-            r = await conn.execute("DELETE FROM macro_snapshots WHERE ts < NOW() - INTERVAL '14 days'")
+            r = await conn.execute("DELETE FROM macro_snapshots WHERE ts < NOW() - INTERVAL '7 days'")
             deleted["macro_snapshots"] = int(r.split()[-1])
 
-            r = await conn.execute("DELETE FROM fg_history WHERE ts < NOW() - INTERVAL '90 days'")
+            r = await conn.execute("DELETE FROM fg_history WHERE ts < NOW() - INTERVAL '30 days'")
             deleted["fg_history"] = int(r.split()[-1])
 
-            r = await conn.execute("DELETE FROM trades WHERE status = 'closed' AND ts < NOW() - INTERVAL '180 days'")
+            r = await conn.execute("DELETE FROM trades WHERE status = 'closed' AND ts < NOW() - INTERVAL '90 days'")
             deleted["trades_old"] = int(r.split()[-1])
 
             total = sum(deleted.values())
             print(f"[db] 🧹 cleanup: удалено {total} строк → {deleted}", flush=True)
 
-            # VACUUM to actually reclaim disk space
-            await conn.execute("VACUUM ANALYZE signals")
-            await conn.execute("VACUUM ANALYZE q_score_history")
-            await conn.execute("VACUUM ANALYZE mirofish_memory")
-            await conn.execute("VACUUM ANALYZE whale_events")
-            await conn.execute("VACUUM ANALYZE macro_snapshots")
+            # VACUUM ANALYZE to reclaim disk space on all high-volume tables
+            for tbl in ("signals", "q_score_history", "mirofish_memory",
+                        "whale_events", "macro_snapshots", "fg_history"):
+                try:
+                    await conn.execute(f"VACUUM ANALYZE {tbl}")
+                except Exception as ve:
+                    print(f"[db] vacuum {tbl}: {ve}", flush=True)
             print(f"[db] 🧹 VACUUM ANALYZE завершён", flush=True)
 
     except Exception as e:
