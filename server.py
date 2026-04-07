@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.19.6")
+app = FastAPI(title="QuantumTrade AI", version="10.19.7")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -3857,30 +3857,43 @@ async def earn_monitor_loop():
                     _bybit_fund_balance = bb_funding_bal  # v10.19.0: cache for portfolio display
                     _fund_cooldown_ok = (_now_ts - _last_fund_to_unified_ts) > 14400  # 4 hours
                     if bb_funding_bal >= 5.0 and _fund_cooldown_ok:
-                        # Check how much is already in UNIFIED
-                        unified_bals = await _dci_get_fund_balances()
-                        unified_usdt = unified_bals.get("USDT", 0.0)
-                        # v10.11.4: correct condition — check available USDT after reserves
-                        available_for_dci = max(0.0, unified_usdt - ROUTER_TRADE_RESERVE_USDT - ROUTER_ARB_RESERVE_USDT)
-                        if available_for_dci < DCI_MAX_INVEST_USDT:  # need more USDT in UNIFIED for DCI
-                            # Transfer most of Funding to Unified (keep $1 buffer in Funding)
-                            xfer_amount = round(min(bb_funding_bal - 1.0, DCI_MAX_INVEST_USDT), 2)
-                            if xfer_amount >= 5.0:
+                        # v10.19.7: DCI debits from FUND account — keep DCI reserve in FUND!
+                        # Old logic transferred FUND→UNIFIED "for DCI", but DCI API uses FUND.
+                        # New logic: only transfer EXCESS above what DCI needs.
+                        if DCI_ENABLED:
+                            dci_reserve = DCI_MAX_INVEST_USDT + 1.0  # keep $21 in FUND (1 DCI pos + $1 buffer)
+                            transferable = round(bb_funding_bal - dci_reserve, 2)
+                            if transferable >= 5.0:
+                                xfer_amount = round(min(transferable, 50.0), 2)
                                 xfer_res = await bybit_transfer_fund_to_unified(xfer_amount)
                                 if xfer_res["success"]:
                                     _last_fund_to_unified_ts = _now_ts
                                     log_activity(
-                                        f"[dci_mon] 💸 auto-transferred ${xfer_amount:.2f} USDT "
-                                        f"FUND→UNIFIED (funding_bal=${bb_funding_bal:.2f})"
+                                        f"[dci_mon] 💸 excess transfer ${xfer_amount:.2f} USDT "
+                                        f"FUND→UNIFIED (bal=${bb_funding_bal:.2f}, dci_reserve=${dci_reserve:.0f})"
                                     )
                                     if ALERT_CHAT_ID:
                                         await _tg_send(int(ALERT_CHAT_ID),
-                                            f"💸 <b>Авто-перевод ByBit</b>\n"
+                                            f"💸 <b>Авто-перевод ByBit (избыток)</b>\n"
                                             f"FUND → UNIFIED: <code>${xfer_amount:.2f}</code> USDT\n"
-                                            f"Теперь DCI может разместить эти средства"
+                                            f"В FUND оставлено ${dci_reserve:.0f} для DCI"
                                         )
+                            else:
+                                log_activity(f"[dci_mon] 🔒 FUND=${bb_funding_bal:.2f} ≤ DCI reserve ${dci_reserve:.0f} — skip FUND→UNIFIED (DCI needs it)")
                         else:
-                            log_activity(f"[dci_mon] FUND=${bb_funding_bal:.2f} — cooldown or UNIFIED has enough, skip transfer")
+                            # DCI off: transfer FUND→UNIFIED for trading as before
+                            unified_bals = await _dci_get_fund_balances()
+                            unified_usdt = unified_bals.get("USDT", 0.0)
+                            available_for_trade = max(0.0, unified_usdt - ROUTER_TRADE_RESERVE_USDT - ROUTER_ARB_RESERVE_USDT)
+                            if available_for_trade < DCI_MAX_INVEST_USDT:
+                                xfer_amount = round(min(bb_funding_bal - 1.0, DCI_MAX_INVEST_USDT), 2)
+                                if xfer_amount >= 5.0:
+                                    xfer_res = await bybit_transfer_fund_to_unified(xfer_amount)
+                                    if xfer_res["success"]:
+                                        _last_fund_to_unified_ts = _now_ts
+                                        log_activity(f"[dci_mon] 💸 auto-transferred ${xfer_amount:.2f} USDT FUND→UNIFIED")
+                            else:
+                                log_activity(f"[dci_mon] UNIFIED has enough, skip transfer")
                 except Exception as fund_e:
                     log_activity(f"[dci_mon] funding transfer check error: {fund_e}")
 
@@ -7992,14 +8005,90 @@ async def send_daily_educational_post() -> bool:
     return False
 
 
+async def send_channel_market_brief():
+    """v10.19.7: Morning market brief for WHALE_CHANNEL_ID.
+    Posts F&G + BTC context + DCI status. Fires at 07:00 UTC (10:00 Moscow).
+    Replaces the 'empty morning' when only whale alerts show up."""
+    if not WHALE_CHANNEL_ID or not BOT_TOKEN:
+        return False
+    try:
+        fg_data = await get_fear_greed()
+        fg_val = fg_data.get("value", 50)
+        fg_cls = fg_data.get("classification", "Neutral")
+
+        if fg_val <= 20:
+            fg_emoji = "😱"; fg_advice = "Исторически лучшее время для покупки. Наш бот работает в режиме BuyLow DCI."
+        elif fg_val <= 40:
+            fg_emoji = "😟"; fg_advice = "Рынок осторожен. Открываем позиции только на сильных сигналах."
+        elif fg_val <= 60:
+            fg_emoji = "😐"; fg_advice = "Нейтральный рынок — ждём чёткого направления."
+        elif fg_val <= 80:
+            fg_emoji = "😄"; fg_advice = "Рынок жадный. Наш бот ищет точки выхода."
+        else:
+            fg_emoji = "🤑"; fg_advice = "Перегрев! Осторожно с покупками."
+
+        # DCI status
+        dci_txt = ""
+        if DCI_ENABLED:
+            try:
+                dci_live = await bybit_dci_get_positions()
+                dci_active = [p for p in dci_live
+                              if p.get("status", "").lower() not in ("settled", "closed", "completed", "expired")]
+                if dci_active:
+                    p0 = dci_active[0]
+                    apy_e8 = p0.get("apyE8", "0")
+                    apy_pct = round(int(apy_e8) / 1e8 * 100, 0)
+                    coin0 = p0.get("coin", p0.get("baseCoin", "?"))
+                    dci_txt = f"\n\n💎 <b>DCI работает:</b> {coin0}/USDT @ <b>{apy_pct:.0f}% APY</b>"
+                else:
+                    dci_txt = "\n\n⏳ <b>DCI:</b> ищем лучший момент для входа..."
+            except Exception:
+                pass
+
+        msg = (
+            f"📊 <b>Утренний дайджест крипто-рынка</b>\n"
+            f"━━━━━━━━━━━━━━\n\n"
+            f"{fg_emoji} <b>Fear & Greed Index: {fg_val}</b> — {fg_cls}\n"
+            f"{fg_advice}"
+            f"{dci_txt}\n\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"🤖 <i>QuantumTrade AI мониторит рынок 24/7</i>\n"
+            f"📢 Подписывайся — публикуем сигналы, алерты и DCI доходность"
+        )
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={"chat_id": WHALE_CHANNEL_ID, "text": msg,
+                      "parse_mode": "HTML", "disable_web_page_preview": True},
+                timeout=aiohttp.ClientTimeout(total=8)
+            )
+            data = await r.json()
+        if data.get("ok"):
+            log_activity(f"[channel] ✅ morning brief sent (F&G={fg_val})")
+            return True
+        log_activity(f"[channel] morning brief error: {data.get('description','?')}")
+    except Exception as e:
+        log_activity(f"[channel] send_channel_market_brief error: {e}")
+    return False
+
+
+_channel_brief_last_day: int = -1  # v10.19.7: track last brief day
+
+
 async def channel_edu_loop():
-    """v10.17.1: Daily educational post loop — fires at 06:00 UTC (09:00 Moscow)."""
+    """v10.17.1: Daily educational post loop — fires at 06:00 UTC (09:00 Moscow).
+    v10.19.7: Also fires morning market brief at 07:00 UTC (10:00 Moscow)."""
     await asyncio.sleep(60)   # wait for startup
     while True:
         try:
             now = datetime.utcnow()
             if now.hour == 6 and now.minute < 5:
                 await send_daily_educational_post()
+            # v10.19.7: morning market brief at 07:00 UTC (10:00 Moscow)
+            global _channel_brief_last_day
+            if now.hour == 7 and now.minute < 5 and now.day != _channel_brief_last_day:
+                await send_channel_market_brief()
+                _channel_brief_last_day = now.day
         except Exception as e:
             log_activity(f"[channel_edu_loop] error: {e}")
         await asyncio.sleep(300)   # check every 5 min
@@ -11565,7 +11654,8 @@ async def _tg_health(chat_id: int):
         except Exception:
             return default
 
-    kc_bal, bb_bal, fg_data, best_earn, bb_earn_pos = await asyncio.gather(
+    # v10.19.7: fix — was 5 variables unpacking 4 gather results → ValueError → silent crash
+    kc_bal, bb_bal, fg_data, bb_earn_pos = await asyncio.gather(
         _safe_health(get_balance("kucoin"),           {"total_usdt": 0}),
         _safe_health(bybit_get_balance(),             {"total_usdt": 0}),
         _safe_health(get_fear_greed(),                {"value": "?", "classification": "?"}),
@@ -14769,7 +14859,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.19.6",
+        "version": "10.19.7",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -15741,7 +15831,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.19.6",
+        "version": "10.19.7",
     }
 
 @app.get("/api/setup-webhook")
@@ -15952,7 +16042,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.19.6",
+        "version": "10.19.7",
     }
 
 @app.get("/api/dashboard")
