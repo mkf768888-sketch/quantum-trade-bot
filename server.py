@@ -15204,7 +15204,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.20.8",
+        "version": "10.20.9",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -16177,7 +16177,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.20.8",
+        "version": "10.20.9",
     }
 
 @app.get("/api/setup-webhook")
@@ -16388,7 +16388,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.20.8",
+        "version": "10.20.9",
     }
 
 @app.get("/api/dashboard")
@@ -16655,6 +16655,161 @@ async def api_db_sizes(_auth=Depends(verify_api_key)):
     sizes = await db.get_table_sizes()
     total_rows = sum(v["rows"] for v in sizes.values())
     return {"ok": True, "tables": sizes, "total_rows": total_rows}
+
+@app.get("/api/qa-run")
+async def api_qa_run():
+    """v10.20.9: Public QA health-check endpoint. Runs ~12 checks in parallel,
+    returns structured results for the qa-dashboard.html UI.
+    No auth required — only reads status, never modifies data."""
+    import time as _time
+
+    _t0 = _time.time()
+
+    async def _chk(key: str, label: str, category: str, coro):
+        """Run a single check coroutine, catch exceptions, return structured result."""
+        try:
+            result = await asyncio.wait_for(coro, timeout=5.0)
+            return key, {"ok": result.get("ok", False), "label": label,
+                         "value": result.get("value", ""), "category": category}
+        except asyncio.TimeoutError:
+            return key, {"ok": False, "label": label, "value": "timeout (>5s)", "category": category}
+        except Exception as ex:
+            return key, {"ok": False, "label": label, "value": str(ex)[:60], "category": category}
+
+    # ── individual check coroutines ──────────────────────────────────────────
+    async def _c_version():
+        return {"ok": True, "value": "10.20.9"}
+
+    async def _c_db():
+        try:
+            async with db._pool.acquire() as _conn:
+                await _conn.fetchval("SELECT 1")
+            return {"ok": True, "value": "connected"}
+        except Exception as _e:
+            return {"ok": False, "value": str(_e)[:50]}
+
+    async def _c_kucoin():
+        try:
+            async with aiohttp.ClientSession() as _s:
+                _r = await _s.get(KUCOIN_BASE_URL + "/api/v1/timestamp",
+                                   timeout=aiohttp.ClientTimeout(total=4))
+                _d = await _r.json()
+            ok = _d.get("code") == "200000"
+            return {"ok": ok, "value": "ok" if ok else str(_d.get("code"))}
+        except Exception as _e:
+            return {"ok": False, "value": str(_e)[:40]}
+
+    async def _c_bybit():
+        try:
+            async with aiohttp.ClientSession() as _s:
+                _r = await _s.get("https://api.bybit.com/v5/market/time",
+                                   timeout=aiohttp.ClientTimeout(total=4))
+                _d = await _r.json()
+            ok = _d.get("retCode") == 0
+            return {"ok": ok, "value": "ok" if ok else str(_d.get("retMsg", "?"))}
+        except Exception as _e:
+            return {"ok": False, "value": str(_e)[:40]}
+
+    async def _c_earn_loop():
+        last = _earn_stats.get("last_action", 0)
+        age = _time.time() - last if last else 9999
+        ok = age < 3600  # should run every 15 min; allow up to 60 min
+        return {"ok": ok, "value": f"{int(age//60)} мин назад" if last else "никогда"}
+
+    async def _c_kc_balance():
+        try:
+            bal = await get_balance()
+            ok = bal.get("success", False)
+            kc_usdt = sum(float(a.get("available", 0)) for a in bal.get("accounts", [])
+                          if a.get("currency") == "USDT" and a.get("type") in ("main", "trade")) if ok else 0
+            return {"ok": ok, "value": f"${kc_usdt:.2f} USDT" if ok else "FAIL"}
+        except Exception as _e:
+            return {"ok": False, "value": str(_e)[:40]}
+
+    async def _c_bb_balance():
+        try:
+            usdt = await bybit_get_funding_usdt()
+            ok = usdt >= 0
+            return {"ok": ok, "value": f"${usdt:.2f} FUND"}
+        except Exception as _e:
+            return {"ok": False, "value": str(_e)[:40]}
+
+    async def _c_lending():
+        if not LENDING_ENABLED:
+            return {"ok": True, "value": "DISABLED (ok)"}
+        try:
+            mkt = await kucoin_lending_get_market_rate("USDT")
+            apr = mkt.get("apr", 0) if mkt.get("success") else 0
+            active = len(_lending_positions)
+            return {"ok": True, "value": f"APR {apr:.1f}% | {active} ордер(а)"}
+        except Exception as _e:
+            return {"ok": False, "value": str(_e)[:40]}
+
+    async def _c_dci():
+        subs = _dci_stats.get("subscriptions", 0)
+        errs = _dci_stats.get("errors", 0)
+        pos  = len(_dci_stats.get("positions", []))
+        return {"ok": True, "value": f"{pos} активных | {subs} всего | {errs} ошибок"}
+
+    async def _c_fundarb():
+        if not FUNDING_ARB_ENABLED:
+            return {"ok": True, "value": "DISABLED (ok)"}
+        pos = _funding_arb_stats.get("open_positions", 0)
+        return {"ok": True, "value": f"{pos} позиций открыто"}
+
+    async def _c_autopilot():
+        return {"ok": True, "value": "ON" if AUTOPILOT else "OFF (manual mode)"}
+
+    async def _c_fg():
+        try:
+            fg = await get_fear_greed()
+            val = fg.get("value", 0) if fg else 0
+            cls = fg.get("value_classification", "?") if fg else "?"
+            ok = val > 0
+            return {"ok": ok, "value": f"{val} — {cls}"}
+        except Exception as _e:
+            return {"ok": False, "value": str(_e)[:40]}
+
+    # ── run all in parallel ──────────────────────────────────────────────────
+    _tasks = [
+        _chk("version",    "Версия бота",           "deploy",   _c_version()),
+        _chk("database",   "PostgreSQL",             "deploy",   _c_db()),
+        _chk("autopilot",  "Авторежим торговли",     "trading",  _c_autopilot()),
+        _chk("fear_greed", "Fear & Greed",           "trading",  _c_fg()),
+        _chk("kucoin_api", "KuCoin API",             "exchanges",_c_kucoin()),
+        _chk("bybit_api",  "ByBit API",              "exchanges",_c_bybit()),
+        _chk("kc_balance", "KC Баланс (USDT)",       "exchanges",_c_kc_balance()),
+        _chk("bb_balance", "ByBit FUND (USDT)",      "exchanges",_c_bb_balance()),
+        _chk("earn_loop",  "Earn Monitor Loop",      "earn",     _c_earn_loop()),
+        _chk("lending",    "KC Lending Pro",         "earn",     _c_lending()),
+        _chk("dci",        "DCI (BuyLow/SellHigh)",  "earn",     _c_dci()),
+        _chk("fundarb",    "Funding Arbitrage",      "earn",     _c_fundarb()),
+    ]
+    _results_list = await asyncio.gather(*_tasks)
+    checks = dict(_results_list)
+
+    _passed = sum(1 for v in checks.values() if v["ok"])
+    _total  = len(checks)
+    _elapsed = round(_time.time() - _t0, 2)
+
+    return {
+        "checks": checks,
+        "summary": {"passed": _passed, "total": _total, "pct": round(_passed/_total*100),
+                    "elapsed_s": _elapsed},
+        "timestamp": datetime.utcnow().isoformat(),
+        "version": "10.20.9",
+    }
+
+
+@app.get("/qa-dashboard", response_class=HTMLResponse)
+async def qa_dashboard_page():
+    """v10.20.9: Serve QA Dashboard HTML — mobile-friendly test UI."""
+    _html_path = os.path.join(os.path.dirname(__file__), "qa-dashboard.html")
+    if os.path.exists(_html_path):
+        with open(_html_path, "r", encoding="utf-8") as _f:
+            return HTMLResponse(content=_f.read())
+    return HTMLResponse(content="<h1>qa-dashboard.html not found</h1>", status_code=404)
+
 
 @app.websocket("/ws/live")
 async def ws_live(websocket: WebSocket, token: str = None):

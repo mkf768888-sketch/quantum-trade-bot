@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>QuantumTrade QA Dashboard</title>
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --card: #12121a;
+    --border: #1e1e2e;
+    --accent: #00d4ff;
+    --accent2: #7c3aed;
+    --green: #00ff88;
+    --red: #ff3366;
+    --yellow: #ffd700;
+    --text: #e0e0f0;
+    --muted: #6b7280;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    padding-bottom: 100px;
+  }
+
+  /* ── Header ─────────────────────────────────── */
+  .header {
+    background: linear-gradient(135deg, #0d0d1a 0%, #12122a 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 16px 12px;
+    position: sticky; top: 0; z-index: 100;
+  }
+  .header-top { display: flex; align-items: center; justify-content: space-between; }
+  .header h1 { font-size: 16px; font-weight: 700; color: var(--accent);
+    text-shadow: 0 0 20px rgba(0,212,255,0.4); }
+  .header .version { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .refresh-btn {
+    background: transparent; border: 1px solid var(--accent);
+    color: var(--accent); border-radius: 8px; padding: 6px 12px;
+    font-size: 12px; cursor: pointer; transition: all 0.2s;
+  }
+  .refresh-btn:active { background: rgba(0,212,255,0.1); }
+  .refresh-btn.loading { opacity: 0.5; pointer-events: none; }
+
+  /* ── Progress ─────────────────────────────── */
+  .progress-wrap {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: var(--radius); margin: 12px 16px 0;
+    padding: 14px 16px;
+  }
+  .progress-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .progress-label { font-size: 13px; color: var(--text); }
+  .progress-pct { font-size: 22px; font-weight: 800; color: var(--accent); }
+  .progress-bar-bg {
+    background: var(--border); border-radius: 99px; height: 8px; overflow: hidden;
+  }
+  .progress-bar-fill {
+    height: 100%; border-radius: 99px;
+    background: linear-gradient(90deg, var(--accent2), var(--accent));
+    transition: width 0.6s ease; width: 0%;
+  }
+  .progress-sub { display: flex; gap: 12px; margin-top: 10px; }
+  .progress-sub span { font-size: 11px; color: var(--muted); }
+  .progress-sub .ok-count { color: var(--green); }
+  .progress-sub .fail-count { color: var(--red); }
+
+  /* ── Section ─────────────────────────────── */
+  .section { margin: 16px 16px 0; }
+  .section-title {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+    color: var(--muted); text-transform: uppercase; margin-bottom: 8px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .section-title::after {
+    content: ''; flex: 1; height: 1px; background: var(--border);
+  }
+
+  /* ── Check Card ───────────────────────────── */
+  .checks-list { display: flex; flex-direction: column; gap: 6px; }
+  .check-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 12px;
+    display: flex; align-items: center; gap: 10px;
+    transition: border-color 0.3s;
+  }
+  .check-card.ok   { border-left: 3px solid var(--green); }
+  .check-card.fail { border-left: 3px solid var(--red); }
+  .check-card.pending { border-left: 3px solid var(--yellow); }
+  .check-icon { font-size: 18px; flex-shrink: 0; }
+  .check-body { flex: 1; min-width: 0; }
+  .check-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .check-value { font-size: 11px; color: var(--muted); margin-top: 1px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .check-badge {
+    font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 99px;
+    flex-shrink: 0;
+  }
+  .check-badge.ok   { background: rgba(0,255,136,0.12); color: var(--green); }
+  .check-badge.fail { background: rgba(255,51,102,0.12); color: var(--red); }
+  .check-badge.pending { background: rgba(255,215,0,0.12); color: var(--yellow); }
+
+  /* ── Manual Checks ────────────────────────── */
+  .manual-item {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px;
+    display: flex; align-items: flex-start; gap: 10px; cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .manual-item.checked {
+    border-color: rgba(0,255,136,0.3);
+    background: rgba(0,255,136,0.04);
+  }
+  .manual-item.failed {
+    border-color: rgba(255,51,102,0.3);
+    background: rgba(255,51,102,0.04);
+  }
+  .manual-checkbox {
+    width: 20px; height: 20px; border-radius: 6px; flex-shrink: 0; margin-top: 1px;
+    border: 2px solid var(--border); display: flex; align-items: center; justify-content: center;
+    font-size: 12px; transition: all 0.2s;
+  }
+  .manual-item.checked .manual-checkbox  { background: var(--green);  border-color: var(--green); }
+  .manual-item.failed  .manual-checkbox  { background: var(--red);    border-color: var(--red); }
+  .manual-text { flex: 1; }
+  .manual-label { font-size: 13px; line-height: 1.4; }
+  .manual-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .manual-actions { display: flex; gap: 6px; margin-top: 8px; }
+  .manual-btn {
+    border: none; border-radius: 6px; padding: 5px 10px;
+    font-size: 11px; font-weight: 600; cursor: pointer; transition: opacity 0.2s;
+  }
+  .manual-btn.ok-btn   { background: rgba(0,255,136,0.15); color: var(--green); }
+  .manual-btn.fail-btn { background: rgba(255,51,102,0.15); color: var(--red); }
+  .manual-btn:active { opacity: 0.6; }
+
+  /* ── Footer Buttons ───────────────────────── */
+  .footer-bar {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: rgba(10,10,15,0.95); backdrop-filter: blur(10px);
+    border-top: 1px solid var(--border);
+    padding: 12px 16px; display: flex; gap: 8px;
+  }
+  .footer-btn {
+    flex: 1; padding: 12px 8px; border-radius: 10px; border: none;
+    font-size: 13px; font-weight: 700; cursor: pointer; transition: opacity 0.2s;
+  }
+  .footer-btn:active { opacity: 0.7; }
+  .btn-report {
+    background: linear-gradient(135deg, var(--accent2), var(--accent));
+    color: #fff;
+  }
+  .btn-reset {
+    background: var(--card); border: 1px solid var(--border);
+    color: var(--muted);
+  }
+
+  /* ── Last update bar ──────────────────────── */
+  .last-update {
+    text-align: center; font-size: 11px; color: var(--muted);
+    padding: 8px 0 4px;
+  }
+
+  /* ── Loading skeleton ─────────────────────── */
+  @keyframes shimmer {
+    0%   { background-position: -300px 0; }
+    100% { background-position: 300px 0; }
+  }
+  .skeleton {
+    background: linear-gradient(90deg, var(--card) 25%, var(--border) 50%, var(--card) 75%);
+    background-size: 600px 100%;
+    animation: shimmer 1.5s infinite;
+    border-radius: 8px; height: 14px;
+  }
+
+  /* ── Bug Report Modal ─────────────────────── */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; z-index: 200;
+    background: rgba(0,0,0,0.7); backdrop-filter: blur(4px);
+    align-items: flex-end; justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: var(--radius) var(--radius) 0 0;
+    padding: 20px 16px 32px; width: 100%; max-width: 500px;
+  }
+  .modal h3 { font-size: 16px; margin-bottom: 12px; color: var(--accent); }
+  .modal pre {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px; font-size: 11px; color: var(--text); overflow: auto;
+    max-height: 200px; white-space: pre-wrap; margin-bottom: 12px;
+  }
+  .modal-btns { display: flex; gap: 8px; }
+  .modal-btns button {
+    flex: 1; padding: 12px; border-radius: 10px; border: none;
+    font-size: 13px; font-weight: 700; cursor: pointer;
+  }
+  .modal-copy { background: var(--accent); color: #000; }
+  .modal-close { background: var(--border); color: var(--text); }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="header-top">
+    <div>
+      <h1>⚡ QA Dashboard</h1>
+      <div class="version" id="versionLine">QuantumTrade AI · загрузка...</div>
+    </div>
+    <button class="refresh-btn" id="refreshBtn" onclick="runAutoChecks()">↻ Обновить</button>
+  </div>
+</div>
+
+<!-- PROGRESS RING -->
+<div class="progress-wrap">
+  <div class="progress-top">
+    <div class="progress-label">Общий прогресс QA</div>
+    <div class="progress-pct" id="progressPct">—%</div>
+  </div>
+  <div class="progress-bar-bg">
+    <div class="progress-bar-fill" id="progressBar"></div>
+  </div>
+  <div class="progress-sub">
+    <span id="subElapsed" class="muted">запуск...</span>
+    <span id="subOk" class="ok-count"></span>
+    <span id="subFail" class="fail-count"></span>
+  </div>
+</div>
+
+<!-- AUTO CHECKS: DEPLOY -->
+<div class="section">
+  <div class="section-title">🚀 Деплой</div>
+  <div class="checks-list" id="cat-deploy"></div>
+</div>
+
+<!-- AUTO CHECKS: EXCHANGES -->
+<div class="section">
+  <div class="section-title">🔗 Биржи</div>
+  <div class="checks-list" id="cat-exchanges"></div>
+</div>
+
+<!-- AUTO CHECKS: TRADING -->
+<div class="section">
+  <div class="section-title">📊 Торговля</div>
+  <div class="checks-list" id="cat-trading"></div>
+</div>
+
+<!-- AUTO CHECKS: EARN -->
+<div class="section">
+  <div class="section-title">💰 Earn-подсистемы</div>
+  <div class="checks-list" id="cat-earn"></div>
+</div>
+
+<!-- MANUAL CHECKS -->
+<div class="section">
+  <div class="section-title">👤 Ручные проверки</div>
+  <div class="checks-list" id="manualList"></div>
+</div>
+
+<div class="last-update" id="lastUpdate"></div>
+
+<!-- FOOTER -->
+<div class="footer-bar">
+  <button class="footer-btn btn-report" onclick="openReport()">📤 Отчёт в Telegram</button>
+  <button class="footer-btn btn-reset" onclick="resetManual()">↺ Сбросить ручные</button>
+</div>
+
+<!-- REPORT MODAL -->
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <h3>📋 Отчёт для разработчика</h3>
+    <pre id="reportText"></pre>
+    <div class="modal-btns">
+      <button class="modal-copy" onclick="copyReport()">📋 Копировать</button>
+      <button class="modal-close" onclick="closeModal()">✕ Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── Config ──────────────────────────────────────────────────────────────────
+const API_BASE = ''; // same origin — Railway serves this file
+
+// ─── Manual checks definition ────────────────────────────────────────────────
+const MANUAL_CHECKS = [
+  { id: 'miniapp_load',    label: 'Mini App открывается',          sub: 'Нажми кнопку в Telegram → приложение грузится < 5 сек' },
+  { id: 'miniapp_balance', label: 'Mini App показывает баланс',    sub: 'Сумма не 0.00 и не NaN при наличии средств' },
+  { id: 'miniapp_chart',   label: 'График P&L загрузился',         sub: 'Кривая equity visible, нет "Error loading"' },
+  { id: 'miniapp_buy',     label: 'Кнопка Buy работает',           sub: 'Открывает форму ввода, не зависает' },
+  { id: 'miniapp_sell',    label: 'Кнопка Sell работает',          sub: 'Открывает форму ввода' },
+  { id: 'miniapp_settings',label: 'Settings открываются',          sub: 'Можно изменить MIN_Q_SCORE / RISK_PER_TRADE' },
+  { id: 'miniapp_earn',    label: 'Earn вкладка отображается',     sub: 'Lending / DCI / Flex балансы видны' },
+  { id: 'miniapp_ws',      label: 'WebSocket онлайн',              sub: 'Иконка ● зелёная (live данные)' },
+  { id: 'tg_stats',        label: '/stats отвечает в Telegram',    sub: 'Нет ошибки, winrate/trades видны' },
+  { id: 'tg_mirofish',     label: '/mirofish отвечает',            sub: '15 агентов, нет timeout' },
+  { id: 'tg_rebalance',    label: '/rebalance показывает ставку',  sub: 'KC Lending рыночная ставка видна в сообщении' },
+  { id: 'tg_dciplace',     label: '/dciplace без "all_skipped"',   sub: 'DCI или размещает, или внятная причина' },
+];
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let autoResults = {};
+let manualState = JSON.parse(sessionStorage.getItem('qa_manual') || '{}');
+
+// ─── Render manual checks ─────────────────────────────────────────────────────
+function renderManual() {
+  const list = document.getElementById('manualList');
+  list.innerHTML = '';
+  MANUAL_CHECKS.forEach(item => {
+    const state = manualState[item.id] || 'pending'; // pending | ok | fail
+    const icon  = state === 'ok' ? '✓' : state === 'fail' ? '✗' : '';
+    const div   = document.createElement('div');
+    div.className = `manual-item ${state === 'ok' ? 'checked' : state === 'fail' ? 'failed' : ''}`;
+    div.innerHTML = `
+      <div class="manual-checkbox">${icon}</div>
+      <div class="manual-text">
+        <div class="manual-label">${item.label}</div>
+        <div class="manual-sub">${item.sub}</div>
+        <div class="manual-actions">
+          <button class="manual-btn ok-btn"   onclick="setManual('${item.id}','ok');event.stopPropagation()">✅ Работает</button>
+          <button class="manual-btn fail-btn" onclick="setManual('${item.id}','fail');event.stopPropagation()">❌ Не работает</button>
+        </div>
+      </div>`;
+    list.appendChild(div);
+  });
+  updateProgress();
+}
+
+function setManual(id, state) {
+  manualState[id] = state;
+  sessionStorage.setItem('qa_manual', JSON.stringify(manualState));
+  renderManual();
+}
+
+function resetManual() {
+  manualState = {};
+  sessionStorage.removeItem('qa_manual');
+  renderManual();
+}
+
+// ─── Render auto check card ───────────────────────────────────────────────────
+function renderCheck(key, chk) {
+  const ok      = chk.ok;
+  const icon    = ok ? '✅' : '❌';
+  const cls     = ok ? 'ok' : 'fail';
+  const badge   = ok ? 'OK' : 'FAIL';
+  const catId   = 'cat-' + (chk.category || 'deploy');
+  const container = document.getElementById(catId);
+  if (!container) return;
+
+  let card = document.getElementById('chk-' + key);
+  if (!card) {
+    card = document.createElement('div');
+    card.id = 'chk-' + key;
+    container.appendChild(card);
+  }
+  card.className = `check-card ${cls}`;
+  card.innerHTML = `
+    <div class="check-icon">${icon}</div>
+    <div class="check-body">
+      <div class="check-name">${chk.label}</div>
+      <div class="check-value">${chk.value || ''}</div>
+    </div>
+    <span class="check-badge ${cls}">${badge}</span>`;
+}
+
+// ─── Run auto checks ──────────────────────────────────────────────────────────
+async function runAutoChecks() {
+  const btn = document.getElementById('refreshBtn');
+  btn.classList.add('loading');
+  btn.textContent = '⏳';
+
+  // Show skeleton while loading
+  ['deploy','exchanges','trading','earn'].forEach(cat => {
+    const el = document.getElementById('cat-' + cat);
+    if (el && el.children.length === 0) {
+      el.innerHTML = '<div class="check-card pending"><div class="check-icon">⏳</div><div class="check-body"><div class="skeleton" style="width:60%;margin-bottom:4px"></div><div class="skeleton" style="width:40%"></div></div></div>';
+    }
+  });
+
+  try {
+    const res  = await fetch(API_BASE + '/api/qa-run', {
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+
+    autoResults = data.checks || {};
+
+    // Clear and render all categories
+    ['deploy','exchanges','trading','earn'].forEach(cat => {
+      document.getElementById('cat-' + cat).innerHTML = '';
+    });
+    Object.entries(autoResults).forEach(([key, chk]) => renderCheck(key, chk));
+
+    const s = data.summary || {};
+    document.getElementById('subElapsed').textContent = `за ${s.elapsed_s || '?'}с`;
+    document.getElementById('versionLine').textContent =
+      `QuantumTrade AI · v${data.version || '?'} · ${new Date(data.timestamp).toLocaleTimeString('ru')}`;
+
+    updateProgress();
+    document.getElementById('lastUpdate').textContent =
+      'Обновлено: ' + new Date().toLocaleTimeString('ru');
+
+  } catch(e) {
+    document.getElementById('versionLine').textContent = '❌ Нет ответа от бота: ' + e.message;
+  }
+
+  btn.classList.remove('loading');
+  btn.textContent = '↻ Обновить';
+}
+
+// ─── Progress calculation ──────────────────────────────────────────────────────
+function updateProgress() {
+  const autoOk   = Object.values(autoResults).filter(c => c.ok).length;
+  const autoFail = Object.values(autoResults).filter(c => !c.ok).length;
+  const autoTotal= Object.keys(autoResults).length;
+
+  const manOk    = Object.values(manualState).filter(s => s === 'ok').length;
+  const manFail  = Object.values(manualState).filter(s => s === 'fail').length;
+  const manDone  = manOk + manFail;
+  const manTotal = MANUAL_CHECKS.length;
+
+  const totalChecked = autoTotal + manDone;
+  const totalOk      = autoOk + manOk;
+  const totalItems   = autoTotal + manTotal;
+
+  // Progress = (all auto runs + manual that are done) / total possible
+  const runPct = totalItems > 0 ? Math.round(totalChecked / totalItems * 100) : 0;
+  // Health = ok / (auto_run + manual_done)
+  const okPct  = totalChecked > 0 ? Math.round(totalOk / totalChecked * 100) : 0;
+
+  // Show health % (ok out of run), bar shows coverage
+  document.getElementById('progressPct').textContent = totalChecked > 0 ? okPct + '%' : '—%';
+  document.getElementById('progressBar').style.width = runPct + '%';
+  document.getElementById('progressBar').style.background =
+    okPct >= 90 ? 'linear-gradient(90deg,#00cc66,#00ff88)' :
+    okPct >= 70 ? 'linear-gradient(90deg,#ffd700,#ffaa00)' :
+                  'linear-gradient(90deg,#cc0033,#ff3366)';
+
+  const failTotal = autoFail + manFail;
+  document.getElementById('subOk').textContent   = totalOk   > 0 ? `✅ ${totalOk} прошло`   : '';
+  document.getElementById('subFail').textContent = failTotal > 0 ? `❌ ${failTotal} не прошло` : '';
+}
+
+// ─── Report generation ────────────────────────────────────────────────────────
+function openReport() {
+  const date   = new Date().toLocaleString('ru');
+  const ver    = document.getElementById('versionLine').textContent;
+  const lines  = [`📋 QA Report — ${date}`, `${ver}`, ''];
+
+  // Auto checks
+  lines.push('🤖 АВТО-ПРОВЕРКИ:');
+  Object.entries(autoResults).forEach(([, c]) => {
+    lines.push(`  ${c.ok ? '✅' : '❌'} ${c.label}: ${c.value}`);
+  });
+  lines.push('');
+
+  // Manual checks
+  lines.push('👤 РУЧНЫЕ ПРОВЕРКИ:');
+  MANUAL_CHECKS.forEach(m => {
+    const st = manualState[m.id] || 'pending';
+    const ic = st === 'ok' ? '✅' : st === 'fail' ? '❌' : '⏳';
+    lines.push(`  ${ic} ${m.label}`);
+  });
+  lines.push('');
+
+  // Issues
+  const issues = [];
+  Object.entries(autoResults).filter(([,c]) => !c.ok)
+    .forEach(([,c]) => issues.push(`• ${c.label}: ${c.value}`));
+  MANUAL_CHECKS.filter(m => manualState[m.id] === 'fail')
+    .forEach(m => issues.push(`• ${m.label} — не работает`));
+  if (issues.length) {
+    lines.push('🔧 НУЖЕН ФИКСː');
+    issues.forEach(i => lines.push(i));
+  } else {
+    lines.push('🎉 Все проверенные пункты OK!');
+  }
+
+  document.getElementById('reportText').textContent = lines.join('\n');
+  document.getElementById('modal').classList.add('open');
+}
+
+function closeModal()  { document.getElementById('modal').classList.remove('open'); }
+
+function copyReport() {
+  const txt = document.getElementById('reportText').textContent;
+  navigator.clipboard.writeText(txt).then(() => {
+    const btn = document.querySelector('.modal-copy');
+    btn.textContent = '✅ Скопировано!';
+    setTimeout(() => { btn.textContent = '📋 Копировать'; }, 2000);
+  });
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+renderManual();
+runAutoChecks();
+
+// Auto-refresh every 60 seconds
+setInterval(runAutoChecks, 60000);
+</script>
+</body>
+</html>
