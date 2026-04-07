@@ -1,7 +1,30 @@
 # STATE.md — Память между сессиями
 > Обновлять после каждой значимой сессии. AI-агент читает это первым.
-> Последнее обновление: 2026-04-07 (ночная сессия v10.19.x)
+> Последнее обновление: 2026-04-07 (дневная сессия v10.20.x)
 > Архитектура: GSD v2 Wave Execution
+
+## ⚡ Текущее состояние (v10.20.3)
+- **Версия задеплоена:** 10.20.3 ✅ АКТИВНА
+- **Postgres:** Online, DATABASE_URL = `${{Postgres.DATABASE_URL}}` (Reference Variable)
+- **DCI:** CRV BuyLow исполнен (+94.58 CRV), авто-реинвест идёт
+- **Команды бота:** работают (webhook fix v10.20.2)
+- **DB cleanup:** первый запуск через ~30 мин после деплоя
+
+## ⚠️ ВАЖНЫЕ ЛОВУШКИ (читать перед каждой сессией!)
+1. **git push** — после каждого commit сразу пушить! Иначе Railway не деплоит.
+2. **TG_WEBHOOK_SECRET** — в Railway стоит старое значение. НИКОГДА не включать enforcement — только warn-only. Иначе все команды блокируются.
+3. **ADMIN_CHAT_IDS** — должен быть заполнен. Фоллбек на ALERT_CHAT_ID работает (v10.20.1), но лучше явно.
+
+## Чеклист для следующей сессии
+```
+[ ] Проверить что LENDING_ENABLED=true + FUNDING_ARB_ENABLED=true в Railway
+[ ] Gate.io API ключи → Railway Variables (GATE_API_KEY, GATE_SECRET, GATE_LENDING_ENABLED=true)
+[ ] При F&G 40+ → SNOWBALL_ENABLED=true
+[ ] Разработать OKX Dual Invest (мин. $10 vs ByBit $20 → вдвое больше позиций)
+[ ] Sub-accounts KuCoin + ByBit → ×2 доход без нового кода
+```
+
+---
 
 ## Текущее состояние бота
 - **Версия:** 10.19.3 (задеплоена, АКТИВНА)
