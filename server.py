@@ -2917,9 +2917,12 @@ async def dci_auto_place_idle() -> dict:
             }
 
         # Step 5: Try candidates in APY-desc order, skip VIP-only products (v10.12.3)
-        # _dci_candidates is already sorted by apy_pct descending (up to 5 attempts)
+        # _dci_candidates is already sorted by apy_pct descending
+        # v10.20.4: raised from 5 → 10 attempts (top-5 may all have stale selectPrice)
         _last_err = "no_candidates_tried"
-        for _attempt_opt in (_dci_candidates[:5] if _dci_candidates else ([best_option] if best_option else [])):
+        _max_attempts = 10
+        log_activity(f"[dci] {len(_dci_candidates)} candidates total, trying top {_max_attempts}")
+        for _attempt_opt in (_dci_candidates[:_max_attempts] if _dci_candidates else ([best_option] if best_option else [])):
             exch = _attempt_opt.get("exchange", "bybit")
             if _attempt_opt["direction"] == "BuyLow":
                 capital = _attempt_opt.get("kc_usdt", usdt_free) if exch == "kucoin" else usdt_free
@@ -2994,7 +2997,11 @@ async def dci_auto_place_idle() -> dict:
             _err_lc = _last_err.lower()
             # v10.12.3: VIP-restricted → skip to next candidate
             # v10.19.4: amount_out_of_range / min / max → skip to next (product-specific constraint)
-            _skip_errors = ("vip", "not vip", "amount out of range", "min:", "purchase share")
+            # v10.20.4: "invalid select price" → skip to next (stale strike price for this product,
+            #           another product likely has valid price). Previously treated as non-retriable
+            #           which stopped all 140 products after first failure.
+            _skip_errors = ("vip", "not vip", "amount out of range", "min:", "purchase share",
+                            "invalid select price", "select price")
             if any(kw in _err_lc for kw in _skip_errors):
                 log_activity(f"[dci] ⏭ skipping product {_attempt_opt['product_id']} ({_last_err[:80]})")
                 continue
@@ -14961,7 +14968,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.20.3",
+        "version": "10.20.4",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -15934,7 +15941,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.20.3",
+        "version": "10.20.4",
     }
 
 @app.get("/api/setup-webhook")
@@ -16145,7 +16152,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.20.3",
+        "version": "10.20.4",
     }
 
 @app.get("/api/dashboard")
