@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.19.5")
+app = FastAPI(title="QuantumTrade AI", version="10.19.6")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -11468,7 +11468,7 @@ async def _tg_dci(chat_id: int):
     lines.append(f"")
     lines.append(f"<b>💰 Активных позиций:</b> {total_pos} (BB={len(positions)}, KC={len(kc_positions)})")
     for pos in positions[:5]:
-        p_coin = pos.get("coin", "?")
+        p_coin = pos.get("coin", pos.get("baseCoin", pos.get("investCoin", "?")))  # v10.19.6: ByBit API uses baseCoin
         p_dir = pos.get("orderDirection", pos.get("direction", "?"))
         p_amt = pos.get("amount", "?")
         p_status = pos.get("status", "Active")
@@ -11739,18 +11739,39 @@ async def _tg_balance(chat_id: int):
         bb_earn_real = sum(p["amount"] for p in _earn_positions if p["exchange"] == "bybit")
     bb_earn = bb_earn_real
 
-    dci_positions = _dci_stats.get("positions", [])
-    dci_invested = sum(p.get("amount", 0) for p in dci_positions)
-    dci_count = len(dci_positions)
+    # v10.19.6: Query live DCI positions from ByBit API (in-memory resets on restart)
+    dci_invested = 0.0
+    dci_count = 0
+    dci_avg_apy = 0.0
+    try:
+        dci_live = await bybit_dci_get_positions()
+        dci_active = [p for p in dci_live
+                      if p.get("status", "").lower() not in ("settled", "closed", "completed", "expired")]
+        dci_count = len(dci_active)
+        for p in dci_active:
+            dci_invested += float(p.get("amount", 0) or 0)
+            apy_e8 = p.get("apyE8", "0")
+            try:
+                dci_avg_apy += round(int(apy_e8) / 1e8 * 100, 2)
+            except Exception:
+                pass
+        if dci_count > 0:
+            dci_avg_apy = round(dci_avg_apy / dci_count, 0)
+    except Exception:
+        dci_positions = _dci_stats.get("positions", [])
+        dci_invested = sum(p.get("amount", 0) for p in dci_positions)
+        dci_count = len(dci_positions)
+        dci_avg_apy = 507.0
     bb_unified_idle = max(0, bb_usdt - ROUTER_ARB_RESERVE_USDT - ROUTER_TRADE_RESERVE_USDT - bb_earn - dci_invested)
-    bb_total_visible = bb_usdt + bb_funding + bb_earn
+    bb_total_visible = bb_usdt + bb_funding + bb_earn + dci_invested  # v10.19.6: DCI is in FUND, add to visible
     bb_earn_est = any(getattr(h, "_estimated", h.get("_estimated", False)) for h in (bb_holds if bb_earn_real > 0 else []))
 
     lines.append(f"\n🔵 <b>ByBit</b>  (всего видимо: <code>${bb_total_visible:.2f}</code>)")
     lines.append(f"  Unified (торговля): <code>${bb_usdt:.2f}</code>")
     earn_est_mark = " ⚠️ est." if bb_earn_est else ""
     lines.append(f"  FlexEarn: <code>${bb_earn:.2f}</code>{earn_est_mark} ✅ зарабатывает")
-    lines.append(f"  DCI: <code>${dci_invested:.2f}</code> ({dci_count} поз.) 🚀 ~985% APY")
+    dci_apy_txt = f" 🚀 ~{dci_avg_apy:.0f}% APY" if dci_count > 0 and dci_avg_apy > 0 else (" 💤 нет позиций" if DCI_ENABLED else " ❌ выключен")
+    lines.append(f"  DCI: <code>${dci_invested:.2f}</code> ({dci_count} поз.){dci_apy_txt}")
     lines.append(f"  Unified idle: <code>${bb_unified_idle:.2f}</code>")
     if bb_funding > 0:
         hint = " ⚠️ /dci чтобы активировать" if bb_funding >= 5.0 else ""
@@ -12910,6 +12931,45 @@ async def startup():
                 print(f"[startup] ⚡ exchange sync complete: {synced} positions restored, {open_now} open total", flush=True)
         except Exception as sync_err:
             print(f"[startup] exchange sync error (non-fatal): {sync_err}", flush=True)
+
+    # v10.19.6: Sync active DCI positions from ByBit API on startup
+    # Without this, in-memory _dci_stats["positions"] is empty after restart,
+    # so dci_check_settlements() can't detect settlements of pre-restart positions.
+    if BYBIT_ENABLED:
+        try:
+            live_dci = await bybit_dci_get_positions()
+            active_dci = [p for p in live_dci
+                          if p.get("status", "").lower() not in ("settled", "closed", "completed", "expired")]
+            if active_dci and not _dci_stats.get("positions"):
+                for lp in active_dci:
+                    coin = lp.get("coin", lp.get("baseCoin", lp.get("investCoin", "?")))
+                    order_id = str(lp.get("orderId", ""))
+                    try:
+                        amt = float(lp.get("amount", 0) or 0)
+                    except Exception:
+                        amt = 0.0
+                    apy_e8 = lp.get("apyE8", "0")
+                    try:
+                        apy_pct = round(int(apy_e8) / 1e8 * 100, 4)
+                    except Exception:
+                        apy_pct = 0.0
+                    direction = lp.get("orderDirection", lp.get("direction", "BuyLow"))
+                    _dci_stats["positions"].append({
+                        "order_id": order_id,
+                        "product_id": str(lp.get("productId", "")),
+                        "direction": direction,
+                        "coin": coin,
+                        "amount": amt,
+                        "apy_e8": apy_e8,
+                        "apy_pct": apy_pct,
+                        "placed_at": time.time() - 3600,  # conservative: assume ~1h old
+                        "_restored": True,  # marker: loaded from API, not placed this session
+                    })
+                print(f"[startup] ✅ DCI sync: {len(active_dci)} active positions restored from ByBit API", flush=True)
+            elif not active_dci:
+                print(f"[startup] DCI sync: no active positions on ByBit", flush=True)
+        except Exception as _dci_err:
+            print(f"[startup] DCI sync error (non-fatal): {_dci_err}", flush=True)
 
     # v10.12.7: restore funding arb positions from DB (must run after db.init_db)
     if pg_ok:
@@ -14709,7 +14769,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.19.5",
+        "version": "10.19.6",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -15681,7 +15741,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.19.5",
+        "version": "10.19.6",
     }
 
 @app.get("/api/setup-webhook")
@@ -15892,7 +15952,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.19.5",
+        "version": "10.19.6",
     }
 
 @app.get("/api/dashboard")
