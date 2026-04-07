@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.20.0")
+app = FastAPI(title="QuantumTrade AI", version="10.20.1")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -261,6 +261,13 @@ ALERT_CHAT_ID     = os.getenv("ALERT_CHAT_ID", "")
 # Multiple IDs comma-separated: "123456,789012". Empty = allow all (unsafe — set ASAP!)
 _raw_admin_ids    = os.getenv("ADMIN_CHAT_IDS", "")
 AUTHORIZED_CHAT_IDS: set = set(int(x.strip()) for x in _raw_admin_ids.split(",") if x.strip().lstrip("-").isdigit())
+# v10.20.1: If ADMIN_CHAT_IDS not configured, fall back to ALERT_CHAT_ID (same owner).
+# Prevents lockout when ADMIN_CHAT_IDS is empty — logs a warning to remind user to set it.
+if not AUTHORIZED_CHAT_IDS and ALERT_CHAT_ID:
+    try:
+        AUTHORIZED_CHAT_IDS = {int(ALERT_CHAT_ID)}
+    except (ValueError, TypeError):
+        pass  # ALERT_CHAT_ID not a valid int — bot stays locked (user must fix ADMIN_CHAT_IDS)
 YANDEX_VISION_KEY = os.getenv("YANDEX_VISION_KEY", "")
 YANDEX_FOLDER_ID  = os.getenv("YANDEX_FOLDER_ID", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
@@ -14926,7 +14933,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.20.0",
+        "version": "10.20.1",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -15898,7 +15905,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.20.0",
+        "version": "10.20.1",
     }
 
 @app.get("/api/setup-webhook")
@@ -16109,7 +16116,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.20.0",
+        "version": "10.20.1",
     }
 
 @app.get("/api/dashboard")
