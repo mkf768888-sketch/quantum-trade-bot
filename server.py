@@ -2059,11 +2059,27 @@ async def kc_flex_to_lending_rebalance() -> dict:
     if not LENDING_ENABLED or not EARN_ENABLED:
         return {"action": "disabled", "reason": "LENDING_ENABLED or EARN_ENABLED=false"}
 
-    # Measure KC Flex Earn balance from _earn_positions cache
+    # Measure KC Flex Earn balance — try cache first, fall back to API
+    # v10.20.6: _earn_positions may be empty right after deploy → fetch from exchange directly
     kc_flex_positions = [
         p for p in _earn_positions
         if p.get("exchange") == "kucoin" and p.get("coin") == "USDT"
     ]
+    if not kc_flex_positions:
+        # Cache is empty (fresh deploy / first cycle) — fetch directly from KuCoin API
+        try:
+            kc_fresh = await kucoin_earn_get_hold_assets("USDT")
+            for _kf in kc_fresh:
+                _kf_amount = float(_kf.get("holdAmount", _kf.get("totalAmount", 0)))
+                if _kf_amount >= 1.0:
+                    kc_flex_positions.append({
+                        "exchange": "kucoin", "coin": "USDT",
+                        "order_id": str(_kf.get("orderId", _kf.get("id", ""))),
+                        "amount": _kf_amount,
+                    })
+            log_activity(f"[rebalance] fetched KC Flex from API: {len(kc_flex_positions)} positions")
+        except Exception as _fe:
+            log_activity(f"[rebalance] API fetch fallback error: {_fe}")
     kc_flex_total = sum(float(p.get("amount", 0)) for p in kc_flex_positions)
     log_activity(f"[rebalance] KC Flex Earn: ${kc_flex_total:.2f}, buffer target=${KC_FLEX_EARN_BUFFER_USDT:.0f}")
 
@@ -2164,6 +2180,27 @@ async def _tg_rebalance(chat_id: int):
             status_line = f"⚠️ LENDING_ENABLED или EARN_ENABLED = false в Railway"
         else:
             status_line = f"⚠️ <code>{action}</code>"
+
+        # v10.20.6: If rebalance failed or funds already freed (e.g., from previous auto-cycle),
+        # try to place them in Lending now. Handles the case where $92 sits idle in KC Trading.
+        _extra_lending_line = ""
+        if LENDING_ENABLED and action in ("redeem_failed", "no_action"):
+            try:
+                lend_check = await kucoin_lending_auto_place()
+                if lend_check.get("action") == "placed":
+                    lend_apr = lend_check.get("apr", 0)
+                    lend_deploy = lend_check.get("deploy", 0)
+                    _extra_lending_line = (
+                        f"\n\n✅ <b>Lending размещён!</b> "
+                        f"<code>${lend_deploy:.2f}</code> @ <code>{lend_apr:.1f}%</code> APR"
+                    )
+                elif lend_check.get("action") == "already_active":
+                    _extra_lending_line = f"\n<i>Lending уже активен ({lend_check.get('orders',0)} ордер(а))</i>"
+                elif lend_check.get("action") == "rate_too_low":
+                    _extra_lending_line = f"\n<i>Lending: ставка {lend_check.get('apr',0):.1f}% < порога {LENDING_MIN_APR:.0f}%</i>"
+            except Exception as _le:
+                log_activity(f"[rebalance] lending fallback error: {_le}")
+        status_line += _extra_lending_line
 
         # Current allocation summary
         kc_lending_total = sum(float(p.get("size", p.get("amount", 0))) for p in _lending_positions)
@@ -2899,11 +2936,19 @@ async def dci_auto_place_idle() -> dict:
         _dci_candidates: list = []
 
         # ── Step 4a: ByBit DCI products ──
-        for product in products:
+        # v10.20.6: limit to first 30 products to avoid ByBit rate limit (was 140 × 1 API call each).
+        # 30 quotes = ~3s at 0.1s delay. Best products are typically in the first 30 anyway.
+        _products_to_scan = products[:30]
+        log_activity(f"[dci] scanning {len(_products_to_scan)}/{len(products)} products (rate-limit safe)")
+        for _scan_idx, product in enumerate(_products_to_scan):
             product_id = str(product.get("productId", product.get("id", "")))
             if not product_id:
                 continue
             base_coin = str(product.get("coin", product.get("baseCoin", "BTC")))
+
+            # v10.20.6: small delay between quote calls to stay within ByBit rate limits
+            if _scan_idx > 0:
+                await asyncio.sleep(0.15)
 
             quote = await bybit_dci_get_quote(product_id)
             if not quote:
@@ -3141,13 +3186,17 @@ async def dci_auto_place_idle() -> dict:
             _err_lc = _last_err.lower()
             # v10.12.3: VIP-restricted → skip to next candidate
             # v10.19.4: amount_out_of_range / min / max → skip to next (product-specific constraint)
-            # v10.20.4: "invalid select price" → skip to next (stale strike price for this product,
-            #           another product likely has valid price). Previously treated as non-retriable
-            #           which stopped all 140 products after first failure.
+            # v10.20.4: "invalid select price" → skip to next (stale strike price for this product)
+            # v10.20.6: "too many visits" / "rate limit" / "exceeded" → skip + wait 2s before next
             _skip_errors = ("vip", "not vip", "amount out of range", "min:", "purchase share",
-                            "invalid select price", "select price")
+                            "invalid select price", "select price",
+                            "too many", "rate limit", "exceeded", "visit")
             if any(kw in _err_lc for kw in _skip_errors):
                 log_activity(f"[dci] ⏭ skipping product {_attempt_opt['product_id']} ({_last_err[:80]})")
+                # v10.20.6: rate limit error → pause before next attempt
+                if any(kw in _err_lc for kw in ("too many", "rate limit", "exceeded", "visit")):
+                    log_activity(f"[dci] rate limit hit — waiting 3s before next attempt")
+                    await asyncio.sleep(3)
                 continue
             else:
                 log_activity(f"[dci] place_order failed (non-retriable error): {_last_err}")
@@ -15124,7 +15173,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.20.5",
+        "version": "10.20.6",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -16097,7 +16146,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.20.5",
+        "version": "10.20.6",
     }
 
 @app.get("/api/setup-webhook")
@@ -16308,7 +16357,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.20.5",
+        "version": "10.20.6",
     }
 
 @app.get("/api/dashboard")
