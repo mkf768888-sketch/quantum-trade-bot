@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.19.9")
+app = FastAPI(title="QuantumTrade AI", version="10.20.0")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -1832,7 +1832,7 @@ DIGEST_HOUR_UTC_2  = int(os.getenv("DIGEST_HOUR_UTC_2", "15")) # 15 UTC = 18 MSK
 
 LENDING_ENABLED       = os.getenv("LENDING_ENABLED",     "false").lower() == "true"
 LENDING_MIN_APR       = float(os.getenv("LENDING_MIN_APR",  "10.0"))   # % APR threshold
-LENDING_MAX_USDT      = float(os.getenv("LENDING_MAX_USDT", "30.0"))   # max USDT to lend
+LENDING_MAX_USDT      = float(os.getenv("LENDING_MAX_USDT", "80.0"))   # max USDT to lend (v10.20.0: raised 30→80 for $100 balance)
 LENDING_TERM_DAYS     = int(os.getenv("LENDING_TERM_DAYS",  "7"))      # 7 or 14 days
 LENDING_AUTO_RENEW    = os.getenv("LENDING_AUTO_RENEW",  "true").lower() == "true"
 
@@ -5325,8 +5325,8 @@ async def bybit_get_funding_rates_all() -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 FUNDING_ARB_ENABLED  = os.getenv("FUNDING_ARB_ENABLED",  "false").lower() == "true"
-FUNDING_ARB_MIN_RATE = float(os.getenv("FUNDING_ARB_MIN_RATE", "0.0001"))  # 0.01%/8h ≈ 10% APR
-FUNDING_ARB_MAX_USDT = float(os.getenv("FUNDING_ARB_MAX_USDT", "30.0"))    # max USDT per position
+FUNDING_ARB_MIN_RATE = float(os.getenv("FUNDING_ARB_MIN_RATE", "0.0001"))  # 0.01%/8h ≈ 10% APR (v10.20.0)
+FUNDING_ARB_MAX_USDT = float(os.getenv("FUNDING_ARB_MAX_USDT", "20.0"))    # max USDT per position (v10.20.0: lowered 30→20 for small account safety)
 FUNDING_ARB_SYMBOLS  = ["ETH-USDT", "SOL-USDT", "BTC-USDT"]               # checked in priority order
 
 # v10.12.7: ByBit perpetual qty step sizes (base coin precision per symbol)
@@ -14926,7 +14926,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.19.9",
+        "version": "10.20.0",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -15898,7 +15898,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.19.9",
+        "version": "10.20.0",
     }
 
 @app.get("/api/setup-webhook")
@@ -16109,7 +16109,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.19.9",
+        "version": "10.20.0",
     }
 
 @app.get("/api/dashboard")
