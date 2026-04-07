@@ -1479,6 +1479,7 @@ _bybit_fund_balance: float = 0.0  # v10.19.0: cached FUND account balance
 _earn_lock = asyncio.Lock()
 _dci_lock  = asyncio.Lock()
 _last_fund_to_unified_ts: float = 0.0  # v10.17.1: cooldown anti-pingpong FUND↔UNIFIED
+_earn_monitor_loop_ts: float = 0.0    # v10.20.10: updated on every earn_monitor_loop iteration (for QA check)
 
 
 async def kucoin_earn_get_savings_products(coin: str = "USDT") -> list:
@@ -4032,6 +4033,8 @@ async def earn_monitor_loop():
             await asyncio.sleep(60)
             continue
         try:
+            global _earn_monitor_loop_ts
+            _earn_monitor_loop_ts = time.time()  # v10.20.10: stamp every iteration for QA health check
             # v10.11.1: DCI runs FIRST — before Earn, and independently of EARN_ENABLED.
             # DCI yields 100-900%+ APY vs Earn 0.6-0.7% APR — DCI must get first dibs on idle USDT.
             # Previously DCI was inside EARN_ENABLED block and ran AFTER Earn, losing all funds to Earn.
@@ -15204,7 +15207,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.20.9",
+        "version": "10.20.10",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -16177,7 +16180,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.20.9",
+        "version": "10.20.10",
     }
 
 @app.get("/api/setup-webhook")
@@ -16323,11 +16326,18 @@ async def api_public_stats():
     """Public read-only stats for Mini App — no auth required. v7.4.2: +price fallback +balance summary"""
     # Fetch in parallel: prices (with fallback), fear&greed, whale signals, balance
     MAIN_PAIRS = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT"]
+    # v10.20.10: wrap each call in 10-second timeout so browser's 15s AbortSignal never fires first.
+    # Without this, KuCoin price fetch or whale calls could hang >15s → whole loadData() fails in Mini App.
+    async def _safe(coro, fallback):
+        try:
+            return await asyncio.wait_for(coro, timeout=10.0)
+        except Exception:
+            return fallback
     prices_data, fg_data, balance_data, *whale_results = await asyncio.gather(
-        _get_prices_with_fallback(),
-        get_fear_greed(),
-        api_public_balance(),
-        *[get_whale_signal(sym) for sym in MAIN_PAIRS],
+        _safe(_get_prices_with_fallback(), {"prices": {}, "success": False}),
+        _safe(get_fear_greed(), {"value": 50, "classification": "Neutral", "success": False}),
+        _safe(api_public_balance(), {"spot_usdt": 0, "futures_equity": 0, "total_usdt": 0}),
+        *[_safe(get_whale_signal(sym), {"bonus": 0, "signal": "neutral"}) for sym in MAIN_PAIRS],
         return_exceptions=True
     )
     # Polymarket (cached — non-blocking)
@@ -16388,7 +16398,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.20.9",
+        "version": "10.20.10",
     }
 
 @app.get("/api/dashboard")
@@ -16658,7 +16668,7 @@ async def api_db_sizes(_auth=Depends(verify_api_key)):
 
 @app.get("/api/qa-run")
 async def api_qa_run():
-    """v10.20.9: Public QA health-check endpoint. Runs ~12 checks in parallel,
+    """v10.20.10: Public QA health-check endpoint. Runs ~12 checks in parallel,
     returns structured results for the qa-dashboard.html UI.
     No auth required — only reads status, never modifies data."""
     import time as _time
@@ -16678,7 +16688,7 @@ async def api_qa_run():
 
     # ── individual check coroutines ──────────────────────────────────────────
     async def _c_version():
-        return {"ok": True, "value": "10.20.9"}
+        return {"ok": True, "value": "10.20.10"}
 
     async def _c_db():
         try:
@@ -16711,10 +16721,13 @@ async def api_qa_run():
             return {"ok": False, "value": str(_e)[:40]}
 
     async def _c_earn_loop():
-        last = _earn_stats.get("last_action", 0)
+        # v10.20.10: use _earn_monitor_loop_ts (updated every cycle) instead of last_action
+        # last_action only updates when earn actions happen; loop may run without placing anything
+        last = _earn_monitor_loop_ts
         age = _time.time() - last if last else 9999
-        ok = age < 3600  # should run every 15 min; allow up to 60 min
-        return {"ok": ok, "value": f"{int(age//60)} мин назад" if last else "никогда"}
+        ok = age < 3600  # 15-min loop; allow up to 60 min (accounts for 2-min startup delay + slow cycles)
+        age_str = f"{int(age//60)} мин назад" if last else "первый цикл ещё не запущен (ждём ~2 мин)"
+        return {"ok": ok, "value": age_str}
 
     async def _c_kc_balance():
         try:
@@ -16739,9 +16752,14 @@ async def api_qa_run():
             return {"ok": True, "value": "DISABLED (ok)"}
         try:
             mkt = await kucoin_lending_get_market_rate("USDT")
-            apr = mkt.get("apr", 0) if mkt.get("success") else 0
+            api_ok = mkt.get("success", False)
+            apr = mkt.get("apr", 0)
             active = len(_lending_positions)
-            return {"ok": True, "value": f"APR {apr:.1f}% | {active} ордер(а)"}
+            if not api_ok:
+                return {"ok": False, "value": f"API failed (rate unknown) | {active} ордер(а)"}
+            # v10.20.10: distinguish 0% (real low rate) from API failure
+            rate_note = "" if apr > 0 else " ⚠️ ставка=0 (рынок не даёт займы)"
+            return {"ok": True, "value": f"APR {apr:.1f}%{rate_note} | {active} ордер(а) | порог={LENDING_MIN_APR:.0f}%"}
         except Exception as _e:
             return {"ok": False, "value": str(_e)[:40]}
 
@@ -16764,7 +16782,7 @@ async def api_qa_run():
         try:
             fg = await get_fear_greed()
             val = fg.get("value", 0) if fg else 0
-            cls = fg.get("value_classification", "?") if fg else "?"
+            cls = fg.get("classification", fg.get("value_classification", "?")) if fg else "?"  # v10.20.10: fix key name
             ok = val > 0
             return {"ok": ok, "value": f"{val} — {cls}"}
         except Exception as _e:
@@ -16797,13 +16815,13 @@ async def api_qa_run():
         "summary": {"passed": _passed, "total": _total, "pct": round(_passed/_total*100),
                     "elapsed_s": _elapsed},
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.20.9",
+        "version": "10.20.10",
     }
 
 
 @app.get("/qa-dashboard", response_class=HTMLResponse)
 async def qa_dashboard_page():
-    """v10.20.9: Serve QA Dashboard HTML — mobile-friendly test UI."""
+    """v10.20.10: Serve QA Dashboard HTML — mobile-friendly test UI."""
     _html_path = os.path.join(os.path.dirname(__file__), "qa-dashboard.html")
     if os.path.exists(_html_path):
         with open(_html_path, "r", encoding="utf-8") as _f:
