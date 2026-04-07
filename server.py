@@ -1838,7 +1838,7 @@ DIGEST_HOUR_UTC    = int(os.getenv("DIGEST_HOUR_UTC", "6"))   # 6 UTC = 9 MSK �
 DIGEST_HOUR_UTC_2  = int(os.getenv("DIGEST_HOUR_UTC_2", "15")) # 15 UTC = 18 MSK — вечерний срез
 
 LENDING_ENABLED       = os.getenv("LENDING_ENABLED",     "false").lower() == "true"
-LENDING_MIN_APR       = float(os.getenv("LENDING_MIN_APR",   "5.0"))   # % APR threshold (v10.20.7: 10→5, low F&G reduces demand/rates)
+LENDING_MIN_APR       = float(os.getenv("LENDING_MIN_APR",   "2.0"))   # % APR threshold (v10.20.8: 5→2, even extreme fear rates earn more than 0)
 LENDING_MAX_USDT      = float(os.getenv("LENDING_MAX_USDT", "100.0"))  # max USDT to lend (v10.20.5: raised 80→100)
 LENDING_TERM_DAYS     = int(os.getenv("LENDING_TERM_DAYS",  "7"))      # 7 or 14 days
 LENDING_AUTO_RENEW    = os.getenv("LENDING_AUTO_RENEW",  "true").lower() == "true"
@@ -2195,7 +2195,16 @@ async def _tg_rebalance(chat_id: int):
 
         # v10.20.6: If rebalance failed or funds already freed (e.g., from previous auto-cycle),
         # try to place them in Lending now. Handles the case where $92 sits idle in KC Trading.
-        _extra_lending_line = ""
+        # v10.20.8: always fetch KC Lending market rate for visibility
+        _kc_market_rate_str = ""
+        try:
+            _kc_mkt = await kucoin_lending_get_market_rate("USDT")
+            if _kc_mkt.get("success"):
+                _kc_mkt_apr = _kc_mkt.get("apr", 0)
+                _kc_market_rate_str = f"\n📊 KC Lending рыночная ставка: <code>{_kc_mkt_apr:.1f}%</code> APR (порог: <code>{LENDING_MIN_APR:.0f}%</code>)"
+        except Exception:
+            pass
+        _extra_lending_line = _kc_market_rate_str
         if LENDING_ENABLED and action in ("redeem_failed", "no_action"):
             try:
                 lend_check = await kucoin_lending_auto_place()
@@ -2207,9 +2216,11 @@ async def _tg_rebalance(chat_id: int):
                         f"<code>${lend_deploy:.2f}</code> @ <code>{lend_apr:.1f}%</code> APR"
                     )
                 elif lend_check.get("action") == "already_active":
-                    _extra_lending_line = f"\n<i>Lending уже активен ({lend_check.get('orders',0)} ордер(а))</i>"
+                    _extra_lending_line += f"\n<i>Lending уже активен ({lend_check.get('orders',0)} ордер(а))</i>"
                 elif lend_check.get("action") == "rate_too_low":
-                    _extra_lending_line = f"\n<i>Lending: ставка {lend_check.get('apr',0):.1f}% < порога {LENDING_MIN_APR:.0f}%</i>"
+                    _extra_lending_line += f"\n⚠️ <i>Ставка {lend_check.get('apr',0):.1f}% ниже порога {LENDING_MIN_APR:.0f}% — установи LENDING_MIN_APR=1 в Railway</i>"
+                elif lend_check.get("action") == "insufficient_capital":
+                    _extra_lending_line += f"\n<i>KC Trading: ${lend_check.get('available',0):.2f} — мало для лендинга</i>"
             except Exception as _le:
                 log_activity(f"[rebalance] lending fallback error: {_le}")
         status_line += _extra_lending_line
@@ -3123,18 +3134,26 @@ async def dci_auto_place_idle() -> dict:
         _last_err = "no_candidates_tried"
         _max_attempts = 10
         log_activity(f"[dci] {len(_dci_candidates)} candidates total, trying top {_max_attempts}")
+        # v10.20.8: ByBit platform enforces $20 minimum regardless of product min_amount.
+        # capital*0.8 could give $15.86 → max(15.86, product_min=5) = 15.86 → ByBit rejects.
+        BB_DCI_PLATFORM_MIN = 20.0
         for _attempt_opt in (_dci_candidates[:_max_attempts] if _dci_candidates else ([best_option] if best_option else [])):
             exch = _attempt_opt.get("exchange", "bybit")
             if _attempt_opt["direction"] == "BuyLow":
                 capital = _attempt_opt.get("kc_usdt", usdt_free) if exch == "kucoin" else usdt_free
-                invest_amount = min(capital * 0.8, DCI_MAX_INVEST_USDT, _attempt_opt["max_amount"])
+                # v10.20.8: use full capital (not *0.8) — ensures we reach ByBit $20 platform floor
+                invest_amount = min(capital, DCI_MAX_INVEST_USDT, _attempt_opt["max_amount"])
             else:  # SellHigh — use 50% of coin balance (keep rest liquid)
                 invest_amount = min(_attempt_opt["coin_balance"] * 0.5, _attempt_opt["max_amount"])
             invest_amount = max(invest_amount, _attempt_opt["min_amount"])
-            invest_amount = round(invest_amount, 8)
+            # v10.20.8: enforce ByBit platform minimum $20 (product data may show lower)
+            if exch == "bybit":
+                invest_amount = max(invest_amount, BB_DCI_PLATFORM_MIN)
+            invest_amount = round(invest_amount, 2)  # v10.20.8: 8→2 decimal places (ByBit strict)
 
             # v10.12.4: skip candidate if minimum investment exceeds available capital
-            if _attempt_opt["direction"] == "BuyLow" and invest_amount > capital + 0.5:
+            # v10.20.8: tighter tolerance (0.5→0.05) since invest_amount now uses full capital
+            if _attempt_opt["direction"] == "BuyLow" and invest_amount > capital + 0.05:
                 log_activity(
                     f"[dci] ⏭ skipping {_attempt_opt['product_id']}: "
                     f"need ${invest_amount:.2f} but only ${capital:.2f} free"
@@ -15185,7 +15204,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.20.7",
+        "version": "10.20.8",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -16158,7 +16177,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.20.7",
+        "version": "10.20.8",
     }
 
 @app.get("/api/setup-webhook")
@@ -16369,7 +16388,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.20.7",
+        "version": "10.20.8",
     }
 
 @app.get("/api/dashboard")
