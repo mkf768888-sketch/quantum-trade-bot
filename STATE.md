@@ -3,6 +3,13 @@
 > Последнее обновление: 2026-04-07 (дневная сессия v10.20.x)
 > Архитектура: GSD v2 Wave Execution
 
+## ⚡ Текущее состояние (v10.20.5) — обновлено 2026-04-07 вечер
+- **Версия:** 10.20.5 ✅ АКТИВНА
+- **DCI fix:** "Invalid select price" теперь скипается, пробует все 10 кандидатов
+- **KC Flex→Lending rebalancer:** авто каждый час + /rebalance команда
+- **LENDING_MAX_USDT:** 100 (default в коде, обновить в Railway если нужно)
+- **Ближайшие действия:** /rebalance → /dciplace → /balance
+
 ## ⚡ Текущее состояние (v10.20.3)
 - **Версия задеплоена:** 10.20.3 ✅ АКТИВНА
 - **Postgres:** Online, DATABASE_URL = `${{Postgres.DATABASE_URL}}` (Reference Variable)
