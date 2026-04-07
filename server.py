@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.19.7")
+app = FastAPI(title="QuantumTrade AI", version="10.19.8")
 
 # v10.0: CORS — open for Telegram WebApp (origin varies)
 app.add_middleware(
@@ -3181,8 +3181,9 @@ WHALE_CHANNEL_ID      = os.getenv("WHALE_CHANNEL_ID", "")   # e.g. @quantumtrade
 _recent_whale_alerts  = []  # Deque-like list with maxlen=20, stores alert history
 _whale_alert_cooldown = {}  # {symbol: last_timestamp} — prevent spam (5 min per symbol)
 _whale_alert_cooldown_secs = 300  # 5 minutes cooldown per symbol
-_channel_whale_cooldown: dict = {}  # v10.18.1: per-coin 30min channel cooldown (separate from bot cooldown)
-_CHANNEL_WHALE_COOLDOWN_SECS = 1800  # 30 min — канал не должен спамить одной монетой
+_channel_whale_cooldown: dict = {}  # v10.18.1: per-coin channel cooldown (separate from bot cooldown)
+_CHANNEL_WHALE_COOLDOWN_SECS = 21600  # v10.19.8: 6 hours (was 30 min — too short, spammed on restarts)
+_channel_content_hashes: set = set()  # v10.19.8: dedup identical content across restarts
 
 
 def _ru_plural(n: int, form1: str, form2: str, form5: str) -> str:
@@ -7620,12 +7621,22 @@ async def send_whale_alert_to_channel(whale_data: dict) -> bool:
         if time.time() - last_alert < _whale_alert_cooldown_secs:
             return False
 
-        # v10.18.1: Отдельный 30-мин кулдаун для канала — не спамим одной монетой
-        global _channel_whale_cooldown
+        # v10.18.1: per-coin channel cooldown (6h since v10.19.8)
+        global _channel_whale_cooldown, _channel_content_hashes
         coin_key = symbol.replace("-USDT", "").replace("USDT", "")
         last_channel = _channel_whale_cooldown.get(coin_key, 0)
         if time.time() - last_channel < _CHANNEL_WHALE_COOLDOWN_SECS:
             return False
+
+        # v10.19.8: content hash dedup — don't post identical (symbol+direction+amount_bucket)
+        # This catches restarts where cooldown resets but content is the same
+        amount_bucket = int(amount_usd / 100_000) * 100_000  # round to nearest $100k
+        content_sig = f"{coin_key}:{direction}:{amount_bucket}"
+        if content_sig in _channel_content_hashes:
+            return False  # identical content already posted this session
+        # Keep hash set bounded (max 200 entries)
+        if len(_channel_content_hashes) > 200:
+            _channel_content_hashes.clear()
 
         # ── Human-readable coin name ──
         coin_names = {
@@ -7725,7 +7736,8 @@ async def send_whale_alert_to_channel(whale_data: dict) -> bool:
 
         if data.get("ok"):
             _whale_alert_cooldown[symbol] = time.time()
-            _channel_whale_cooldown[coin_key] = time.time()  # v10.18.1: channel cooldown
+            _channel_whale_cooldown[coin_key] = time.time()
+            _channel_content_hashes.add(content_sig)  # v10.19.8: mark content as posted
             # Store in recent alerts (max 20)
             alert_record = {
                 "ts": datetime.utcnow().isoformat(),
@@ -8649,17 +8661,11 @@ async def get_whale_signal(symbol: str) -> dict:
         result = {"txn_count": txn_count, "bonus": bonus, "success": True}
         _cache_set(cache_key, result)
 
-        # v10.17.0: Send whale alert if significant activity detected
-        if WHALE_CHANNEL_ID and (txn_count > 50000 or txn_count < 5000):
-            direction = "SELL" if txn_count > 50000 else "BUY"
-            whale_alert = {
-                "symbol": symbol.replace("-USDT", ""),
-                "amount_usd": abs(bonus) * 100_000,  # Proxy amount based on bonus
-                "direction": direction,
-                "type": "mempool_activity",
-                "txn_count": txn_count,
-            }
-            await send_whale_alert_to_channel(whale_alert)
+        # v10.19.8: REMOVED channel post for mempool proxy data.
+        # Mempool activity is NOT a real whale transaction — it's a proxy metric.
+        # amount_usd was always a fake formula (abs(bonus)*100_000 = always $300k or $500k).
+        # Result: channel was spammed with identical "$300k BTC Mempool Activity" every restart.
+        # Real whale alerts come only from actual on-chain transaction data (not proxy).
 
         return result
     except Exception as e:
@@ -14859,7 +14865,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.19.7",
+        "version": "10.19.8",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -15831,7 +15837,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.19.7",
+        "version": "10.19.8",
     }
 
 @app.get("/api/setup-webhook")
@@ -16042,7 +16048,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.19.7",
+        "version": "10.19.8",
     }
 
 @app.get("/api/dashboard")
