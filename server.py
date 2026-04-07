@@ -215,15 +215,22 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.19.8")
+app = FastAPI(title="QuantumTrade AI", version="10.19.9")
 
-# v10.0: CORS — open for Telegram WebApp (origin varies)
+# v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
+# Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
+# Security is enforced at the endpoint level via Depends(verify_api_key) — not via CORS.
+# v10.19.9: audit note — CORS wildcard is acceptable here because:
+#   1. All sensitive endpoints require X-API-Key header (verify_api_key)
+#   2. No cookies/sessions used — header-based auth is CORS-safe
+#   3. Public endpoints (/api/ai/chat) have rate limiting + daily cap
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["*"],
+    allow_credentials=False,  # v10.19.9: explicit — no credentials/cookies
 )
 
 @app.get("/", response_class=HTMLResponse)
@@ -296,8 +303,14 @@ async def verify_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
 
 # ── v7.3.3: Rate Limiting для AI Chat (защита бюджета Claude API) ────────────
 _ai_chat_rl: dict = {}   # ip → (count, window_start_ts)
-_AI_CHAT_LIMIT = 20      # макс 20 запросов
+_AI_CHAT_LIMIT = 10      # v10.19.9: 10/min per IP (was 20 — too permissive for public endpoint)
 _AI_CHAT_WINDOW = 60     # в минуту с одного IP
+_AI_CHAT_DAILY: list = []  # v10.19.9: global daily cap — [(ts, ip), ...]
+_AI_CHAT_DAILY_MAX = 500   # max 500 requests/day globally across all IPs
+_processed_update_ids: set = set()  # v10.19.9: Telegram update dedup (Telegram retries same update_id)
+_webhook_no_secret_warned: bool = False  # v10.19.9: warn once about missing TG_WEBHOOK_SECRET
+_tg_cmd_rl: dict = {}  # v10.19.9 H-5: per chat_id command rate limit {chat_id: (count, window_ts)}
+_TG_CMD_LIMIT = 30     # max 30 commands per minute per user (protection against replay/flood)
 
 RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.08"))  # v8.3.2: 8% (was 25%) — safe default per trading.md
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.66"))
@@ -10179,6 +10192,7 @@ async def spot_monitor_loop():
 # TELEGRAM BOT — команды, меню, настройки, статистика, airdrops
 # ══════════════════════════════════════════════════════════════════════════════
 class TelegramUpdate(BaseModel):
+    update_id:      Optional[int]  = None   # v10.19.9: used for deduplication
     callback_query: Optional[dict] = None
     message:        Optional[dict] = None
 
@@ -12650,10 +12664,35 @@ async def telegram_notify(req: TelegramNotifyRequest, _: str = Depends(verify_ap
 
 
 @app.post("/api/telegram/callback")
-async def telegram_callback(req: TelegramUpdate):
+async def telegram_callback(req: TelegramUpdate, request: Request):
     global MIN_Q_SCORE, COOLDOWN, AUTOPILOT, SYSTEM_PAUSED, _pause_ts, _pause_reason
+
+    # v10.19.9 C-1: Validate Telegram webhook secret (X-Telegram-Bot-Api-Secret-Token header)
+    # Previously removed because it "blocked all messages" — real cause was misconfigured Railway var.
+    # Now: if TG_WEBHOOK_SECRET is set → enforce; if not set → allow but warn (backward compat)
+    if TG_WEBHOOK_SECRET:
+        tg_secret_hdr = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if tg_secret_hdr != TG_WEBHOOK_SECRET:
+            log_activity(f"[webhook] ⛔ Invalid secret from {request.client.host if request.client else '?'} — rejected")
+            return {"ok": True}  # Return 200 so Telegram doesn't retry endlessly
+    else:
+        # No secret configured — log warning once per restart (not every message)
+        global _webhook_no_secret_warned
+        if not _webhook_no_secret_warned:
+            log_activity("[webhook] ⚠️ TG_WEBHOOK_SECRET not set — webhook is unprotected! Set it in Railway Variables.")
+            _webhook_no_secret_warned = True
+
+    # v10.19.9: Deduplicate by update_id (Telegram retries failed updates with the same ID)
+    if req.update_id:
+        global _processed_update_ids
+        if req.update_id in _processed_update_ids:
+            return {"ok": True}  # Already processed
+        _processed_update_ids.add(req.update_id)
+        if len(_processed_update_ids) > 2000:
+            _processed_update_ids.clear()  # Reset when too large (restarts are fine)
+
     try:
-     return await _telegram_callback_inner(req)
+        return await _telegram_callback_inner(req)
     except Exception as _tg_err:
         log_activity(f"[telegram_callback] unhandled error: {_tg_err}")
         return {"ok": True}
@@ -12679,10 +12718,24 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         cmd  = raw.split("@")[0].lower() if raw.startswith("/") else raw
         chat_id = msg.get("chat", {}).get("id")
         if not chat_id: return {"ok": True}
-        # v10.11.5 C-01: Authorization check — only ADMIN_CHAT_IDS allowed
-        if AUTHORIZED_CHAT_IDS and chat_id not in AUTHORIZED_CHAT_IDS:
-            log_activity(f"[auth] ⛔ Unauthorized Telegram access from chat_id={chat_id}")
+        # v10.19.9 C-3: Authorization check — fail-closed (block if ADMIN_CHAT_IDS not configured)
+        # Previously: `if AUTHORIZED_CHAT_IDS and ...` → empty set skipped check entirely
+        # Now: if not configured → block everything (secure by default)
+        if not AUTHORIZED_CHAT_IDS or chat_id not in AUTHORIZED_CHAT_IDS:
+            log_activity(f"[auth] ⛔ Unauthorized Telegram access from chat_id={chat_id} (ADMIN_CHAT_IDS={'set' if AUTHORIZED_CHAT_IDS else 'NOT SET'})")
             return {"ok": True}
+
+        # v10.19.9 H-5: Per-chat-id command rate limiting (30 cmd/min)
+        global _tg_cmd_rl
+        _now_cmd = time.time()
+        _rl_entry = _tg_cmd_rl.get(chat_id, (0, _now_cmd))
+        if _now_cmd - _rl_entry[1] > 60:
+            _tg_cmd_rl[chat_id] = (1, _now_cmd)
+        else:
+            if _rl_entry[0] >= _TG_CMD_LIMIT:
+                log_activity(f"[auth] ⚠️ Rate limit hit for chat_id={chat_id} ({_rl_entry[0]} cmd/min)")
+                return {"ok": True}
+            _tg_cmd_rl[chat_id] = (_rl_entry[0] + 1, _rl_entry[1])
         if cmd in ["/start", "/menu"]:     await _tg_main_menu(chat_id)
         elif cmd == "/stats":               await _tg_stats(chat_id)
         elif cmd == "/winrate":             await _tg_winrate(chat_id)
@@ -12825,8 +12878,8 @@ async def _telegram_callback_inner(req: TelegramUpdate):
     data    = cb.get("data", "")
     chat_id = cb.get("message", {}).get("chat", {}).get("id")
     cb_id   = cb["id"]
-    # v10.11.5 C-01: auth check for callback buttons too
-    if AUTHORIZED_CHAT_IDS and chat_id and chat_id not in AUTHORIZED_CHAT_IDS:
+    # v10.19.9 C-3: auth check for callback buttons — fail-closed
+    if not AUTHORIZED_CHAT_IDS or not chat_id or chat_id not in AUTHORIZED_CHAT_IDS:
         await _tg_answer(cb_id, "⛔ Нет доступа")
         return {"ok": True}
 
@@ -14096,33 +14149,41 @@ async def update_settings(body: dict, _auth=Depends(verify_api_key)):  # v7.3.3:
     """v6.7: runtime settings update without restart."""
     global MIN_Q_SCORE, COOLDOWN, AUTOPILOT, TEST_MODE, RISK_PER_TRADE, MAX_LEVERAGE, SYSTEM_PAUSED, _pause_ts, _pause_reason
     changed = {}
+    # v10.19.9 M-2: Whitelist allowed keys — reject unknown fields
+    _ALLOWED_KEYS = {"min_q_score", "cooldown", "autopilot", "test_mode", "max_leverage"}
+    _unknown = set(body.keys()) - _ALLOWED_KEYS
+    if _unknown:
+        raise HTTPException(400, f"Unknown settings keys: {_unknown}. Allowed: {_ALLOWED_KEYS}")
     # v10.0: Input validation per trading.md rules
-    if "min_q_score" in body:
-        val = int(body["min_q_score"])
-        if val < 65 or val > 100:
-            raise HTTPException(400, "min_q_score must be 65-100 (per trading.md)")
-        MIN_Q_SCORE = val
-        changed["min_q_score"] = MIN_Q_SCORE
-    if "cooldown" in body:
-        val = int(body["cooldown"])
-        if val < 300 or val > 7200:
-            raise HTTPException(400, "cooldown must be 300-7200s (per trading.md)")
-        COOLDOWN = val
-        changed["cooldown"] = COOLDOWN
-    if "autopilot" in body:
-        AUTOPILOT = bool(body["autopilot"])
-        changed["autopilot"] = AUTOPILOT
-    if "test_mode" in body:
-        TEST_MODE = bool(body["test_mode"])
-        RISK_PER_TRADE = 0.05 if TEST_MODE else 0.08
-        changed["test_mode"] = TEST_MODE
-        changed["risk_per_trade"] = RISK_PER_TRADE
-    if "max_leverage" in body:
-        val = int(body["max_leverage"])
-        if val < 1 or val > 5:
-            raise HTTPException(400, "max_leverage must be 1-5 (per trading.md)")
-        MAX_LEVERAGE = val
-        changed["max_leverage"] = MAX_LEVERAGE
+    try:
+        if "min_q_score" in body:
+            val = int(body["min_q_score"])
+            if val < 65 or val > 100:
+                raise HTTPException(400, "min_q_score must be 65-100 (per trading.md)")
+            MIN_Q_SCORE = val
+            changed["min_q_score"] = MIN_Q_SCORE
+        if "cooldown" in body:
+            val = int(body["cooldown"])
+            if val < 300 or val > 7200:
+                raise HTTPException(400, "cooldown must be 300-7200s (per trading.md)")
+            COOLDOWN = val
+            changed["cooldown"] = COOLDOWN
+        if "autopilot" in body:
+            AUTOPILOT = bool(body["autopilot"])
+            changed["autopilot"] = AUTOPILOT
+        if "test_mode" in body:
+            TEST_MODE = bool(body["test_mode"])
+            RISK_PER_TRADE = 0.05 if TEST_MODE else 0.08
+            changed["test_mode"] = TEST_MODE
+            changed["risk_per_trade"] = RISK_PER_TRADE
+        if "max_leverage" in body:
+            val = int(body["max_leverage"])
+            if val < 1 or val > 5:
+                raise HTTPException(400, "max_leverage must be 1-5 (per trading.md)")
+            MAX_LEVERAGE = val
+            changed["max_leverage"] = MAX_LEVERAGE
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, f"Invalid value type: {e}")
     log_activity(f"[settings/api] changed: {changed}")
     return {"ok": True, "changed": changed,
             "current": {"min_q_score": MIN_Q_SCORE, "cooldown": COOLDOWN,
@@ -14865,7 +14926,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.19.8",
+        "version": "10.19.9",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -15837,7 +15898,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.19.8",
+        "version": "10.19.9",
     }
 
 @app.get("/api/setup-webhook")
@@ -16048,7 +16109,7 @@ async def api_public_stats():
             "total_usdt":    bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.19.8",
+        "version": "10.19.9",
     }
 
 @app.get("/api/dashboard")
@@ -16120,9 +16181,8 @@ async def api_spot_balances(x_api_key: str = Header(None)):
 
 
 @app.post("/api/spot/sell_all")
-async def api_sell_all_spot(x_api_key: str = Header(None)):
+async def api_sell_all_spot(_auth=Depends(verify_api_key)):  # v10.19.9 H-1: use Depends() not manual header
     """v8.3: Sell all spot coins back to USDT."""
-    await verify_api_key(x_api_key)
     balances = await get_spot_balances()
     results = []
     for symbol, info in balances.items():
@@ -16186,42 +16246,59 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/ai/chat")
 async def api_ai_chat(req: ChatRequest, request: Request):
-    """Proxy for Claude API — solves CORS from browser."""
-    # v7.3.3: Rate limiting — защита бюджета Claude API
+    """Proxy for AI API — solves CORS from Telegram Mini App browser."""
+    # v10.19.9 C-2: Rate limiting — per-IP + global daily cap
     client_ip = request.client.host if request.client else "unknown"
     now_ts = time.time()
+
+    # Per-IP window limit (10/min)
     rl = _ai_chat_rl.get(client_ip, (0, now_ts))
     if now_ts - rl[1] > _AI_CHAT_WINDOW:
-        _ai_chat_rl[client_ip] = (1, now_ts)   # новое окно
+        _ai_chat_rl[client_ip] = (1, now_ts)
     else:
         if rl[0] >= _AI_CHAT_LIMIT:
-            raise HTTPException(status_code=429, detail="Rate limit exceeded. Max 20 requests/min.")
+            raise HTTPException(status_code=429, detail="Rate limit exceeded. Please slow down.")
         _ai_chat_rl[client_ip] = (rl[0] + 1, rl[1])
-    # v10.2: check for ANY AI key (DeepSeek is default tier, not Claude)
+
+    # Global daily cap (500 requests/day across all IPs — cost protection)
+    day_start = now_ts - 86400
+    global _AI_CHAT_DAILY
+    _AI_CHAT_DAILY = [(t, ip) for t, ip in _AI_CHAT_DAILY if t > day_start]  # prune old
+    if len(_AI_CHAT_DAILY) >= _AI_CHAT_DAILY_MAX:
+        raise HTTPException(status_code=429, detail="Daily AI request limit reached.")
+    _AI_CHAT_DAILY.append((now_ts, client_ip))
+
     if not ANTHROPIC_API_KEY and not DEEPSEEK_API_KEY:
-        return {"error": "No AI API keys configured (need DEEPSEEK_API_KEY or ANTHROPIC_API_KEY)", "success": False}
+        return {"error": "AI service unavailable", "success": False}
+
     system_lines = [
         "Ты QuantumTrade AI — торговый советник в трейдинг-боте на KuCoin.",
         "Помогаешь понять рынок, сигналы и стратегию. Объясняй простым языком — многие новички.",
         "СТИЛЬ: по-русски, кратко (2-4 абзаца), конкретные советы, объясняй термины, умеренные эмодзи.",
         "КОНТЕКСТ: EMA+RSI+Volume, Q-Score 65+=BUY 35-=SELL, тест: $24 USDT, риск 10%, TP 3%, SL 1.5%.",
     ]
+    # v10.19.9 M-1: Sanitize context — prevent prompt injection
     if req.context:
-        system_lines.append("")
-        system_lines.append(req.context)
+        ctx = req.context[:500].replace("\n", " ").replace("\r", " ")
+        _injection_patterns = ("[system", "[inst", "ignore all", "ignore previous",
+                                "override", "forget your", "new instruction")
+        if not any(p in ctx.lower() for p in _injection_patterns):
+            system_lines.append(f"User context (read-only): {ctx}")
+        else:
+            log_activity(f"[ai_chat] ⚠️ Possible prompt injection in context from {client_ip}: {ctx[:80]}")
+
     system_prompt = "\n".join(system_lines)
-    # v10.2: compat — if frontend sent {message: "text"} instead of {messages: [...]}
     msgs = req.messages if req.messages else ([{"role": "user", "content": req.message}] if req.message else [])
     if not msgs:
         return {"error": "No message provided", "success": False}
     try:
-        # v8.3: route through 3-tier AI dispatcher
         ai_result = await ai_dispatch("chat", msgs[-10:], max_tokens=1000, system=system_prompt)
         if ai_result.get("success"):
             return {"reply": ai_result["text"], "success": True, "model": ai_result.get("model", "?")}
-        return {"error": ai_result.get("error", "AI call failed"), "success": False}
+        return {"error": "AI request failed", "success": False}  # v10.19.9 H-2: no internal error details
     except Exception as e:
-        return {"error": str(e), "success": False}
+        log_activity(f"[api_ai_chat] error: {e.__class__.__name__}")
+        return {"error": "Internal server error", "success": False}  # v10.19.9 H-2: sanitized
 
 
 class ManualTrade(BaseModel):
@@ -16287,8 +16364,13 @@ async def toggle_autopilot(state: str, _auth=Depends(verify_api_key)):  # v8.3.0
 
 @app.websocket("/ws/live")
 async def ws_live(websocket: WebSocket, token: str = None):
-    # v10.11.5 C-05: Require API token for WebSocket (pass as ?token=YOUR_API_SECRET)
-    if API_SECRET and token != API_SECRET:
+    # v10.19.9 H-4: Require API token for WebSocket — fail-closed if not configured
+    if not API_SECRET:
+        log_activity("[websocket] ⛔ API_SECRET not set — refusing WebSocket connection")
+        await websocket.close(code=4001)
+        return
+    if token != API_SECRET:
+        log_activity(f"[websocket] ⛔ Invalid token — closing connection")
         await websocket.close(code=4001)
         return
     await websocket.accept()
