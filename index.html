@@ -506,7 +506,7 @@ body { padding-bottom:var(--nav-h); -webkit-font-smoothing:antialiased; }
             <div class="m"><div class="m-label">📈 Фьючерсы</div><div class="m-val" id="balFutures">—</div></div>
           </div>
           <div class="mg mg-2" style="margin-top:7px;position:relative;z-index:1">
-            <div class="m"><div class="m-label">Доступно</div><div class="m-val" id="balFutAvail">—</div></div>
+            <div class="m"><div class="m-label">🟡 ByBit FUND</div><div class="m-val" id="balBybitFund">—</div></div>
             <div class="m"><div class="m-label">Нереал. P&L</div><div class="m-val" id="balFutPnl">—</div></div>
           </div>
         </div>
@@ -1014,7 +1014,7 @@ async function renderBalance(){
       document.getElementById('balTotal').textContent='$'+((c.total_usdt||0).toLocaleString('ru',{minimumFractionDigits:2,maximumFractionDigits:2}));
       document.getElementById('balSpot').textContent='$'+((c.spot_usdt||0).toLocaleString('ru',{minimumFractionDigits:2,maximumFractionDigits:2}));
       document.getElementById('balFutures').textContent='$'+((c.futures_equity||0).toLocaleString('ru',{minimumFractionDigits:2,maximumFractionDigits:2}));
-      document.getElementById('balFutAvail').textContent='$'+((c.futures_available||c.futures_usdt||0).toLocaleString('ru',{minimumFractionDigits:2,maximumFractionDigits:2}));
+      const bbFundEl=document.getElementById('balBybitFund');if(bbFundEl)bbFundEl.textContent='$'+((c.bybit_fund_usdt||0).toLocaleString('ru',{minimumFractionDigits:2,maximumFractionDigits:2}));
       const pnl=c.futures_unrealised||0;
       const pnlEl=document.getElementById('balFutPnl');
       pnlEl.textContent=(pnl>=0?'+':'')+pnl.toFixed(4)+' USDT';

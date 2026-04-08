@@ -1863,20 +1863,50 @@ _lending_stats: dict = {
 
 
 async def kucoin_lending_get_market_rate(currency: str = "USDT") -> dict:
-    """v10.13.0: GET /api/v1/margin/market — current best lending rate for currency."""
-    endpoint = f"/api/v1/margin/market?currency={currency}"
+    """v10.20.11: Lending market rate — tries v3 Earn API first (v1 /margin/market deprecated 2024).
+    v3 endpoint: /api/v3/project/list?currency=USDT&projectType=lending
+    v3 response: {"data": {"items": [{"interestRate": "0.00030000", "term": 7, ...}]}}
+    """
+    # v3 Earn lending (new API — replaces deprecated /api/v1/margin/market)
+    ep_v3 = f"/api/v3/project/list?currency={currency}&projectType=lending"
     try:
         async with aiohttp.ClientSession() as s:
             r = await s.get(
-                f"https://api.kucoin.com{endpoint}",
-                headers=kucoin_headers("GET", endpoint),
+                f"https://api.kucoin.com{ep_v3}",
+                headers=kucoin_headers("GET", ep_v3),
+                timeout=aiohttp.ClientTimeout(total=10)
+            )
+            data = await r.json()
+            if data.get("code") == "200000":
+                raw = data.get("data", {})
+                items = raw.get("items", raw) if isinstance(raw, dict) else raw
+                if items:
+                    best = max(items, key=lambda x: float(x.get("interestRate", 0)))
+                    daily = float(best.get("interestRate", 0))
+                    apr = round(daily * 365 * 100, 2)
+                    return {
+                        "success": True, "currency": currency,
+                        "daily_rate": daily,
+                        "daily_rate_pct": round(daily * 100, 4),
+                        "apr": apr,
+                        "available_size": float(best.get("maxSize", 0)),
+                    }
+    except Exception as e:
+        log_activity(f"[lending] get_market_rate v3 error: {e}")
+
+    # Fallback: legacy v1 margin market endpoint
+    ep_v1 = f"/api/v1/margin/market?currency={currency}"
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.get(
+                f"https://api.kucoin.com{ep_v1}",
+                headers=kucoin_headers("GET", ep_v1),
                 timeout=aiohttp.ClientTimeout(total=10)
             )
             data = await r.json()
             if data.get("code") == "200000":
                 items = data.get("data", [])
                 if items:
-                    # items sorted by dailyIntRate asc — last item = best rate
                     best = max(items, key=lambda x: float(x.get("dailyIntRate", 0)))
                     daily = float(best.get("dailyIntRate", 0))
                     apr = round(daily * 365 * 100, 2)
@@ -1888,7 +1918,7 @@ async def kucoin_lending_get_market_rate(currency: str = "USDT") -> dict:
                         "available_size": float(best.get("size", 0)),
                     }
     except Exception as e:
-        log_activity(f"[lending] get_market_rate error: {e}")
+        log_activity(f"[lending] get_market_rate v1 error: {e}")
     return {"success": False, "daily_rate": 0, "apr": 0, "currency": currency}
 
 
@@ -10868,8 +10898,15 @@ async def _tg_mirofish(chat_id: int, raw: str):
     except Exception:
         pass
 
-    result = await mirofish_simulate(symbol, price, 75, fg_val, "manual_check", rsi=50,
-                                      context="manual /mirofish command")
+    try:
+        result = await asyncio.wait_for(
+            mirofish_simulate(symbol, price, 75, fg_val, "manual_check", rsi=50,
+                              context="manual /mirofish command"),
+            timeout=35.0
+        )
+    except asyncio.TimeoutError:
+        await _tg_send(chat_id, f"⏱ MiroFish timeout для {symbol} — DeepSeek не ответил за 35с. Попробуй позже.")
+        return
 
     if result.get("error"):
         await _tg_send(chat_id, f"❌ MiroFish ошибка: {result['error']}")
@@ -16296,11 +16333,16 @@ async def _get_prices_with_fallback() -> dict:
 
 @app.get("/api/public/balance")
 async def api_public_balance():
-    """v7.4.2: Public balance endpoint — no auth required. For Mini App balance tab."""
-    spot, futures = await asyncio.gather(get_balance(), get_futures_balance(), return_exceptions=True)
+    """v10.20.11: Public balance endpoint — no auth required. For Mini App balance tab.
+    Includes KuCoin spot + futures + ByBit FUND balance."""
+    spot, futures, bb_fund = await asyncio.gather(
+        get_balance(), get_futures_balance(), bybit_get_funding_usdt(),
+        return_exceptions=True
+    )
     spot_data = spot if isinstance(spot, dict) else {"total_usdt": 0, "accounts": [], "success": False}
     fut_data  = futures if isinstance(futures, dict) else {"available_balance": 0, "account_equity": 0, "unrealised_pnl": 0, "success": False}
-    total = spot_data.get("total_usdt", 0) + fut_data.get("account_equity", 0)
+    bybit_fund = bb_fund if isinstance(bb_fund, float) else 0.0
+    total = spot_data.get("total_usdt", 0) + fut_data.get("account_equity", 0) + bybit_fund
     return {
         "spot_usdt":          spot_data.get("total_usdt", 0),
         "spot_accounts":      spot_data.get("accounts", []),
@@ -16309,6 +16351,7 @@ async def api_public_balance():
         "futures_available":  fut_data.get("available_balance", 0),
         "futures_unrealised": fut_data.get("unrealised_pnl", 0),
         "futures_success":    fut_data.get("success", False),
+        "bybit_fund_usdt":    round(bybit_fund, 2),
         "total_usdt":         round(total, 2),
     }
 
@@ -16393,9 +16436,10 @@ async def api_public_stats():
         "fear_greed": fg,
         "polymarket": poly_events,
         "balance": {
-            "spot_usdt":     bal.get("spot_usdt", 0),
+            "spot_usdt":      bal.get("spot_usdt", 0),
             "futures_equity": bal.get("futures_equity", 0),
-            "total_usdt":    bal.get("total_usdt", 0),
+            "bybit_fund_usdt": bal.get("bybit_fund_usdt", 0),
+            "total_usdt":     bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
         "version": "10.20.10",
