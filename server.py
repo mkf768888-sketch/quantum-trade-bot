@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.20.12")
+app = FastAPI(title="QuantumTrade AI", version="10.20.14")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -487,13 +487,24 @@ def _load_trades_from_disk():
             with open(_TRADES_FILE, "r") as f:
                 trade_log = json.load(f)
             # v10.20.13: deduplicate trade_log by id (keeps last occurrence)
-            # Prevents Auditor double-findings and spot_monitor double-sell
+            # v10.20.14: Two-pass dedup — first by id, then deduplicate open positions by symbol
+            # (small bot can't have 2 open positions for same coin — different ids can still be dupes)
             before = len(trade_log)
             seen: dict = {}
             for t in trade_log:
                 tid = t.get("id") or f"{t.get('symbol','')}_{t.get('open_ts','')}"
-                seen[tid] = t  # later entry wins
+                seen[tid] = t  # later entry wins (by id)
             trade_log = list(seen.values())
+            # Second pass: collapse open positions with same symbol (keep most recent)
+            closed_trades = [t for t in trade_log if t.get("status") != "open"]
+            open_by_sym: dict = {}
+            for t in trade_log:
+                if t.get("status") == "open":
+                    sym = t.get("symbol", "")
+                    prev = open_by_sym.get(sym)
+                    if prev is None or t.get("open_ts", 0) > prev.get("open_ts", 0):
+                        open_by_sym[sym] = t
+            trade_log = closed_trades + list(open_by_sym.values())
             if len(trade_log) < before:
                 print(f"[trades] ⚠️ deduplicated {before - len(trade_log)} duplicate entries", flush=True)
             print(f"[trades] загружено {len(trade_log)} сделок из {_TRADES_FILE}")
@@ -15610,13 +15621,14 @@ async def _agent_auditor() -> list:
         # 1c. trade_log sanity — orphan positions with full details
         open_trades = [t for t in trade_log if t.get("status") == "open"]
         stale = [t for t in open_trades if time.time() - t.get("open_ts", time.time()) > 86400]
-        # v10.20.13: deduplicate stale list by trade id to prevent double-findings
-        seen_stale_ids: set = set()
+        # v10.20.14: deduplicate stale list by symbol (small bot can't have 2 open positions same coin)
+        # Previously used id-based dedup — failed when duplicate entries have different ids
+        seen_stale_syms: set = set()
         unique_stale = []
         for t in stale:
-            tid = t.get("id") or f"{t.get('symbol','')}_{t.get('open_ts','')}"
-            if tid not in seen_stale_ids:
-                seen_stale_ids.add(tid)
+            sym_key = t.get("symbol", "")
+            if sym_key not in seen_stale_syms:
+                seen_stale_syms.add(sym_key)
                 unique_stale.append(t)
         if unique_stale:
             for t in unique_stale[:3]:
