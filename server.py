@@ -486,6 +486,16 @@ def _load_trades_from_disk():
         if os.path.exists(_TRADES_FILE):
             with open(_TRADES_FILE, "r") as f:
                 trade_log = json.load(f)
+            # v10.20.13: deduplicate trade_log by id (keeps last occurrence)
+            # Prevents Auditor double-findings and spot_monitor double-sell
+            before = len(trade_log)
+            seen: dict = {}
+            for t in trade_log:
+                tid = t.get("id") or f"{t.get('symbol','')}_{t.get('open_ts','')}"
+                seen[tid] = t  # later entry wins
+            trade_log = list(seen.values())
+            if len(trade_log) < before:
+                print(f"[trades] ⚠️ deduplicated {before - len(trade_log)} duplicate entries", flush=True)
             print(f"[trades] загружено {len(trade_log)} сделок из {_TRADES_FILE}")
         if os.path.exists(_TRADES_STATS_FILE):
             with open(_TRADES_STATS_FILE, "r") as f:
@@ -15600,15 +15610,22 @@ async def _agent_auditor() -> list:
         # 1c. trade_log sanity — orphan positions with full details
         open_trades = [t for t in trade_log if t.get("status") == "open"]
         stale = [t for t in open_trades if time.time() - t.get("open_ts", time.time()) > 86400]
-        if stale:
-            for t in stale[:3]:
+        # v10.20.13: deduplicate stale list by trade id to prevent double-findings
+        seen_stale_ids: set = set()
+        unique_stale = []
+        for t in stale:
+            tid = t.get("id") or f"{t.get('symbol','')}_{t.get('open_ts','')}"
+            if tid not in seen_stale_ids:
+                seen_stale_ids.add(tid)
+                unique_stale.append(t)
+        if unique_stale:
+            for t in unique_stale[:3]:
                 age_h = (time.time() - t.get("open_ts", time.time())) / 3600
                 sym = t.get("symbol", "?")
                 side = t.get("side", "?")
                 entry = t.get("price", 0)
                 size = t.get("size", 0)
                 acct = t.get("account", "?")
-                trade_id = t.get("id", "?")
                 # Try to get current price for PnL estimate
                 cur_price = 0
                 try:
@@ -15620,10 +15637,11 @@ async def _agent_auditor() -> list:
                 if cur_price and entry:
                     unrealized = (cur_price - entry) * size if side == "buy" else (entry - cur_price) * size
                     pnl_est = f", unrealized ~${unrealized:+.2f}"
+                # v10.20.13: /close command doesn't exist — use /sell <SYMBOL>
                 findings.append({"agent": "Auditor", "severity": "warning",
                     "text": f"Orphan: {sym} {side} {size}@${entry:.4f} ({acct}) — "
                             f"open {age_h:.0f}h{pnl_est}. "
-                            f"Action: /close {trade_id} или подожди stale auto-sell (12ч)"})
+                            f"Закрыть: /sell {sym} или авто-закрытие через {max(0,48-age_h):.0f}ч"})
 
         if not findings:
             findings.append({"agent": "Auditor", "severity": "info",
