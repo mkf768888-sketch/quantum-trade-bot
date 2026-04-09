@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.20.3")
+app = FastAPI(title="QuantumTrade AI", version="10.20.12")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -1480,6 +1480,8 @@ _earn_lock = asyncio.Lock()
 _dci_lock  = asyncio.Lock()
 _last_fund_to_unified_ts: float = 0.0  # v10.17.1: cooldown anti-pingpong FUND↔UNIFIED
 _earn_monitor_loop_ts: float = 0.0    # v10.20.10: updated on every earn_monitor_loop iteration (for QA check)
+_earn_last_error_msg: str = ""        # v10.20.12: last earn subscription error text for diag
+_earn_consec_errors: int = 0          # v10.20.12: consecutive earn errors counter (reset on success)
 
 
 async def kucoin_earn_get_savings_products(coin: str = "USDT") -> list:
@@ -3857,10 +3859,15 @@ async def earn_auto_place_idle(exchange: str = "auto") -> dict:
                             "order_id": sub.get("order_id", ""),
                         })
                         result["placed"].append({"exchange": "kucoin", "amount": round(amount, 2)})
+                        _earn_consec_errors = 0  # v10.20.12: reset on success
                         continue
                     else:
-                        result["errors"].append(f"kucoin: {sub.get('error','?')}")
+                        err_msg = sub.get('error', '?')
+                        result["errors"].append(f"kucoin: {err_msg}")
                         _earn_stats["errors"] += 1
+                        # v10.20.12: track last error for diag visibility
+                        _earn_last_error_msg = f"KC Flex: {str(err_msg)[:80]}"
+                        _earn_consec_errors += 1
 
         elif exch == "bybit":
             # v10.9.15: skip ByBit FlexSaving when DCI is enabled — DCI needs free UNIFIED funds.
@@ -4061,6 +4068,12 @@ async def earn_monitor_loop():
         # v10.9: System Pause — don't move USDT to Earn while user is depositing
         if SYSTEM_PAUSED:
             await asyncio.sleep(60)
+            continue
+        # v10.20.12: backoff when KC Flex API keeps failing — log clearly, don't spam exchange
+        if _earn_consec_errors >= 20:
+            log_activity(f"[earn] ⚠️ {_earn_consec_errors} consecutive KC Flex errors — "
+                         f"last: {_earn_last_error_msg} — backing off 60min (KC Flex API may be down/changed)")
+            await asyncio.sleep(3600)
             continue
         try:
             global _earn_monitor_loop_ts
@@ -10788,7 +10801,8 @@ async def _tg_diag(chat_id: int):
         results.append(f"<b>🟡 ByBit:</b> ❌ Not configured")
 
     # 10. Cross-Exchange Arb
-    results.append(f"<b>🔀 X-Arb:</b> {'✅' if XARB_ENABLED and BYBIT_ENABLED else '❌'} checks={_xarb_stats['checks']} opps={_xarb_stats['opportunities']} best={_xarb_stats['best_spread']*100:.4f}%")
+    xarb_status = '✅' if XARB_ENABLED and BYBIT_ENABLED else '❌ (выкл: малый баланс)'
+    results.append(f"<b>🔀 X-Arb:</b> {xarb_status} checks={_xarb_stats['checks']} opps={_xarb_stats['opportunities']} best={_xarb_stats['best_spread']*100:.4f}%")
 
     # 11. MiroFish Lite v9.1
     mf_en = "✅ Enabled" if MIROFISH_ENABLED else "❌ Disabled"
@@ -10857,7 +10871,21 @@ async def _tg_diag(chat_id: int):
     if _earn_stats.get("last_action", 0) > 0:
         earn_ago = int(time.time() - _earn_stats["last_action"])
         earn_last = f" last={earn_ago}s ago"
-    results.append(f"<b>💰 Earn Engine:</b> {earn_en} | subscribed=${earn_total} (KC=${earn_kc} BB=${earn_bb}) subs={earn_subs} errs={earn_errs} APR={earn_apr}%{earn_last}")
+    earn_err_detail = ""
+    if earn_errs > 0 and _earn_last_error_msg:
+        earn_err_detail = f" | ⚠️ last_err: {_earn_last_error_msg[:60]}"
+    if _earn_consec_errors >= 20:
+        earn_err_detail += f" | 🔴 backoff ON ({_earn_consec_errors} подряд)"
+    results.append(f"<b>💰 Earn Engine:</b> {earn_en} | subscribed=${earn_total} (KC=${earn_kc} BB=${earn_bb}) subs={earn_subs} errs={earn_errs} APR={earn_apr}%{earn_last}{earn_err_detail}")
+
+    # 18b. v10.20.12: Auditor findings detail (why yellow?)
+    auditor_report = _agency_state.get("agent_reports", {}).get("🔍 Auditor", {})
+    if auditor_report.get("status") in ("🟡", "🔴"):
+        auditor_findings = [f for f in _agency_state.get("findings", [])
+                            if f.get("agent") == "Auditor" and f.get("severity") in ("warning", "critical")]
+        if auditor_findings:
+            aud_texts = " | ".join(f['text'][:60] for f in auditor_findings[:2])
+            results.append(f"<b>🔍 Auditor detail:</b> {aud_texts}")
 
     # 19. v10.2: LunarCrush API Key
     lc_key = "✅ Set" if LUNARCRUSH_API_KEY else "❌ Not set (LUNARCRUSH_API_KEY)"
@@ -15244,7 +15272,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.20.10",
+        "version": "10.20.12",
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -16217,7 +16245,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.20.10",
+        "version": "10.20.12",
     }
 
 @app.get("/api/setup-webhook")
@@ -16442,7 +16470,7 @@ async def api_public_stats():
             "total_usdt":     bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.20.10",
+        "version": "10.20.12",
     }
 
 @app.get("/api/dashboard")
@@ -16859,7 +16887,7 @@ async def api_qa_run():
         "summary": {"passed": _passed, "total": _total, "pct": round(_passed/_total*100),
                     "elapsed_s": _elapsed},
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.20.10",
+        "version": "10.20.12",
     }
 
 
