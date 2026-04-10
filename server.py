@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.20.22")
+app = FastAPI(title="QuantumTrade AI", version="10.20.23")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -405,6 +405,50 @@ _poly_smart_state: dict = {
     "signals": [],         # [{symbol, bias, source}]
     "last_scan": None,
 }
+
+# v10.20.23: Task Supervisor — heartbeat tracking for all background loops
+from collections import deque
+_task_heartbeats: dict = {}  # task_name → last_heartbeat_ts
+_task_errors: dict = {}      # task_name → deque(maxlen=10) of last errors
+_TASK_DEAD_THRESHOLD = 600   # 10 min without heartbeat = dead task
+
+def _heartbeat(task_name: str):
+    """Call from each background loop iteration to report liveness."""
+    _task_heartbeats[task_name] = time.time()
+
+def _task_error(task_name: str, error: str):
+    """Log a background task error for supervisor monitoring."""
+    if task_name not in _task_errors:
+        _task_errors[task_name] = deque(maxlen=10)
+    _task_errors[task_name].append({"ts": datetime.utcnow().isoformat(), "error": str(error)[:200]})
+
+def get_dead_tasks() -> list:
+    """Return list of tasks that haven't sent a heartbeat recently."""
+    now = time.time()
+    dead = []
+    for name, last_ts in _task_heartbeats.items():
+        age = now - last_ts
+        if age > _TASK_DEAD_THRESHOLD:
+            dead.append({"task": name, "silent_min": round(age / 60, 1)})
+    return dead
+
+# v10.20.23: DB Health — track fire-and-forget task failures
+_db_health: dict = {"ok": True, "last_success": None, "last_error": None, "fail_count": 0}
+
+def _db_fire_and_forget(coro, label: str = "db"):
+    """Wrap asyncio.ensure_future with error tracking for DB operations."""
+    async def _wrapper():
+        try:
+            await coro
+            _db_health["ok"] = True
+            _db_health["last_success"] = time.time()
+            _db_health["fail_count"] = 0
+        except Exception as e:
+            _db_health["ok"] = False
+            _db_health["last_error"] = f"{label}: {e}"
+            _db_health["fail_count"] += 1
+            log_activity(f"[db_bg] {label} FAILED ({_db_health['fail_count']}x): {e}")
+    asyncio.ensure_future(_wrapper())
 
 
 async def sync_open_positions_from_exchange() -> int:
@@ -1282,7 +1326,7 @@ def log_trade(symbol, side, price, size, tp, sl, confidence, q_score, pattern, a
     _save_trades_to_disk()
     # v8.2: PostgreSQL persistent storage
     if db.is_ready():
-        asyncio.ensure_future(db.insert_trade(trade))
+        _db_fire_and_forget(db.insert_trade(trade), "insert_trade")
 
 
 # ── KuCoin Auth ────────────────────────────────────────────────────────────────
@@ -4161,6 +4205,7 @@ async def earn_monitor_loop():
     await asyncio.sleep(120)  # wait 2 min after startup
     while True:
         # v10.9: System Pause — don't move USDT to Earn while user is depositing
+        _heartbeat("earn_monitor")
         if SYSTEM_PAUSED:
             await asyncio.sleep(60)
             continue
@@ -7825,6 +7870,7 @@ async def opus_gate_check(symbol: str, side: str, amount_usdt: float, q_score: f
 _ws_prices: dict = {}       # symbol → {"price": float, "ts": float} — real-time
 _ws_connected: bool = False
 _ws_reconnects: int = 0
+_WS_MAX_RECONNECTS = 50    # v10.20.23: circuit breaker — after 50 fails, slow down to 5min intervals
 
 async def _ws_price_feed():
     """Connect to KuCoin WebSocket and stream real-time ticker prices.
@@ -7915,7 +7961,14 @@ async def _ws_price_feed():
         finally:
             _ws_connected = False
             _ws_reconnects += 1
-            delay = min(30, 5 * _ws_reconnects)  # backoff: 5, 10, 15... max 30s
+            _heartbeat("ws_price_feed")  # still alive, just reconnecting
+            if _ws_reconnects > _WS_MAX_RECONNECTS:
+                # v10.20.23: circuit breaker — slow mode after too many failures
+                delay = 300  # 5 min between attempts
+                if _ws_reconnects % 10 == 0:
+                    log_activity(f"[ws] circuit breaker: {_ws_reconnects} reconnects, slowing to 5min intervals")
+            else:
+                delay = min(30, 5 * _ws_reconnects)  # backoff: 5, 10, 15... max 30s
             await asyncio.sleep(delay)
 
 
@@ -9748,6 +9801,26 @@ async def auto_trade_cycle():
             log_activity(f"[cycle] {symbol}: SKIP BUY — {open_count} open positions (max {MAX_OPEN_POSITIONS})")
             continue
 
+        # ── v10.20.23: Correlation Guard — prevent concentrated risk ──────────
+        # If we already have an open position in the same sector, reduce size by 30%
+        if action == "BUY" and open_count > 0:
+            _BTC_CORRELATED = {"BTC", "ETH", "SOL", "BNB", "AVAX", "NEAR", "DOT", "ADA", "LINK", "MATIC"}
+            _base = symbol.replace("-USDT", "").replace("USDT", "")
+            _open_bases = set()
+            for _ot in trade_log:
+                if _ot.get("status") == "open":
+                    _ob = _ot["symbol"].replace("-USDT", "").replace("USDT", "")
+                    _open_bases.add(_ob)
+            # Same symbol = skip entirely (duplicate position)
+            if _base in _open_bases:
+                log_activity(f"[cycle] {symbol}: SKIP BUY — already have open {_base} position")
+                continue
+            # Same sector = flag for size reduction (applied in sizing below)
+            _corr_penalty = False
+            if _base in _BTC_CORRELATED and _open_bases & _BTC_CORRELATED:
+                _corr_penalty = True
+                log_activity(f"[cycle] {symbol}: correlation guard — reducing size 30% (same sector as {_open_bases & _BTC_CORRELATED})")
+
         # ── v10.7: Capital Protection — prevent aggressive USDT drain ─────────
         if action == "BUY":
             # 1) USDT Floor: keep minimum % of portfolio in USDT
@@ -9850,6 +9923,13 @@ async def auto_trade_cycle():
                 if not _alloc_ok:
                     log_activity(f"[cycle] {symbol}: SKIP BUY — exceeds 30% coin allocation limit")
                     continue
+
+                # v10.20.23: Apply correlation penalty from guard above
+                if locals().get("_corr_penalty"):
+                    spot_trade_usdt = round(spot_trade_usdt * 0.7, 2)
+                    bb_trade_usdt = round(bb_trade_usdt * 0.7, 2) if bb_trade_usdt else 0
+                    _primary_trade_usdt = round(_primary_trade_usdt * 0.7, 2)
+                    log_activity(f"[cycle] {symbol}: size reduced to ${_primary_trade_usdt:.2f} (correlation guard)")
 
                 # ── v10.0: Dual-exchange — route BUY to best exchange ──
                 _buy_exchange = _primary_exchange
@@ -10569,6 +10649,7 @@ async def spot_monitor_loop():
     await asyncio.sleep(60)  # initial delay
     while True:
         # v10.9: System Pause — skip monitoring (but still check TP/SL for safety)
+        _heartbeat("spot_monitor")
         if SYSTEM_PAUSED:
             await asyncio.sleep(30)
             continue
@@ -13564,8 +13645,10 @@ async def telegram_callback(req: TelegramUpdate, request: Request):
         if req.update_id in _processed_update_ids:
             return {"ok": True}  # Already processed
         _processed_update_ids.add(req.update_id)
+        # v10.20.23: bounded cleanup — keep last 1500 instead of lossy full clear
         if len(_processed_update_ids) > 2000:
-            _processed_update_ids.clear()  # Reset when too large (restarts are fine)
+            sorted_ids = sorted(_processed_update_ids)
+            _processed_update_ids = set(sorted_ids[-1500:])
 
     try:
         return await _telegram_callback_inner(req)
@@ -13925,28 +14008,33 @@ async def startup():
     # v8.2: PostgreSQL — persistent storage
     pg_ok = await db.init_db()
     if pg_ok:
-        # One-time migration: JSON → PostgreSQL (if trades exist in JSON but not in DB)
-        db_count = await db.get_trade_count()
-        if db_count == 0 and trade_log:
-            migrated = await db.migrate_from_json(trade_log, _perf_stats)
-            print(f"[startup] migrated {migrated} trades JSON → PostgreSQL")
-        # v8.3.3: Load trade history from PostgreSQL (survives container restarts)
-        if db_count > 0 and not trade_log:
-            db_trades = await db.get_trades(limit=200)
-            if db_trades:
-                trade_log.extend(reversed(db_trades))  # oldest first
-                print(f"[startup] loaded {len(db_trades)} trades from PostgreSQL")
-        # v10.4: ALWAYS recalculate _perf_stats from PostgreSQL trades (source of truth)
-        # Old approach loaded corrupted stats from JSON/DB — this recalculates from raw trades
-        await _recalc_perf_from_db()
+        # v10.20.23: Startup timeout protection — don't hang forever on slow DB
+        async def _startup_db_load():
+            # One-time migration: JSON → PostgreSQL (if trades exist in JSON but not in DB)
+            db_count = await db.get_trade_count()
+            if db_count == 0 and trade_log:
+                migrated = await db.migrate_from_json(trade_log, _perf_stats)
+                print(f"[startup] migrated {migrated} trades JSON → PostgreSQL")
+            # v8.3.3: Load trade history from PostgreSQL (survives container restarts)
+            if db_count > 0 and not trade_log:
+                db_trades = await db.get_trades(limit=200)
+                if db_trades:
+                    trade_log.extend(reversed(db_trades))  # oldest first
+                    print(f"[startup] loaded {len(db_trades)} trades from PostgreSQL")
+            # v10.4: ALWAYS recalculate _perf_stats from PostgreSQL trades (source of truth)
+            await _recalc_perf_from_db()
+            # v9.2: Restore MiroFish memory from PostgreSQL
+            global _mirofish_memory
+            mem_data = await db.load_all_mirofish_memory()
+            if mem_data:
+                _mirofish_memory.update(mem_data)
+                total_mem = sum(len(v) for v in mem_data.values())
+                print(f"[startup] MiroFish memory restored: {total_mem} entries for {len(mem_data)} symbols")
 
-        # v9.2: Restore MiroFish memory from PostgreSQL
-        global _mirofish_memory
-        mem_data = await db.load_all_mirofish_memory()
-        if mem_data:
-            _mirofish_memory.update(mem_data)
-            total_mem = sum(len(v) for v in mem_data.values())
-            print(f"[startup] MiroFish memory restored: {total_mem} entries for {len(mem_data)} symbols")
+        try:
+            await asyncio.wait_for(_startup_db_load(), timeout=30.0)
+        except asyncio.TimeoutError:
+            print("[startup] ⚠️ DB load timeout (30s) — starting with in-memory state", flush=True)
 
     # Phase 6: пробуем подключить Origin QC Wukong 180
     qc_ok = await asyncio.get_event_loop().run_in_executor(None, _init_qcloud)
@@ -14070,8 +14158,9 @@ async def startup():
 
 async def trading_loop():
     while True:
+        _heartbeat("trading_loop")
         try: await auto_trade_cycle()
-        except Exception as e: log_activity(f"[loop] error: {e}")
+        except Exception as e: log_activity(f"[loop] error: {e}"); _task_error("trading_loop", e)
         # v9.0: Cross-exchange arb check every cycle
         if BYBIT_ENABLED and XARB_ENABLED:
             try:
@@ -14778,6 +14867,7 @@ async def arb_stats_api():
         "bybit": {**_bybit_stats, "enabled": BYBIT_ENABLED},
         "xarb": {**_xarb_stats, "enabled": XARB_ENABLED and BYBIT_ENABLED},
         "ws": {"connected": _ws_connected, "prices_count": len(_ws_prices), "reconnects": _ws_reconnects},
+        "supervisor": {"heartbeats": len(_task_heartbeats), "dead_tasks": get_dead_tasks(), "db_health": _db_health},
         "config": {
             "exec_enabled": ARB_EXEC_ENABLED, "exec_usdt": ARB_EXEC_USDT,
             "min_spread": ARB_MIN_SPREAD, "reserve_usdt": ARB_RESERVE_USDT,
@@ -15968,11 +16058,20 @@ async def auto_scanner_loop():
     """
     await asyncio.sleep(60)
     while True:
+        _heartbeat("auto_scanner")
         try:
             issues = []
             warnings = []
             recommendations = []
             miniapp_health = {}
+
+            # ══ БЛОК 0: TASK SUPERVISOR ══════════════════════════════════════
+            # v10.20.23: Check heartbeats of all background loops
+            dead_tasks = get_dead_tasks()
+            for dt in dead_tasks:
+                issues.append(f"💀 Task '{dt['task']}' silent for {dt['silent_min']}min — may be dead!")
+            if not _db_health["ok"] and _db_health["fail_count"] >= 3:
+                warnings.append(f"⚠️ DB health: {_db_health['fail_count']}x failures — {_db_health.get('last_error','?')[:60]}")
 
             # ══ БЛОК 1: ИНФРАСТРУКТУРА ══════════════════════════════════════
 
@@ -17382,6 +17481,7 @@ async def quantum_commander_loop():
     await asyncio.sleep(300)
     print("[commander] starting first cycle", flush=True)
     while True:
+        _heartbeat("commander")
         try:
             report = await quantum_commander_cycle()
             money_score = report.get("money_working_score", 0)
@@ -17424,6 +17524,7 @@ async def agency_agent_loop():
     await asyncio.sleep(120)  # let other systems initialize first
     print("[agency] starting first cycle", flush=True)
     while True:
+        _heartbeat("agency")
         try:
             result = await agency_run_cycle()
             _agency_state["last_run"] = datetime.utcnow().isoformat()
