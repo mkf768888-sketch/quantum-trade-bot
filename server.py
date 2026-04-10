@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.20.17")
+app = FastAPI(title="QuantumTrade AI", version="10.20.18")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -15882,134 +15882,284 @@ async def api_debug(_auth=Depends(verify_api_key)):
     return results
 
 # ── Auto-Scanner Background Task ───────────────────────────────────────────────
-_scanner_state = {"last_run": None, "issues": [], "ok_streak": 0, "alert_sent": False}
+_scanner_state = {
+    "last_run": None, "issues": [], "warnings": [], "recommendations": [],
+    "ok_streak": 0, "alert_sent": False,
+    "miniapp_health": {},    # v10.20.18: endpoint → {ms, status}
+    "agent_findings": 0,     # v10.20.18: findings pulled from Agency
+    "perf": {},
+}
 
 async def auto_scanner_loop():
-    """v7.5.0: Полный health scanner — 10+ проверок каждые 5 мин, алерты + рекомендации."""
+    """v10.20.18: Intelligent AutoScanner — rule checks + Agency findings + Commander insights + Mini App health.
+    Runs every 5 min. No extra DeepSeek calls — reads from already-computed agent states.
+    """
     await asyncio.sleep(60)
     while True:
         try:
             issues = []
             warnings = []
             recommendations = []
+            miniapp_health = {}
 
-            # ── 1. KuCoin Prices ──────────────────────────────────────────────
-            prices = await get_all_prices()
-            if not prices.get("success") or not prices.get("prices"):
-                issues.append("❌ KuCoin цены недоступны")
+            # ══ БЛОК 1: ИНФРАСТРУКТУРА ══════════════════════════════════════
 
-            # ── 2. KuCoin Auth (Spot) ─────────────────────────────────────────
+            # 1a. KuCoin Prices (WebSocket)
+            ws_count = len(_ws_prices)
+            if ws_count < 5:
+                issues.append(f"❌ WebSocket: только {ws_count} цен (норма 50+) — переподключение?")
+            elif ws_count < 20:
+                warnings.append(f"⚠️ WebSocket: {ws_count} цен (мало, норма 50+)")
+
+            # 1b. KuCoin Auth
             if KUCOIN_API_KEY:
                 bal = await get_balance()
                 if not bal.get("success"):
-                    issues.append(f"❌ KuCoin Spot: {bal.get('error', '?')[:60]}")
+                    issues.append(f"❌ KuCoin Spot auth: {bal.get('error','?')[:50]}")
                 else:
-                    total = bal.get("total_usdt", 0)
-                    if total < 10:
-                        warnings.append(f"⚠️ Баланс спот: ${total:.2f} — недостаточно для торговли")
+                    total_usdt = bal.get("total_usdt", 0)
+                    if total_usdt < 5:
+                        warnings.append(f"⚠️ KuCoin Spot USDT: ${total_usdt:.2f} — слишком мало для торговли")
             else:
                 issues.append("❌ KUCOIN_API_KEY не задан")
 
-            # ── 3. KuCoin Futures ─────────────────────────────────────────────
-            if KUCOIN_API_KEY:
-                fb = await get_futures_balance()
-                if not fb.get("success"):
-                    warnings.append(f"⚠️ KuCoin Futures: {fb.get('error', '?')[:60]}")
+            # 1c. ByBit connectivity
+            if BYBIT_ENABLED:
+                bybit_errs = _bybit_stats.get("errors", 0) if hasattr(_bybit_stats, "get") else 0
+                bybit_calls = _bybit_stats.get("calls", 0) if hasattr(_bybit_stats, "get") else 0
+                if bybit_calls > 10 and bybit_errs / max(1, bybit_calls) > 0.3:
+                    warnings.append(f"⚠️ ByBit error rate высокий: {bybit_errs}/{bybit_calls} calls")
 
-            # ── 4. Telegram ───────────────────────────────────────────────────
+            # 1d. PostgreSQL
+            if not db.is_ready():
+                issues.append("❌ PostgreSQL: нет подключения — данные не сохраняются")
+
+            # 1e. BOT_TOKEN / API_SECRET
             if not BOT_TOKEN:
-                issues.append("❌ BOT_TOKEN не задан")
+                issues.append("❌ BOT_TOKEN не задан — бот не работает")
             if not API_SECRET:
                 warnings.append("⚠️ API_SECRET не задан — Mini App без авторизации")
 
-            # ── 5. Claude Vision AI ───────────────────────────────────────────
-            if not ANTHROPIC_API_KEY:
-                warnings.append("⚠️ ANTHROPIC_API_KEY не задан — Claude Vision отключён (Q-Score снижен)")
+            # ══ БЛОК 2: MINI APP HEALTH (новое v10.20.18) ══════════════════
+            base_url = f"https://{RAILWAY_PUBLIC_DOMAIN}" if RAILWAY_PUBLIC_DOMAIN else ""
+            if base_url:
+                miniapp_checks = [
+                    ("/api/public/stats",       "Stats"),
+                    ("/api/public/performance",  "Perf"),
+                    ("/api/scanner/status",      "Scanner"),
+                    ("/health",                  "Health"),
+                ]
+                for endpoint, label in miniapp_checks:
+                    try:
+                        t0 = time.time()
+                        async with aiohttp.ClientSession() as s:
+                            r = await s.get(
+                                f"{base_url}{endpoint}",
+                                timeout=aiohttp.ClientTimeout(total=6)
+                            )
+                            elapsed_ms = round((time.time() - t0) * 1000)
+                            miniapp_health[label] = {"ms": elapsed_ms, "status": r.status}
+                            if r.status != 200:
+                                warnings.append(f"⚠️ Mini App [{label}]: HTTP {r.status} ({elapsed_ms}ms)")
+                            elif elapsed_ms > 4000:
+                                warnings.append(f"⚠️ Mini App [{label}]: медленно {elapsed_ms}ms (>4s)")
+                    except asyncio.TimeoutError:
+                        miniapp_health[label] = {"ms": 6000, "status": 0}
+                        issues.append(f"❌ Mini App [{label}]: timeout >6s — сервер завис?")
+                    except Exception as me:
+                        miniapp_health[label] = {"ms": -1, "status": -1}
+                        warnings.append(f"⚠️ Mini App [{label}]: {str(me)[:40]}")
+            else:
+                warnings.append("⚠️ RAILWAY_PUBLIC_DOMAIN не задан — Mini App health skip")
 
-            # ── 6. Торговая активность ────────────────────────────────────────
+            # ══ БЛОК 3: ТОРГОВЛЯ И ПРОИЗВОДИТЕЛЬНОСТЬ ═══════════════════════
+
+            # 3a. Торговая активность
             if trade_log:
-                last_trade_ts = trade_log[-1].get("open_ts", 0)  # v8.2: use numeric open_ts, not ISO string ts
-                if isinstance(last_trade_ts, str):
-                    try: last_trade_ts = datetime.fromisoformat(last_trade_ts.replace("Z","")).timestamp()
-                    except Exception: last_trade_ts = 0
-                hours_since = (time.time() - last_trade_ts) / 3600 if last_trade_ts else float("inf")
+                last_ts = max((t.get("open_ts", 0) for t in trade_log), default=0)
+                if isinstance(last_ts, str):
+                    try: last_ts = datetime.fromisoformat(last_ts.replace("Z","")).timestamp()
+                    except: last_ts = 0
+                hours_since = (time.time() - last_ts) / 3600 if last_ts else 999
                 if AUTOPILOT and hours_since > 24:
-                    warnings.append(f"⚠️ Автопилот ВКЛ, но 0 сделок за {int(hours_since)}ч — проверь Q-min ({MIN_Q_SCORE})")
+                    warnings.append(f"⚠️ Автопилот ВКЛ, но нет сделок {int(hours_since)}ч — Q-min={MIN_Q_SCORE} высокий?")
                     if MIN_Q_SCORE > 80:
-                        recommendations.append("💡 MIN_Q_SCORE={} слишком высок. Попробуй 72-77 для большей активности".format(MIN_Q_SCORE))
+                        recommendations.append(f"💡 [AutoScanner] MIN_Q_SCORE={MIN_Q_SCORE} → попробуй 75-77")
 
-            # ── 7. Производительность (self-learning) ─────────────────────────
-            if _perf_stats["total_trades"] >= 10:
-                wr = _perf_stats["wins"] / _perf_stats["total_trades"] * 100
+            # 3b. Win rate и просадка
+            total_tr = _perf_stats["total_trades"]
+            if total_tr >= 10:
+                wr = _perf_stats["wins"] / total_tr * 100
                 if wr < 40:
-                    warnings.append(f"⚠️ Win rate {wr:.0f}% (низкий) — рекомендуется поднять MIN_Q_SCORE")
-                    recommendations.append("💡 Повысь MIN_Q_SCORE на 5 пунктов для улучшения качества сигналов")
-                if _perf_stats["max_drawdown"] < -50:
-                    issues.append(f"❌ Max drawdown ${_perf_stats['max_drawdown']:.2f} — критическая просадка")
-                # Анализ по стратегиям
-                for strat, data in _perf_stats["by_strategy"].items():
-                    if data["trades"] >= 5:
-                        swr = data["wins"] / data["trades"] * 100
-                        if swr < 30:
-                            recommendations.append(f"💡 Стратегия {strat}: WR {swr:.0f}%, PnL ${data['pnl']:.2f} — рассмотри отключение")
-                # Анализ по символам
-                for sym, data in _perf_stats["by_symbol"].items():
-                    if data["trades"] >= 5 and data["pnl"] < -20:
-                        recommendations.append(f"💡 {sym}: убыток ${data['pnl']:.2f} за {data['trades']} сделок — рассмотри исключение")
-                # Лучший Q-Score для побед
-                if _perf_stats["avg_q_score_win"] > _perf_stats["avg_q_score_loss"] + 5:
-                    recommendations.append(f"💡 Средний Q побед: {_perf_stats['avg_q_score_win']}, поражений: {_perf_stats['avg_q_score_loss']}")
+                    warnings.append(f"⚠️ Win Rate {wr:.0f}% — ниже нормы (40%+)")
+                    recommendations.append("💡 [AutoScanner] Повысь MIN_Q_SCORE +5 для фильтрации слабых сигналов")
+                if _perf_stats.get("max_drawdown", 0) < -50:
+                    issues.append(f"❌ Max Drawdown ${_perf_stats['max_drawdown']:.2f} — критическая просадка!")
 
-            # ── 8. Streak detection ───────────────────────────────────────────
-            if _perf_stats["streak"] <= -3:
-                warnings.append(f"⚠️ Серия из {abs(_perf_stats['streak'])} убыточных сделок подряд")
-                recommendations.append("💡 При серии -3 рекомендуется пауза. Рассмотри /set cooldown 1200")
+            # 3c. Losing streak
+            streak = _perf_stats.get("streak", 0)
+            if streak <= -3:
+                warnings.append(f"⚠️ Серия {streak} проигрышей — бот в режиме повышенной осторожности")
+                recommendations.append("💡 [AutoScanner] Рассмотри паузу: /set cooldown 1200")
 
-            # ── 9. Railway & trade log persistence ────────────────────────────
+            # 3d. Earn engine
+            earn_errs = _earn_stats.get("errors", 0)
+            earn_consec = _earn_consec_errors
+            if earn_consec >= 20:
+                warnings.append(f"⚠️ Earn: {earn_consec} последовательных ошибок — KC Flex API недоступен")
+            if _earn_stats.get("kc_usdt", 0) < 1 and _earn_stats.get("bb_usdt", 0) < 1:
+                if earn_errs > 5:
+                    recommendations.append("💡 [Earn] 0 USDT в earn + ошибки — проверь KC Flex настройки")
+
+            # 3e. Trade log persistence
             if not os.path.exists(_TRADES_FILE):
-                warnings.append("⚠️ Trade log файл не найден — история может быть утеряна")
+                warnings.append("⚠️ Trade log файл не найден — история не сохраняется")
 
-            # ── 10. QAOA status ───────────────────────────────────────────────
-            if not _qcloud_ready:
-                pass  # CPU fallback работает, не алертим
+            # ══ БЛОК 4: АГЕНТСКИЙ ИНТЕЛЛЕКТ (новое v10.20.18) ══════════════
+            # Читаем уже вычисленные findings от Agency — без доп. API вызовов!
 
-            # ── Формируем статус ──────────────────────────────────────────────
-            _scanner_state["last_run"] = datetime.utcnow().isoformat()
-            _scanner_state["issues"] = issues
-            _scanner_state["warnings"] = warnings
-            _scanner_state["recommendations"] = recommendations
-            _scanner_state["perf"] = {
-                "trades": _perf_stats["total_trades"],
-                "wr": round(_perf_stats["wins"] / max(1, _perf_stats["total_trades"]) * 100, 1),
-                "pnl": _perf_stats["total_pnl"],
-                "streak": _perf_stats["streak"],
-            }
+            agency_criticals = [f for f in _agency_state.get("findings", [])
+                                 if f.get("severity") == "critical"]
+            agency_warnings_list = [f for f in _agency_state.get("findings", [])
+                                     if f.get("severity") == "warning"]
+            agency_suggestions = [f for f in _agency_state.get("findings", [])
+                                   if f.get("severity") == "suggestion"]
+
+            for af in agency_criticals[:3]:
+                agent_name = af.get("agent", "Agency")
+                issues.append(f"❌ [{agent_name}] {af.get('text','')[:90]}")
+            for af in agency_warnings_list[:2]:
+                agent_name = af.get("agent", "Agency")
+                warnings.append(f"⚠️ [{agent_name}] {af.get('text','')[:90]}")
+            for af in agency_suggestions[:2]:
+                recommendations.append(f"💡 [{af.get('agent','Strategy')}] {af.get('text','')[:90]}")
+
+            _scanner_state["agent_findings"] = len(agency_criticals) + len(agency_warnings_list)
+
+            # ══ БЛОК 5: QUANTUM COMMANDER INSIGHTS ══════════════════════════
+            cmd = _quantum_commander_state
+            cmd_money = cmd.get("money_working_score", 0)
+            cmd_phase = cmd.get("market_phase", "unknown")
+            cmd_opps = cmd.get("opportunities", [])
+            cmd_cycle = cmd.get("cycle", 0)
+
+            if cmd_cycle > 0:
+                if cmd_money < 30:
+                    warnings.append(
+                        f"⚠️ [Commander] Money Working Score: {cmd_money}/100 — "
+                        f"капитал простаивает ({cmd_phase})"
+                    )
+                if cmd_opps:
+                    recommendations.append(f"💡 [Commander] {str(cmd_opps[0])[:100]}")
+            else:
+                pass  # Commander ещё не запустился — норм при старте
+
+            # MiroFish последний сентимент
+            mf_recent = list(_mirofish_cache.values())[-1] if _mirofish_cache else {}
+            if mf_recent:
+                mf_dir = mf_recent.get("direction", "HOLD")
+                mf_conf = mf_recent.get("confidence", 0)
+                mf_synth = mf_recent.get("synthesizer", {})
+                synth_str = ""
+                if mf_synth and mf_synth.get("conviction", 0) >= 7:
+                    synth_str = f" | Synth: {mf_synth.get('final','?')} (убеждённость {mf_synth['conviction']}/10)"
+                if mf_conf < 40:
+                    recommendations.append(
+                        f"💡 [MiroFish] Сентимент неопределённый: {mf_dir} {mf_conf}%{synth_str} — воздержись от входа"
+                    )
+
+            # ══ ФОРМИРУЕМ И ОТПРАВЛЯЕМ РЕПОРТ ═══════════════════════════════
+            _scanner_state.update({
+                "last_run": datetime.utcnow().isoformat(),
+                "issues": issues,
+                "warnings": warnings,
+                "recommendations": recommendations,
+                "miniapp_health": miniapp_health,
+                "perf": {
+                    "trades": total_tr,
+                    "wr": round(_perf_stats["wins"] / max(1, total_tr) * 100, 1),
+                    "pnl": _perf_stats["total_pnl"],
+                    "streak": streak,
+                    "money_score": cmd_money,
+                    "market_phase": cmd_phase,
+                },
+            })
 
             if issues:
                 _scanner_state["ok_streak"] = 0
                 if not _scanner_state["alert_sent"]:
                     _scanner_state["alert_sent"] = True
-                    msg = f"🔍 <b>QuantumTrade AutoScanner v{app.version}</b>\n\n"
-                    msg += "\n".join(issues)
-                    if warnings: msg += "\n\n" + "\n".join(warnings[:3])
-                    if recommendations: msg += "\n\n" + "\n".join(recommendations[:2])
-                    msg += f"\n\n🕐 {datetime.utcnow().strftime('%H:%M UTC')}"
+                    # Build rich alert with agent attribution
+                    msg = (
+                        f"🚨 <b>AutoScanner v{app.version} — ПРОБЛЕМЫ</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    )
+                    for iss in issues[:5]:
+                        msg += f"{iss}\n"
+                    if warnings:
+                        msg += f"\n⚠️ Предупреждения ({len(warnings)}):\n"
+                        for w in warnings[:3]:
+                            msg += f"{w}\n"
+                    if recommendations:
+                        msg += f"\n💡 Рекомендации:\n"
+                        for r in recommendations[:2]:
+                            msg += f"{r}\n"
+                    if miniapp_health:
+                        slow = [(k, v) for k, v in miniapp_health.items() if v.get("ms", 0) > 2000]
+                        if slow:
+                            msg += f"\n🐢 Mini App медленно: " + ", ".join(f"{k}={v['ms']}ms" for k, v in slow)
+                    msg += f"\n\n🕐 {datetime.utcnow().strftime('%H:%M UTC')} | Commander: {cmd_phase} | Money: {cmd_money}/100"
                     await notify(msg)
+
             else:
                 _scanner_state["ok_streak"] += 1
                 _scanner_state["alert_sent"] = False
-                if _scanner_state["ok_streak"] % 12 == 1:
-                    wr = _perf_stats["wins"] / max(1, _perf_stats["total_trades"]) * 100
+
+                # Отчёт каждые ~30 мин (6 циклов по 5 мин), обогащённый агентами
+                if _scanner_state["ok_streak"] % 6 == 1:
+                    wr = _perf_stats["wins"] / max(1, total_tr) * 100
+                    open_pos = [t for t in trade_log if t.get("status") == "open"]
+
+                    # Mini App timing summary
+                    if miniapp_health:
+                        avg_ms = round(sum(v.get("ms",0) for v in miniapp_health.values()) / len(miniapp_health))
+                        miniapp_str = f"Mini App: avg {avg_ms}ms ✅"
+                    else:
+                        miniapp_str = "Mini App: URL не задан"
+
+                    # Phase emoji
+                    phase_emoji = {
+                        "accumulation":"🟢","distribution":"🔴",
+                        "trending_up":"📈","trending_down":"📉","sideways":"↔️"
+                    }.get(cmd_phase, "🔵")
+
                     msg = (
-                        f"✅ <b>AutoScanner: все системы в норме</b>\n"
-                        f"📊 Q-min: {MIN_Q_SCORE} · Cooldown: {COOLDOWN}s\n"
-                        f"🤖 AP: {'ВКЛ' if AUTOPILOT else 'ВЫКЛ'} · Arb: {'ВКЛ' if ARB_EXEC_ENABLED else 'ВЫКЛ'}\n"
-                        f"📋 Сделок: {_perf_stats['total_trades']} · WR: {wr:.0f}% · PnL: ${_perf_stats['total_pnl']:.2f}\n"
-                        f"🔥 Streak: {_perf_stats['streak']} · Версия: {app.version}"
+                        f"✅ <b>AutoScanner v{app.version} — Все системы в норме</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"📊 <b>Торговля:</b> {total_tr} сделок | WR: {wr:.0f}% | PnL: ${_perf_stats['total_pnl']:.2f} | Streak: {streak:+d}\n"
+                        f"🔓 <b>Позиции:</b> {len(open_pos)} открыто\n"
+                        f"⚙️ <b>Режим:</b> AP={'ВКЛ' if AUTOPILOT else 'ВЫКЛ'} | Q-min={MIN_Q_SCORE} | Cooldown={COOLDOWN}s\n"
+                        f"🌐 <b>{miniapp_str}</b>\n"
+                        f"{phase_emoji} <b>Commander:</b> {cmd_phase} | Money={cmd_money}/100\n"
                     )
-                    if warnings: msg += "\n\n" + "\n".join(warnings[:2])
-                    if recommendations: msg += "\n\n" + "\n".join(recommendations[:2])
+
+                    if mf_recent:
+                        mf_score = mf_recent.get("score", 0)
+                        mf_dir_txt = mf_recent.get("direction", "HOLD")
+                        msg += f"🐟 <b>MiroFish:</b> score={mf_score:+d} ({mf_dir_txt})\n"
+
+                    if warnings:
+                        msg += f"\n⚠️ Предупреждения ({len(warnings)}):\n"
+                        for w in warnings[:3]:
+                            msg += f"  {w}\n"
+                    if recommendations:
+                        msg += f"\n💡 Агентские рекомендации:\n"
+                        for r in recommendations[:3]:
+                            msg += f"  {r}\n"
+
+                    msg += f"\n🕐 {datetime.utcnow().strftime('%H:%M UTC')} | Agency: {_scanner_state['agent_findings']} findings"
                     await notify(msg)
+
         except Exception as e:
             print(f"[scanner] error: {e}", flush=True)
         await asyncio.sleep(300)
