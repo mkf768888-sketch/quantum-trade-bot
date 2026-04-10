@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.20.20")
+app = FastAPI(title="QuantumTrade AI", version="10.20.21")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -383,6 +383,9 @@ _perf_stats = {
     "streak": 0, "max_streak": 0, "max_drawdown": 0.0,
     "updated": None,
 }
+
+# v10.20.21: Fear & Greed cache (used by ML, Commander, Voice)
+_fg_cache: dict = {"value": 50, "classification": "Neutral"}
 
 # v10.20.20: ML Score Engine — sklearn-trained confidence from trade history
 _ml_model = None       # GradientBoosting, trained lazily from trade_log
@@ -7989,6 +7992,9 @@ async def get_fear_greed() -> dict:
         else:           bonus = -7   # Extreme Greed → сильный SELL сигнал
         result = {"value": val, "classification": cls, "bonus": bonus, "success": True}
         _cache_set("fear_greed", result)
+        # v10.20.21: sync global _fg_cache for ML/Commander/Voice access
+        _fg_cache["value"] = val
+        _fg_cache["classification"] = cls
         return result
     except Exception as e:
         return {"value": 50, "classification": "Neutral", "bonus": 0, "success": False, "error": str(e)}
@@ -15782,7 +15788,7 @@ async def health():
     # v7.3.3: публичный эндпоинт — минимум информации, без внутренних настроек
     return {
         "status": "ok",
-        "version": "10.20.12",
+        "version": app.version,
         "auto_trading": AUTOPILOT,
         "earn_engine": EARN_ENABLED,
         "earn_total": round(_earn_stats.get("kucoin_subscribed", 0) + _earn_stats.get("bybit_subscribed", 0), 2),
@@ -17470,7 +17476,7 @@ async def api_public_performance():
         "by_strategy": _perf_stats["by_strategy"],
         "by_symbol": _perf_stats["by_symbol"],
         "recommendations": _scanner_state.get("recommendations", []),
-        "version": "10.20.12",
+        "version": app.version,
     }
 
 @app.get("/api/setup-webhook")
@@ -18020,7 +18026,7 @@ async def api_qa_run():
 
     # ── individual check coroutines ──────────────────────────────────────────
     async def _c_version():
-        return {"ok": True, "value": "10.20.10"}
+        return {"ok": True, "value": app.version}
 
     async def _c_db():
         try:
@@ -18147,7 +18153,7 @@ async def api_qa_run():
         "summary": {"passed": _passed, "total": _total, "pct": round(_passed/_total*100),
                     "elapsed_s": _elapsed},
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.20.12",
+        "version": app.version,
     }
 
 
