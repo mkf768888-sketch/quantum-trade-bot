@@ -9,3 +9,4 @@ pandas
 pandas-ta-classic
 amazon-braket-sdk
 edge-tts
+scikit-learn

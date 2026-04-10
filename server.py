@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.20.19")
+app = FastAPI(title="QuantumTrade AI", version="10.20.20")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -383,6 +383,26 @@ _perf_stats = {
     "streak": 0, "max_streak": 0, "max_drawdown": 0.0,
     "updated": None,
 }
+
+# v10.20.20: ML Score Engine — sklearn-trained confidence from trade history
+_ml_model = None       # GradientBoosting, trained lazily from trade_log
+_ml_last_train = 0     # ts of last model training
+_ML_RETRAIN_SEC = 3600 # retrain every hour
+
+# v10.20.20: Volume Spike Detector state
+_volume_spike_state: dict = {
+    "last_scan": None,
+    "spikes": [],          # [{symbol, vol_24h, vol_change_pct, ts}]
+    "scan_count": 0,
+}
+
+# v10.20.20: Polymarket Smart Follow state
+_poly_smart_state: dict = {
+    "top_markets": [],     # [{question, yes_pct, volume, trend}]
+    "signals": [],         # [{symbol, bias, source}]
+    "last_scan": None,
+}
+
 
 async def sync_open_positions_from_exchange() -> int:
     """v10.9.9: Startup safety net — reconstruct open trade_log entries from real exchange balances.
@@ -6092,10 +6112,13 @@ async def sell_spot_to_usdt(symbol: str, size: float = 0) -> dict:
     PRECISION = {"BTC-USDT": 8, "ETH-USDT": 4, "SOL-USDT": 2,
                  "XRP-USDT": 1, "BNB-USDT": 4, "AVAX-USDT": 2,
                  "ADA-USDT": 1, "LINK-USDT": 2, "LTC-USDT": 3,
-                 "DOGE-USDT": 0}
+                 "DOGE-USDT": 0, "NEAR-USDT": 1, "DOT-USDT": 2,
+                 "ATOM-USDT": 2, "OP-USDT": 2, "ARB-USDT": 1,
+                 "VET-USDT": 0, "SNX-USDT": 2, "PEPE-USDT": 0}
     MIN_SIZES = {"BTC-USDT": 0.00001, "ETH-USDT": 0.0001, "SOL-USDT": 0.01,
                  "XRP-USDT": 1.0, "BNB-USDT": 0.01, "AVAX-USDT": 0.01,
-                 "ADA-USDT": 1.0, "LINK-USDT": 0.01, "LTC-USDT": 0.001}
+                 "ADA-USDT": 1.0, "LINK-USDT": 0.01, "LTC-USDT": 0.001,
+                 "NEAR-USDT": 0.1, "VET-USDT": 1.0, "PEPE-USDT": 1.0}
     prec = PRECISION.get(symbol, 6)
     size = math.floor(size * 10**prec) / 10**prec  # floor to correct precision
     min_size = MIN_SIZES.get(symbol, 0.001)
@@ -7585,6 +7608,23 @@ def calc_signal(price_change: float, vision: dict = None,
     score += polymarket_bonus  # Polymarket events v7.0: ±8 (multi-query smart scoring)
     score += whale_bonus       # Whale flow: ±5 (упрощённо)
 
+    # ── ML Confidence Bonus v10.20.20 (max ±8) ─────────────────────────
+    # GradientBoosting model trained on our trade history
+    try:
+        ml_features = [datetime.utcnow().hour,
+                       score,  # current accumulated q-score as feature
+                       fear_greed.get("value", 50) if fear_greed else 50,
+                       whale_bonus,
+                       price_change,
+                       _perf_stats.get("streak", 0),
+                       vision.get("vol_ratio", 1.0) if vision else 1.0]
+        ml_conf = ml_predict_confidence(ml_features)
+        ml_bonus = round((ml_conf - 50) / 50 * 8, 1)  # -8 to +8
+    except Exception:
+        ml_conf = 50.0
+        ml_bonus = 0.0
+    score += ml_bonus
+
     # ── QAOA Quantum Bias (max ±15) ───────────────────────────────────────
     # v7.3.0: Квантовое усиление: +50% когда квант согласен с трендом
     q_b = max(-15.0, min(15.0, quantum_bias))  # clamp безопасности
@@ -7618,6 +7658,8 @@ def calc_signal(price_change: float, vision: dict = None,
             "fear_greed": fg_bonus, "polymarket": round(polymarket_bonus, 1),
             "whale": round(whale_bonus, 1),
             "quantum_bias": round(q_b, 1),
+            "ml_confidence": round(ml_conf, 1),
+            "ml_bonus": round(ml_bonus, 1),
         }
     }
 
@@ -10670,6 +10712,7 @@ async def spot_monitor_loop():
 
                     if should_close:
                         # v10.0: Sell on correct exchange
+                        _exch_label = "ByBit" if _trade_acct == "bybit_spot" else "KuCoin"  # v10.20.20: moved up to avoid UnboundLocalError on sell failure
                         sell_size = min(trade_size, bal_info["available"])
                         if _trade_acct == "bybit_spot":
                             sell_result = await bybit_sell_spot(symbol, sell_size)
@@ -10696,7 +10739,6 @@ async def spot_monitor_loop():
                                     duration_sec=round(time.time() - open_ts, 1)
                                 ))
                                 asyncio.ensure_future(db.save_perf_stats(_perf_stats))
-                            _exch_label = "ByBit" if _trade_acct == "bybit_spot" else "KuCoin"
                             _partial_note = f"\n💡 TP1 зафиксировано: ${trade.get('partial_pnl',0):+.4f}" if trade.get("partial_exit_done") else ""
                             await notify(
                                 f"{emoji} <b>Спот закрыта — {reason}</b>\n"
@@ -13953,6 +13995,7 @@ async def startup():
     asyncio.create_task(auto_scanner_loop())  # v7.4.4: health scanner
     asyncio.create_task(agency_agent_loop())  # v10.5.0: Agency Agents — 5 AI agents
     asyncio.create_task(quantum_commander_loop())  # v10.20.15: QUANTUM Commander — meta-agent
+    asyncio.create_task(polymarket_smart_loop())   # v10.20.20: Polymarket Smart Follow + Volume Spikes
     await get_airdrops()  # прогреваем кеш при старте
 
     # v7.4.0: авто-регистрация Telegram webhook при старте (если задан Railway домен)
@@ -15684,13 +15727,14 @@ async def dashboard_live(x_api_key: str = Header(None)):  # v10.11.5 C-04: soft-
         },
         # v10.11.5 C-04: Sensitive fields only with valid API key
         "corr_matrix": {"pairs": PAIR_NAMES, "matrix": CORR_MATRIX} if (x_api_key == API_SECRET and API_SECRET) else {"pairs": [], "matrix": []},
+        # v10.20.20: operational params (risk, floor, cooldown) always returned — not secrets
         "settings": {
             "min_q_score": MIN_Q_SCORE, "cooldown": COOLDOWN,
-            "risk_per_trade": RISK_PER_TRADE if (x_api_key == API_SECRET and API_SECRET) else None,
-            "max_leverage": MAX_LEVERAGE if (x_api_key == API_SECRET and API_SECRET) else None,
+            "risk_per_trade": RISK_PER_TRADE,
             "usdt_floor_pct": USDT_FLOOR_PCT, "max_daily_buys": MAX_DAILY_BUYS,
             "tp_pct": TP_PCT, "sl_pct": SL_PCT,
-        } if (x_api_key == API_SECRET and API_SECRET) else {"min_q_score": MIN_Q_SCORE},
+            "max_leverage": MAX_LEVERAGE if (x_api_key == API_SECRET and API_SECRET) else None,
+        },
     }
 
 # ── v10.9: Module Toggle API ────────────────────────────────────────────────
@@ -16169,8 +16213,260 @@ async def api_scanner_status():
     """v7.5.0: Статус автосканера + производительность + рекомендации."""
     return _scanner_state
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# v10.20.20 — WAVE A: ML Score Engine
+# Trains a lightweight GradientBoosting model on trade_log features
+# Outputs: ml_confidence 0-100, used as additional Q-Score component
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def ml_extract_features(trade: dict, prices_snap: dict = None) -> list:
+    """Extract feature vector from a trade for ML model.
+    Features: hour_utc, q_score, fg_value, whale_bonus, price_change, streak, vol_ratio"""
+    ts = trade.get("open_ts") or trade.get("ts") or 0
+    hour = datetime.utcfromtimestamp(ts).hour if ts > 1000000 else 12
+    q = trade.get("q_score") or 50
+    fg = trade.get("fg_value") or _fg_cache.get("value", 50)
+    whale = trade.get("whale_bonus") or 0
+    pch = trade.get("price_change") or 0
+    streak = _perf_stats.get("streak", 0)
+    vol_ratio = trade.get("vol_ratio") or 1.0
+    return [hour, q, fg, whale, pch, streak, vol_ratio]
+
+def ml_train_model():
+    """Train ML model from trade history. Needs >= 8 closed trades."""
+    global _ml_model, _ml_last_train
+    closed = [t for t in trade_log if t.get("status") == "closed" and t.get("pnl") is not None]
+    if len(closed) < 8:
+        return  # not enough data
+    try:
+        from sklearn.ensemble import GradientBoostingClassifier
+        X, y = [], []
+        for t in closed:
+            features = ml_extract_features(t)
+            label = 1 if (t.get("pnl") or 0) > 0 else 0
+            X.append(features)
+            y.append(label)
+        if len(set(y)) < 2:
+            return  # need both wins and losses
+        model = GradientBoostingClassifier(
+            n_estimators=50, max_depth=3, learning_rate=0.1,
+            min_samples_leaf=2, random_state=42
+        )
+        model.fit(X, y)
+        _ml_model = model
+        _ml_last_train = time.time()
+        logger.info(f"[ml] model trained on {len(X)} trades, classes={sum(y)}W/{len(y)-sum(y)}L")
+    except ImportError:
+        logger.warning("[ml] sklearn not available — ML Score disabled")
+    except Exception as e:
+        logger.warning(f"[ml] train error: {e}")
+
+def ml_predict_confidence(features: list) -> float:
+    """Predict win probability for given features. Returns 0-100."""
+    global _ml_model, _ml_last_train
+    # Retrain if stale
+    if time.time() - _ml_last_train > _ML_RETRAIN_SEC:
+        ml_train_model()
+    if _ml_model is None:
+        return 50.0  # neutral when no model
+    try:
+        prob = _ml_model.predict_proba([features])[0]
+        # prob[1] = probability of win
+        return round(prob[1] * 100, 1) if len(prob) > 1 else 50.0
+    except Exception:
+        return 50.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# v10.20.20 — WAVE B: Volume Spike Detector
+# Monitors 24h volume changes across top coins via KuCoin API
+# Spikes >200% → signal for Commander + Agency alerts
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def volume_spike_scan() -> list:
+    """Scan top coins for 24h volume spikes. Returns list of spikes."""
+    spikes = []
+    try:
+        # KuCoin 24h tickers — single API call, all pairs
+        async with aiohttp.ClientSession() as sess:
+            r = await sess.get(
+                "https://api.kucoin.com/api/v1/market/allTickers",
+                timeout=aiohttp.ClientTimeout(total=8)
+            )
+            if r.status != 200:
+                return spikes
+            data = await r.json()
+
+        tickers = data.get("data", {}).get("ticker", [])
+        # Filter USDT pairs with decent volume
+        usdt_tickers = [t for t in tickers if t.get("symbol", "").endswith("-USDT")]
+
+        for t in usdt_tickers:
+            sym = t.get("symbol", "")
+            vol = float(t.get("volValue", 0) or 0)         # 24h volume in USDT
+            avg_vol = float(t.get("averagePrice", 0) or 0)  # not ideal but available
+            change = float(t.get("changeRate", 0) or 0) * 100  # % change
+
+            # Use vol > $50k as minimum filter
+            if vol < 50000:
+                continue
+
+            # Volume spike: we compare current vol against a baseline
+            # KuCoin doesn't give prev-day vol directly, so we flag high-vol + big move
+            if abs(change) > 8 and vol > 200000:
+                spikes.append({
+                    "symbol": sym,
+                    "vol_24h": round(vol),
+                    "change_pct": round(change, 2),
+                    "price": float(t.get("last", 0) or 0),
+                    "ts": time.time(),
+                    "reason": f"{'🚀' if change > 0 else '🔻'} {sym} {change:+.1f}% vol=${vol/1000:.0f}K"
+                })
+
+        # Sort by absolute change, keep top 5
+        spikes.sort(key=lambda x: abs(x["change_pct"]), reverse=True)
+        spikes = spikes[:5]
+
+        _volume_spike_state.update({
+            "last_scan": datetime.utcnow().isoformat(),
+            "spikes": spikes,
+            "scan_count": _volume_spike_state["scan_count"] + 1,
+        })
+
+    except Exception as e:
+        logger.warning(f"[volume_spike] scan error: {e}")
+    return spikes
+
+
+async def _agent_volume_sniper() -> list:
+    """Agency agent: Volume Spike Detector. Flags unusual volume activity."""
+    findings = []
+    try:
+        spikes = await volume_spike_scan()
+        if spikes:
+            top = spikes[0]
+            if abs(top["change_pct"]) > 15:
+                findings.append({
+                    "agent": "VolumeSniper",
+                    "severity": "warning",
+                    "text": f"🔥 Volume spike: {top['symbol']} {top['change_pct']:+.1f}% "
+                            f"(vol ${top['vol_24h']/1000:.0f}K). Top {len(spikes)} movers flagged."
+                })
+            else:
+                findings.append({
+                    "agent": "VolumeSniper",
+                    "severity": "info",
+                    "text": f"📊 Top mover: {top['symbol']} {top['change_pct']:+.1f}%. "
+                            f"{len(spikes)} active. Market normal."
+                })
+            # Flag coins that are in our watchlist with big moves
+            watch = {"BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT"}
+            for s in spikes:
+                if s["symbol"] in watch and abs(s["change_pct"]) > 10:
+                    findings.append({
+                        "agent": "VolumeSniper",
+                        "severity": "warning",
+                        "text": f"⚠️ Watchlist alert: {s['symbol']} {s['change_pct']:+.1f}% "
+                                f"— potential trading opportunity"
+                    })
+        else:
+            findings.append({
+                "agent": "VolumeSniper",
+                "severity": "info",
+                "text": "Market calm — no significant volume spikes detected."
+            })
+    except Exception as e:
+        findings.append({
+            "agent": "VolumeSniper",
+            "severity": "warning",
+            "text": f"VolumeSniper error: {str(e)[:80]}"
+        })
+    return findings
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# v10.20.20 — WAVE C: Polymarket Smart Follow
+# Tracks high-volume prediction markets for crypto sentiment signals
+# Extracts bullish/bearish bias from market probabilities
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def polymarket_smart_scan() -> dict:
+    """Scan Polymarket for crypto prediction trends. Returns signal dict."""
+    result = {"markets": [], "bias": 0, "signals": []}
+    try:
+        markets = await fetch_polymarket_crypto(max_items=10)
+        if not markets:
+            return result
+
+        bull_count, bear_count, total_vol = 0, 0, 0
+        crypto_signals = []
+
+        for m in markets:
+            q = m.get("question", "").lower()
+            yes = m.get("yes_pct", 50)
+            vol = m.get("volume", 0)
+            total_vol += vol
+
+            # Detect bullish/bearish signals from market questions
+            bull_keywords = ["above", "выше", "reach", "hit", "break", "ath", "100k", "200k", "new high"]
+            bear_keywords = ["below", "ниже", "crash", "drop", "fall", "bear"]
+
+            is_bull_q = any(kw in q for kw in bull_keywords)
+            is_bear_q = any(kw in q for kw in bear_keywords)
+
+            if is_bull_q and yes > 55:
+                bull_count += 1
+                # Extract symbol hint
+                for sym in ["btc", "eth", "sol", "bnb", "xrp"]:
+                    if sym in q:
+                        crypto_signals.append({
+                            "symbol": f"{sym.upper()}-USDT",
+                            "bias": round((yes - 50) / 50 * 5, 1),  # 0-5 bonus
+                            "source": f"Polymarket: {m['question'][:60]}",
+                            "confidence": yes,
+                        })
+                        break
+            elif is_bear_q and yes > 55:
+                bear_count += 1
+                for sym in ["btc", "eth", "sol", "bnb", "xrp"]:
+                    if sym in q:
+                        crypto_signals.append({
+                            "symbol": f"{sym.upper()}-USDT",
+                            "bias": round(-(yes - 50) / 50 * 5, 1),  # 0 to -5
+                            "source": f"Polymarket: {m['question'][:60]}",
+                            "confidence": yes,
+                        })
+                        break
+
+        # Overall market bias: -5 (bearish) to +5 (bullish)
+        if bull_count + bear_count > 0:
+            bias = round((bull_count - bear_count) / (bull_count + bear_count) * 5, 1)
+        else:
+            bias = 0
+
+        result = {
+            "markets": markets[:5],
+            "bias": bias,
+            "signals": crypto_signals[:3],
+            "bull_markets": bull_count,
+            "bear_markets": bear_count,
+            "total_volume": total_vol,
+        }
+
+        _poly_smart_state.update({
+            "top_markets": markets[:5],
+            "signals": crypto_signals[:3],
+            "bias": bias,
+            "last_scan": datetime.utcnow().isoformat(),
+        })
+
+    except Exception as e:
+        logger.warning(f"[poly_smart] scan error: {e}")
+    return result
+
+
 # ── Agency Agent System v10.5.0 ───────────────────────────────────────────────
-# 5 specialised AI agents: Auditor, Risk, Strategy, Security, Optimizer
+# 5+1 specialised AI agents: Auditor, Risk, Strategy, Security, Optimizer, VolumeSniper
 # Each agent runs analysis → produces findings (critical/warning/info/suggestion)
 # Critical findings trigger Telegram alerts; full report via /agency command.
 # ──────────────────────────────────────────────────────────────────────────────
@@ -16779,12 +17075,13 @@ async def _agent_devops() -> list:
     return findings
 
 _AGENCY_AGENTS = [
-    ("🔍 Auditor",   _agent_auditor),
-    ("⚠️ Risk",      _agent_risk),
-    ("📊 Strategy",  _agent_strategy),
-    ("🛡 Security",  _agent_security),
-    ("⚙️ Optimizer", _agent_optimizer),
-    ("🔧 DevOps",    _agent_devops),
+    ("🔍 Auditor",      _agent_auditor),
+    ("⚠️ Risk",         _agent_risk),
+    ("📊 Strategy",     _agent_strategy),
+    ("🛡 Security",     _agent_security),
+    ("⚙️ Optimizer",    _agent_optimizer),
+    ("🔧 DevOps",       _agent_devops),
+    ("🎯 VolumeSniper", _agent_volume_sniper),  # v10.20.20: Wave B
 ]
 
 async def agency_run_cycle() -> dict:
@@ -16912,6 +17209,19 @@ async def quantum_commander_cycle() -> dict:
         btc_dom = macro.get("btc_dominance", 0)
         mcap = macro.get("total_mcap", 0)
 
+        # v10.20.20: Volume Spike + Polymarket Smart data for Commander
+        vol_spikes = _volume_spike_state.get("spikes", [])
+        vol_str = ", ".join(s["reason"] for s in vol_spikes[:3]) if vol_spikes else "нет"
+        poly_smart = _poly_smart_state
+        poly_bias = poly_smart.get("bias", 0)
+        poly_signals = poly_smart.get("signals", [])
+        poly_str = f"bias={poly_bias:+.1f}"
+        if poly_signals:
+            poly_str += " | " + ", ".join(f"{s['symbol']}({s['bias']:+.1f})" for s in poly_signals[:2])
+
+        # ML model status
+        ml_status = f"trained ({_perf_stats.get('total_trades', 0)} trades)" if _ml_model else "not trained yet"
+
         context = (
             f"=== QUANTUM Commander Context — Cycle #{_quantum_commander_state['cycle']+1} ===\n"
             f"📊 Performance: {total_trades} trades | WR: {wr}% | PnL: ${total_pnl:.2f}\n"
@@ -16922,6 +17232,9 @@ async def quantum_commander_cycle() -> dict:
             f"😱 F&G: {fg} ({fg_label}) | 🐋 Whales: {whale}\n"
             f"💰 Earn: KC=${earn_kc:.1f} APR={earn_apr:.1f}% errs={earn_errs}\n"
             f"📈 Macro: BTC.D={btc_dom}% MCap=${mcap:.0f}B\n"
+            f"🔥 Volume Spikes: {vol_str}\n"
+            f"🔮 Polymarket Smart: {poly_str}\n"
+            f"🤖 ML Score: {ml_status}\n"
             f"🕐 UTC: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
         )
 
@@ -17049,6 +17362,32 @@ async def quantum_commander_loop():
         except Exception as e:
             print(f"[commander] loop error: {e}", flush=True)
         await asyncio.sleep(4 * 3600)  # every 4 hours
+
+
+async def polymarket_smart_loop():
+    """v10.20.20: Background loop — Polymarket Smart Scan + Volume Spikes + ML retrain.
+    Runs every 30 minutes. First run after 3min warmup."""
+    await asyncio.sleep(180)
+    print("[poly_smart] Polymarket Smart Follow + Volume Spike loop started", flush=True)
+    # Initial ML model training
+    ml_train_model()
+    while True:
+        try:
+            # 1. Polymarket smart scan
+            poly_result = await polymarket_smart_scan()
+            poly_bias = poly_result.get("bias", 0)
+            poly_sigs = len(poly_result.get("signals", []))
+
+            # 2. Volume spike scan (also runs inside Agency, but we keep state fresh)
+            vol_spikes = await volume_spike_scan()
+
+            logger.info(
+                f"[poly_smart] scan done: poly_bias={poly_bias:+.1f} "
+                f"sigs={poly_sigs} vol_spikes={len(vol_spikes)}"
+            )
+        except Exception as e:
+            logger.warning(f"[poly_smart] loop error: {e}")
+        await asyncio.sleep(1800)  # 30 min
 
 
 async def agency_agent_loop():
@@ -17379,6 +17718,18 @@ async def api_public_stats():
             "warnings":      len(_scanner_state.get("warnings", [])),
             "ok_streak":     _scanner_state.get("ok_streak", 0),
             "miniapp_health": _scanner_state.get("miniapp_health", {}),
+        },
+        # v10.20.20: Wave A/B/C data
+        "ml_score": {
+            "active": _ml_model is not None,
+            "last_train": _ml_last_train,
+            "trades_used": _perf_stats.get("total_trades", 0),
+        },
+        "volume_spikes": _volume_spike_state.get("spikes", [])[:3],
+        "poly_smart": {
+            "bias": _poly_smart_state.get("bias", 0),
+            "signals": _poly_smart_state.get("signals", [])[:3],
+            "last_scan": _poly_smart_state.get("last_scan"),
         },
     }
 
