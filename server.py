@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.20.23")
+app = FastAPI(title="QuantumTrade AI", version="10.20.24")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -405,6 +405,39 @@ _poly_smart_state: dict = {
     "signals": [],         # [{symbol, bias, source}]
     "last_scan": None,
 }
+
+# v10.20.24: Sell-Fail Blacklist — auto-block symbols that can't be sold
+_sell_fail_blacklist: dict = {}  # symbol → {"count": N, "last_fail": ts, "reason": str}
+_SELL_FAIL_BLACKLIST_THRESHOLD = 3  # after 3 fails, stop buying this symbol
+
+def _record_sell_fail(symbol: str, reason: str = ""):
+    """Track sell failures per symbol. After threshold, symbol is auto-blacklisted."""
+    if symbol not in _sell_fail_blacklist:
+        _sell_fail_blacklist[symbol] = {"count": 0, "last_fail": 0, "reason": ""}
+    _sell_fail_blacklist[symbol]["count"] += 1
+    _sell_fail_blacklist[symbol]["last_fail"] = time.time()
+    _sell_fail_blacklist[symbol]["reason"] = str(reason)[:100]
+    if _sell_fail_blacklist[symbol]["count"] >= _SELL_FAIL_BLACKLIST_THRESHOLD:
+        log_activity(f"[blacklist] {symbol}: AUTO-BLACKLISTED after {_sell_fail_blacklist[symbol]['count']} sell failures — removed from trading")
+
+def _is_sell_blacklisted(symbol: str) -> bool:
+    """Check if symbol is blacklisted due to sell failures."""
+    entry = _sell_fail_blacklist.get(symbol)
+    if not entry:
+        return False
+    if entry["count"] >= _SELL_FAIL_BLACKLIST_THRESHOLD:
+        # Auto-expire after 24h — maybe KuCoin fixed the issue
+        if time.time() - entry["last_fail"] > 86400:
+            entry["count"] = 0
+            log_activity(f"[blacklist] {symbol}: expired after 24h — re-enabled")
+            return False
+        return True
+    return False
+
+def _clear_sell_fail(symbol: str):
+    """Clear sell failure counter on successful sell."""
+    if symbol in _sell_fail_blacklist:
+        _sell_fail_blacklist[symbol]["count"] = 0
 
 # v10.20.23: Task Supervisor — heartbeat tracking for all background loops
 from collections import deque
@@ -5697,7 +5730,8 @@ _xarb_history: list = []  # last 50 opportunities
 
 XARB_MIN_SPREAD = float(os.getenv("XARB_MIN_SPREAD", "0.003"))   # 0.3% min spread
 XARB_SYMBOLS = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]              # monitored pairs
-XARB_ENABLED = False  # v10.9.3: HARDCODED OFF — same reason as ARB_EXEC_ENABLED
+# v10.20.24: Re-enabled — cross-exchange arb between KuCoin and ByBit
+XARB_ENABLED = os.getenv("XARB_ENABLED", "true").lower() in ("true", "1", "yes")
 
 async def check_cross_exchange_arb() -> list:
     """v9.0: Compare prices between KuCoin and ByBit for arb opportunities.
@@ -6166,7 +6200,8 @@ async def sell_spot_to_usdt(symbol: str, size: float = 0) -> dict:
     MIN_SIZES = {"BTC-USDT": 0.00001, "ETH-USDT": 0.0001, "SOL-USDT": 0.01,
                  "XRP-USDT": 1.0, "BNB-USDT": 0.01, "AVAX-USDT": 0.01,
                  "ADA-USDT": 1.0, "LINK-USDT": 0.01, "LTC-USDT": 0.001,
-                 "NEAR-USDT": 0.1, "VET-USDT": 1.0, "PEPE-USDT": 1.0}
+                 "NEAR-USDT": 0.1, "VET-USDT": 1.0, "PEPE-USDT": 1.0,
+                 "ARB-USDT": 1.0, "DOGE-USDT": 1.0, "DOT-USDT": 0.1, "AVAX-USDT": 0.01}
     prec = PRECISION.get(symbol, 6)
     size = math.floor(size * 10**prec) / 10**prec  # floor to correct precision
     min_size = MIN_SIZES.get(symbol, 0.001)
@@ -6178,6 +6213,7 @@ async def sell_spot_to_usdt(symbol: str, size: float = 0) -> dict:
     err_msg = result.get("msg") or result.get("data", {}).get("msg") if isinstance(result.get("data"), dict) else result.get("msg", "?")
     if ok:
         log_activity(f"[spot_sell] {symbol} SELL {size} OK orderId={result.get('data',{}).get('orderId','?')}")
+        _clear_sell_fail(symbol)  # v10.20.24: reset blacklist counter on success
     else:
         log_activity(f"[spot_sell] {symbol} SELL {size} FAILED: {err_msg} | raw: {json.dumps(result)[:200]}")
     return {"success": ok, "result": result, "size": size, "msg": err_msg if not ok else "ok"}
@@ -9855,6 +9891,11 @@ async def auto_trade_cycle():
                 log_activity(f"[cycle] {symbol}: SKIP BUY — post-sell rest ({_rest_left}s left)")
                 continue
 
+        # ── v10.20.24: Sell-fail blacklist — skip symbols that can't be sold ──
+        if _is_sell_blacklisted(symbol):
+            log_activity(f"[cycle] {symbol}: SKIPPED — sell-fail blacklisted ({_sell_fail_blacklist[symbol]['count']}x fails)")
+            continue
+
         # ── v10.0: Self-learning filter — skip symbols with terrible winrate ──
         if symbol in _learning_insights.get("avoid_symbols", []):
             log_activity(f"[cycle] {symbol}: SKIPPED by self-learning (avoid list)")
@@ -10341,8 +10382,9 @@ async def _notify_arb(opp: dict):
 
 # ── v7.3.9: Triangular Arb EXECUTION (safe) ───────────────────────────────────
 ARB_EXEC_USDT     = float(os.getenv("ARB_EXEC_USDT", "5"))     # v8.3: lowered to $5 for small balance testing
-ARB_EXEC_ENABLED  = False  # v10.9.3: HARDCODED OFF — env var ignored. Legs 2/3 fail on small balance leaving stuck coins. Re-enable only when capital > $500 by changing this line.
-ARB_MIN_PROFIT_PCT = 0.35  # v8.3.5: 0.35% (was 0.5%) — execute more arbs, still above 3x fee
+# v10.20.24: Re-enabled with safety net — force-close handles stuck coins now (v10.20.22)
+ARB_EXEC_ENABLED  = os.getenv("ARB_EXEC_ENABLED", "true").lower() in ("true", "1", "yes")
+ARB_MIN_PROFIT_PCT = 0.5   # v10.20.24: raised to 0.5% for safety (was 0.35%) — only high-confidence arbs
 _arb_stats: dict   = {"total": 0, "success": 0, "failed": 0, "total_pnl": 0.0,
                        "opportunities_found": 0, "best_spread": 0.0, "last_opp_ts": 0}
 _arb_history: list = []  # last 50 arb events [{ts, path, spread, executed, pnl}]
@@ -10853,6 +10895,7 @@ async def spot_monitor_loop():
                             trade["_sell_fail_count"] = _sell_fails
                             _err_msg = sell_result.get("error", sell_result.get("msg", "?"))
                             log_activity(f"[spot_mon] {symbol} ({_exch_label}) sell FAILED #{_sell_fails}: {_err_msg}")
+                            _record_sell_fail(symbol, _err_msg)  # v10.20.24: track for blacklist
                             if _sell_fails >= 5:
                                 # Force-close as orphan — exchange balance likely 0 or minSize issue
                                 trade["status"] = "closed"
@@ -11233,6 +11276,11 @@ async def _tg_diag(chat_id: int):
     sl_best_hr = _learning_insights.get("best_hour", "?")
     sl_opt_q = _learning_insights.get("optimal_q", "?")
     results.append(f"<b>🧠 Self-Learn:</b> avoid={sl_avoid} best_fg={sl_best_fg} best_hr={sl_best_hr} opt_q={sl_opt_q}")
+
+    # v10.20.24: Sell-Fail Blacklist
+    _bl_active = [s for s, v in _sell_fail_blacklist.items() if v["count"] >= _SELL_FAIL_BLACKLIST_THRESHOLD]
+    if _bl_active:
+        results.append(f"<b>🚫 Sell-Blacklist:</b> {', '.join(_bl_active)}")
 
     # 17. v10.0: Security
     results.append(f"<b>🔒 Security:</b> Auth=✅ InputValidation=✅ RateLimit=func")
