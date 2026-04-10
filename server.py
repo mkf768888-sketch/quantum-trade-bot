@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.20.15")
+app = FastAPI(title="QuantumTrade AI", version="10.20.16")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -257,6 +257,9 @@ KUCOIN_BASE_URL   = "https://api.kucoin.com"
 KUCOIN_FUT_URL    = "https://api-futures.kucoin.com"
 BOT_TOKEN         = os.getenv("BOT_TOKEN", "")
 ALERT_CHAT_ID     = os.getenv("ALERT_CHAT_ID", "")
+# v10.20.16: Voice alerts — Edge TTS (free, Microsoft)
+VOICE_ENABLED     = os.getenv("VOICE_ENABLED", "true").lower() == "true"
+VOICE_LANG        = os.getenv("VOICE_LANG", "ru-RU-SvetlanaNeural")  # или ru-RU-DmitryNeural
 # v10.11.5 C-01: Whitelist authorized Telegram users. Set ADMIN_CHAT_IDS=your_chat_id in Railway.
 # Multiple IDs comma-separated: "123456,789012". Empty = allow all (unsafe — set ASAP!)
 _raw_admin_ids    = os.getenv("ADMIN_CHAT_IDS", "")
@@ -599,6 +602,54 @@ def _update_perf_on_trade(trade: dict):
     # Max drawdown
     if _perf_stats["total_pnl"] < _perf_stats["max_drawdown"]:
         _perf_stats["max_drawdown"] = round(_perf_stats["total_pnl"], 4)
+
+    # v10.20.15: Wave 2 — Success Case Tracker: save winning trades to vault
+    if is_win and pnl >= 0.05:  # only meaningful wins (>5 cents)
+        try:
+            os.makedirs("vault/knowledge/wins", exist_ok=True)
+            ts_str = datetime.utcnow().strftime("%Y-%m-%d")
+            win_file = f"vault/knowledge/wins/{ts_str}.md"
+            hold_h = 0.0
+            close_ts = trade.get("close_ts") or trade.get("open_ts", 0)
+            open_ts = trade.get("open_ts", 0)
+            if close_ts and open_ts:
+                hold_h = (close_ts - open_ts) / 3600
+            entry = trade.get("price", 0)
+            exit_p = trade.get("close_price", 0)
+            pnl_pct = trade.get("pnl_pct", 0)
+            q = trade.get("q_score", 0)
+            side = trade.get("side", "buy")
+            acct = trade.get("account", "?")
+            win_entry = (
+                f"\n## WIN: {symbol} +${pnl:.2f} ({pnl_pct:+.1f}%)\n"
+                f"- date: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n"
+                f"- symbol: {symbol} | side: {side} | account: {acct}\n"
+                f"- entry: ${entry:.4f} → exit: ${exit_p:.4f}\n"
+                f"- hold_time: {hold_h:.1f}h | q_score: {q} | strategy: {strat}\n"
+                f"- tags: [win, {symbol.replace('-USDT','').lower()}, {strat.lower()}]\n"
+            )
+            mode = "a" if os.path.exists(win_file) else "w"
+            if mode == "w":
+                win_entry = f"# Trading Wins — {ts_str}\n" + win_entry
+            with open(win_file, mode) as f:
+                f.write(win_entry)
+        except Exception as ve:
+            pass  # vault write is non-critical
+
+        # v10.20.16: Voice alert for significant wins (>$0.20)
+        if pnl >= 0.20 and ALERT_CHAT_ID and VOICE_ENABLED and _EDGE_TTS_AVAILABLE:
+            try:
+                voice_text = (
+                    f"Победа! {symbol.replace('-USDT', '')} принёс плюс {pnl:.2f} доллара. "
+                    f"Текущий П энд Л: плюс {_perf_stats['total_pnl'] + pnl:.2f}. "
+                    f"Серия: {(_perf_stats['streak'] or 0) + 1} подряд."
+                )
+                asyncio.create_task(
+                    send_voice_alert(int(ALERT_CHAT_ID), voice_text,
+                                     caption=f"🏆 WIN: {symbol} +${pnl:.2f}", force=True)
+                )
+            except Exception:
+                pass
 
     _save_perf_stats()
 
@@ -7387,6 +7438,119 @@ async def notify(text: str):
         print(f"[notify] network error: {e}")
 
 
+# ── v10.20.16: Voice System — Edge TTS + Telegram sendAudio ──────────────────
+try:
+    import edge_tts as _edge_tts
+    _EDGE_TTS_AVAILABLE = True
+except ImportError:
+    _edge_tts = None
+    _EDGE_TTS_AVAILABLE = False
+
+_voice_last_used: float = 0.0
+_VOICE_COOLDOWN = 30  # min seconds between voice messages to same chat
+
+async def tts_generate(text: str, voice: str = "") -> bytes:
+    """v10.20.16: Generate MP3 audio from text using Edge TTS (free, Microsoft).
+    Returns raw MP3 bytes or empty bytes on failure.
+    """
+    if not _EDGE_TTS_AVAILABLE:
+        return b""
+    try:
+        voice = voice or VOICE_LANG
+        # Strip HTML tags for TTS
+        import re as _re_tts
+        clean = _re_tts.sub(r'<[^>]+>', '', text)
+        clean = clean.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+        clean = clean.strip()
+        if not clean:
+            return b""
+        communicate = _edge_tts.Communicate(clean, voice)
+        audio_chunks = []
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_chunks.append(chunk["data"])
+        return b"".join(audio_chunks)
+    except Exception as e:
+        log_activity(f"[voice] TTS error: {e}")
+        return b""
+
+
+async def send_voice_alert(chat_id: int, text: str, caption: str = "",
+                           voice: str = "", force: bool = False) -> bool:
+    """v10.20.16: Send voice message to Telegram chat via Edge TTS → sendAudio.
+    Uses MP3 format (no ffmpeg needed). Shows as playable audio track.
+    Returns True on success.
+    """
+    global _voice_last_used
+    if not VOICE_ENABLED or not BOT_TOKEN:
+        return False
+    if not _EDGE_TTS_AVAILABLE:
+        log_activity("[voice] edge-tts not available — install pip edge-tts")
+        return False
+    # Cooldown check (skip for force=True, e.g. critical alerts)
+    if not force and time.time() - _voice_last_used < _VOICE_COOLDOWN:
+        return False
+    try:
+        audio_bytes = await tts_generate(text, voice)
+        if not audio_bytes:
+            return False
+        _voice_last_used = time.time()
+        async with aiohttp.ClientSession() as s:
+            data = aiohttp.FormData()
+            data.add_field("chat_id", str(chat_id))
+            data.add_field("audio", audio_bytes,
+                           filename="quantum_voice.mp3",
+                           content_type="audio/mpeg")
+            if caption:
+                data.add_field("caption", caption[:1024], content_type="text/plain")
+            data.add_field("title", "QuantumTrade AI")
+            data.add_field("performer", "QUANTUM Commander")
+            r = await s.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendAudio",
+                data=data,
+                timeout=aiohttp.ClientTimeout(total=20)
+            )
+            resp = await r.json()
+            if resp.get("ok"):
+                log_activity(f"[voice] ✅ sent {len(audio_bytes)//1024}KB audio to {chat_id}")
+                return True
+            else:
+                log_activity(f"[voice] Telegram error: {resp.get('description','?')[:80]}")
+                return False
+    except Exception as e:
+        log_activity(f"[voice] send error: {e}")
+        return False
+
+
+def _build_stats_voice_text() -> str:
+    """v10.20.16: Build clean TTS-friendly stats summary for voice message."""
+    perf = _perf_stats
+    total = perf.get("total_trades", 0)
+    wins = perf.get("wins", 0)
+    wr = round(wins / max(1, total) * 100)
+    pnl = perf.get("total_pnl", 0)
+    streak = perf.get("streak", 0)
+    open_pos = [t for t in trade_log if t.get("status") == "open"]
+    fg = _fg_cache.get("value", 0)
+    fg_label = _fg_cache.get("classification", "нейтральный")
+    cmd_phase = _quantum_commander_state.get("market_phase", "неизвестна")
+    cmd_money = _quantum_commander_state.get("money_working_score", 0)
+
+    streak_str = f"серия плюс {streak}" if streak > 0 else (f"серия минус {abs(streak)}" if streak < 0 else "серия нейтральная")
+    pnl_str = f"плюс {pnl:.2f}" if pnl >= 0 else f"минус {abs(pnl):.2f}"
+
+    text = (
+        f"Квантум Трейд А И. Ежедневная сводка. "
+        f"Всего сделок: {total}. Винрейт: {wr} процентов. "
+        f"Общий Пэ энд Эль: {pnl_str} доллара. {streak_str}. "
+        f"Открытых позиций: {len(open_pos)}. "
+        f"Фиэр энд Гриид: {fg}, {fg_label}. "
+        f"Фаза рынка по Коммандеру: {cmd_phase}. "
+        f"Индекс эффективности денег: {cmd_money} из ста."
+    )
+    return text
+
+
 # ── Signal Generator v5.0 ──────────────────────────────────────────────────────
 def calc_signal(price_change: float, vision: dict = None,
                 fear_greed: dict = None, polymarket_bonus: float = 0.0,
@@ -11962,6 +12126,53 @@ async def _tg_commander(chat_id: int):
     await _tg_send(chat_id, msg)
 
 
+async def _tg_vstats(chat_id: int):
+    """v10.20.16: /vstats — Voice stats summary via Edge TTS."""
+    if not VOICE_ENABLED:
+        await _tg_send(chat_id, "🔇 Голос отключён. Добавь VOICE_ENABLED=true в Railway Variables.")
+        return
+    if not _EDGE_TTS_AVAILABLE:
+        await _tg_send(chat_id, "⚙️ edge-tts не установлен. После следующего деплоя будет доступен.")
+        return
+    await _tg_send(chat_id, "🎙️ <i>Генерирую голосовую сводку...</i>")
+    text = _build_stats_voice_text()
+    ok = await send_voice_alert(chat_id, text, caption="🤖 QUANTUM Stats — голосовая сводка", force=True)
+    if not ok:
+        await _tg_send(chat_id, "❌ Ошибка генерации аудио. Проверь логи Railway.")
+
+
+async def _tg_vcommander(chat_id: int):
+    """v10.20.16: /vcommander — Voice Commander report via Edge TTS."""
+    if not VOICE_ENABLED:
+        await _tg_send(chat_id, "🔇 Голос отключён. Добавь VOICE_ENABLED=true в Railway Variables.")
+        return
+    state = _quantum_commander_state
+    if not state.get("last_report"):
+        await _tg_send(chat_id, "⏳ Commander ещё не запускался. Попробуй через 5 мин после деплоя.")
+        return
+    report = state.get("last_report", {})
+    phase = state.get("market_phase", "неизвестна")
+    money = state.get("money_working_score", 0)
+    insights = report.get("top_insights", [])
+    priority = report.get("priority_action", "")
+    opps = report.get("opportunities", [])
+    await _tg_send(chat_id, "🎙️ <i>Генерирую голосовой отчёт Коммандера...</i>")
+    tts_text = (
+        f"Квантум Коммандер. Цикл номер {state.get('cycle', 0)}. "
+        f"Фаза рынка: {phase}. "
+        f"Индекс эффективности денег: {money} из ста. "
+    )
+    if insights:
+        tts_text += f"Ключевые инсайты: {'. '.join(str(i) for i in insights[:2])}. "
+    if opps:
+        tts_text += f"Возможности: {str(opps[0])}. "
+    if priority:
+        tts_text += f"Приоритетное действие: {priority}."
+    ok = await send_voice_alert(chat_id, tts_text, caption="🤖 QUANTUM Commander — голосовой отчёт", force=True)
+    if not ok:
+        await _tg_send(chat_id, "❌ Ошибка генерации аудио. Проверь логи Railway.")
+
+
 async def _tg_command_center(chat_id: int):
     """v10.9.4: Send Command Center link as Telegram Mini App button or URL."""
     base = WEBAPP_URL or (f"https://{RAILWAY_PUBLIC_DOMAIN}" if RAILWAY_PUBLIC_DOMAIN else "")
@@ -13267,6 +13478,8 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/fills":               await _tg_fills(chat_id)
         elif cmd == "/agency":              await _tg_agency(chat_id)
         elif cmd == "/commander":           await _tg_commander(chat_id)
+        elif cmd == "/vstats":              await _tg_vstats(chat_id)
+        elif cmd == "/vcommander":          await _tg_vcommander(chat_id)
         elif cmd == "/router":              await _tg_router(chat_id)
         elif cmd == "/command":             await _tg_command_center(chat_id)
         elif cmd == "/app":
@@ -15478,6 +15691,8 @@ async def setup_webhook(request: Request, _auth=Depends(verify_api_key)):
                     {"command": "settings",  "description": "⚙️ Настройки (Q-Score, Cooldown)"},
                     {"command": "diag",      "description": "🔬 Диагностика всех подключений"},
                     {"command": "commander", "description": "🤖 QUANTUM Commander — мозг системы"},
+                    {"command": "vstats",    "description": "🎙️ Голосовая статистика (Edge TTS)"},
+                    {"command": "vcommander","description": "🎙️ Голосовой отчёт Коммандера"},
                 ]},
                 timeout=aiohttp.ClientTimeout(total=10)
             )
@@ -16492,6 +16707,25 @@ async def quantum_commander_cycle() -> dict:
             f"money={report.get('money_working_score',0)}/100 | "
             f"opps={len(report.get('opportunities',[]))}"
         )
+
+        # v10.20.16: Voice briefing when money_working_score is low (<40) — alert owner
+        money_score = report.get("money_working_score", 0)
+        if ALERT_CHAT_ID and VOICE_ENABLED and _EDGE_TTS_AVAILABLE and money_score < 40:
+            try:
+                phase_v = report.get("market_phase", "неизвестна")
+                priority_v = report.get("priority_action", "")
+                voice_text = (
+                    f"Внимание! Квантум Коммандер. Индекс эффективности денег упал до {money_score}. "
+                    f"Фаза рынка: {phase_v}. "
+                    + (f"Рекомендация: {priority_v}." if priority_v else "")
+                )
+                asyncio.create_task(
+                    send_voice_alert(int(ALERT_CHAT_ID), voice_text,
+                                     caption=f"⚠️ Money Working Score: {money_score}/100", force=True)
+                )
+            except Exception:
+                pass
+
         return report
 
     except Exception as e:
