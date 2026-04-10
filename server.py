@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.20.14")
+app = FastAPI(title="QuantumTrade AI", version="10.20.15")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -7275,6 +7275,48 @@ async def mirofish_simulate(symbol: str, price: float, q_score: float,
             "agents": agents, "model": result.get("model", "?"),
         }
 
+        # v10.20.15: MiroFish Synthesizer — 16th meta-agent that SEES all votes
+        # Implements context-sharing: each agent's reasoning is visible to the synthesizer
+        # Only runs with real DeepSeek (not rule-based) to avoid redundant cost
+        if result.get("model") != "rule-based" and agents and DEEPSEEK_API_KEY:
+            try:
+                synth_votes = "\n".join([
+                    f"[{a.get('id','?')}] {a.get('vote','?')}: {a.get('reason','')}"
+                    for a in agents
+                ])
+                synth_system = (
+                    "Ты — QUANTUM Синтезатор, 16-й мета-агент команды MiroFish.\n"
+                    "Тебе показаны голоса всех 15 специализированных трейдеров.\n"
+                    "Найди консенсус, выяви противоречия и дай финальный вердикт.\n"
+                    "Отвечай СТРОГО JSON (без markdown):\n"
+                    '{"final":"BUY"|"SELL"|"HOLD","conviction":1-10,'
+                    '"consensus_reason":"почему большинство право",'
+                    '"key_risk":"главный риск в текущей ситуации",'
+                    '"contrarian_view":"что говорит меньшинство и стоит ли слушать"}'
+                )
+                synth_result = await ai_call_deepseek(
+                    [{"role": "user", "content":
+                      f"Рыночный контекст:\n{market_ctx}\n\nГолоса 15 агентов:\n{synth_votes}"}],
+                    max_tokens=250, system=synth_system
+                )
+                if synth_result.get("success") and synth_result.get("text"):
+                    synth_raw = synth_result["text"].strip()
+                    if synth_raw.startswith("```"):
+                        synth_raw = synth_raw.split("```")[1].strip().lstrip("json").strip()
+                    synth_data = json.loads(synth_raw)
+                    result_data["synthesizer"] = synth_data
+                    # Override direction only if synthesizer has HIGH conviction (8+)
+                    if synth_data.get("conviction", 0) >= 8:
+                        old_dir = result_data["direction"]
+                        result_data["direction"] = synth_data.get("final", direction)
+                        if result_data["direction"] != old_dir:
+                            log_activity(
+                                f"[mirofish] 🎯 Synthesizer override: {old_dir}→{result_data['direction']} "
+                                f"(conviction={synth_data['conviction']}/10)"
+                            )
+            except Exception as se:
+                log_activity(f"[mirofish] synthesizer error (non-critical): {se}")
+
         # Cache result
         _mirofish_cache[cache_key] = result_data
         _mirofish_stats["calls"] += 1
@@ -10909,6 +10951,19 @@ async def _tg_diag(chat_id: int):
             results.append(f"<b>🔍 Auditor detail:</b> {aud_texts}")
 
     # 19. v10.2: LunarCrush API Key
+    # 20. v10.20.15: QUANTUM Commander status
+    cmd_state = _quantum_commander_state
+    cmd_cycle = cmd_state.get("cycle", 0)
+    cmd_phase = cmd_state.get("market_phase", "—")
+    cmd_money = cmd_state.get("money_working_score", 0)
+    cmd_last = (cmd_state.get("last_run") or "never")[:16]
+    cmd_opps = len(cmd_state.get("opportunities", []))
+    cmd_synth = "✅" if cmd_cycle > 0 else "⏳ ожидает"
+    results.append(
+        f"<b>🤖 Commander:</b> cycle=#{cmd_cycle} | phase={cmd_phase} | "
+        f"money={cmd_money}/100 | opps={cmd_opps} | last={cmd_last} | mf_synth={cmd_synth}"
+    )
+
     lc_key = "✅ Set" if LUNARCRUSH_API_KEY else "❌ Not set (LUNARCRUSH_API_KEY)"
     results.append(f"<b>🔑 LC Key:</b> {lc_key}")
 
@@ -11832,6 +11887,79 @@ async def _tg_agency(chat_id: int):
         await _tg_send(chat_id, text)
     except Exception as e:
         await _tg_send(chat_id, f"❌ Agency error: {html_mod.escape(str(e)[:200])}")
+
+
+async def _tg_commander(chat_id: int):
+    """v10.20.15: /commander — QUANTUM Commander status + force cycle if stale."""
+    state = _quantum_commander_state
+    if not state.get("last_report"):
+        await _tg_send(chat_id,
+            "⏳ <b>QUANTUM Commander</b> ещё не запускался.\n\n"
+            "Запускается через 5 мин после старта бота, затем каждые 4ч.\n"
+            "Попробуй через несколько минут или отправь ещё раз для принудительного запуска.")
+        # Force run if never ran
+        await _tg_send(chat_id, "🤖 <i>Запускаю первый цикл Commander...</i>")
+        report = await quantum_commander_cycle()
+        if report.get("error"):
+            await _tg_send(chat_id, f"❌ Commander error: {report['error'][:100]}")
+            return
+        state = _quantum_commander_state
+
+    report = state.get("last_report", {})
+    cycle = state.get("cycle", 0)
+    last_run = (state.get("last_run") or "?")[:16]
+    phase = state.get("market_phase", "?")
+    money_score = state.get("money_working_score", 0)
+    patterns = state.get("success_patterns", [])
+
+    phase_emoji = {
+        "accumulation": "🟢", "distribution": "🔴",
+        "trending_up": "📈", "trending_down": "📉", "sideways": "↔️"
+    }.get(phase, "🔵")
+
+    money_bar = "█" * (money_score // 10) + "░" * (10 - money_score // 10)
+
+    msg = (
+        f"🤖 <b>QUANTUM Commander — Цикл #{cycle}</b>\n"
+        f"🕐 {last_run} UTC\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{phase_emoji} <b>Фаза рынка:</b> {phase}\n"
+        f"💰 <b>Money Working:</b> [{money_bar}] {money_score}/100\n\n"
+    )
+
+    insights = report.get("top_insights", [])
+    if insights:
+        msg += "🔑 <b>Ключевые инсайты:</b>\n"
+        for i in insights[:3]:
+            msg += f"  • {html_mod.escape(str(i)[:120])}\n"
+        msg += "\n"
+
+    opps = report.get("opportunities", [])
+    if opps:
+        msg += "💡 <b>Возможности (деньги работают):</b>\n"
+        for o in opps[:2]:
+            msg += f"  • {html_mod.escape(str(o)[:120])}\n"
+        msg += "\n"
+
+    risks = report.get("risks", [])
+    if risks:
+        msg += f"⚠️ <b>Риски:</b>\n"
+        for r in risks[:2]:
+            msg += f"  • {html_mod.escape(str(r)[:120])}\n"
+        msg += "\n"
+
+    if patterns:
+        msg += f"🏆 <b>Успешные паттерны:</b> {', '.join(patterns[:3])}\n\n"
+
+    priority = report.get("priority_action", "")
+    if priority:
+        msg += f"⚡ <b>Приоритет:</b> {html_mod.escape(str(priority)[:180])}\n\n"
+
+    channel_post = report.get("channel_post", "")
+    if channel_post:
+        msg += f"📢 <b>Пост для канала:</b>\n<i>{html_mod.escape(str(channel_post)[:300])}</i>"
+
+    await _tg_send(chat_id, msg)
 
 
 async def _tg_command_center(chat_id: int):
@@ -13138,6 +13266,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/audit":               await _tg_audit(chat_id)
         elif cmd == "/fills":               await _tg_fills(chat_id)
         elif cmd == "/agency":              await _tg_agency(chat_id)
+        elif cmd == "/commander":           await _tg_commander(chat_id)
         elif cmd == "/router":              await _tg_router(chat_id)
         elif cmd == "/command":             await _tg_command_center(chat_id)
         elif cmd == "/app":
@@ -13508,6 +13637,7 @@ async def startup():
     asyncio.create_task(channel_edu_loop())        # v10.17.0: Duet Channel — ежедневные образовательные посты
     asyncio.create_task(auto_scanner_loop())  # v7.4.4: health scanner
     asyncio.create_task(agency_agent_loop())  # v10.5.0: Agency Agents — 5 AI agents
+    asyncio.create_task(quantum_commander_loop())  # v10.20.15: QUANTUM Commander — meta-agent
     await get_airdrops()  # прогреваем кеш при старте
 
     # v7.4.0: авто-регистрация Telegram webhook при старте (если задан Railway домен)
@@ -15347,6 +15477,7 @@ async def setup_webhook(request: Request, _auth=Depends(verify_api_key)):
                     {"command": "positions", "description": "📈 Открытые позиции"},
                     {"command": "settings",  "description": "⚙️ Настройки (Q-Score, Cooldown)"},
                     {"command": "diag",      "description": "🔬 Диагностика всех подключений"},
+                    {"command": "commander", "description": "🤖 QUANTUM Commander — мозг системы"},
                 ]},
                 timeout=aiohttp.ClientTimeout(total=10)
             )
@@ -15583,6 +15714,18 @@ _agency_state: dict = {
     "summary": "",
     "agent_reports": {},     # agent_name → {status, findings_count, key_metric}
     "actions_taken": [],     # auto-fix actions performed
+}
+
+# ── v10.20.15: QUANTUM Commander — meta-agent orchestrating all sub-systems ──
+_quantum_commander_state: dict = {
+    "last_run": None,
+    "cycle": 0,
+    "last_report": None,
+    "market_phase": "unknown",
+    "money_working_score": 0,      # 0-100: how hard money is working right now
+    "insights": [],
+    "opportunities": [],
+    "success_patterns": [],        # patterns detected from winning trades
 }
 
 # ── Agent 1: Auditor — PnL integrity, DB vs exchange verification ─────────
@@ -16193,6 +16336,185 @@ async def db_cleanup_loop():
         except Exception as e:
             print(f"[db_cleanup] error: {e}", flush=True)
         await asyncio.sleep(6 * 3600)  # v10.20.3: every 6h (was 24h)
+
+
+# ── v10.20.15: QUANTUM Commander ──────────────────────────────────────────────
+async def quantum_commander_cycle() -> dict:
+    """v10.20.15: QUANTUM Commander — meta-agent that orchestrates all sub-systems.
+    Analyzes agency report + mirofish + market data → strategic insights + channel post draft.
+    Also detects and logs successful trading patterns to vault.
+    """
+    global _quantum_commander_state
+    try:
+        # ── Collect intelligence from all sub-systems ──
+        agency = _agency_state
+        perf = _perf_stats
+        earn = _earn_stats
+        fg = _fg_cache.get("value", 0)
+        fg_label = _fg_cache.get("classification", "?")
+        whale = _whale_alert_cache.get("signal", "calm")
+        macro = _macro_cache
+        mf_recent = {}
+        if _mirofish_cache:
+            mf_recent = list(_mirofish_cache.values())[-1]
+        open_positions = [t for t in trade_log if t.get("status") == "open"]
+        closed_recent = sorted(
+            [t for t in trade_log if t.get("status") == "closed"],
+            key=lambda x: x.get("close_ts", 0), reverse=True
+        )[:5]
+
+        # ── Detect success patterns from recent wins ──
+        wins = [t for t in closed_recent if (t.get("pnl") or 0) > 0]
+        success_patterns = []
+        for w in wins:
+            sym = w.get("symbol", "?")
+            pnl = w.get("pnl", 0)
+            hold_h = (w.get("close_ts", 0) - w.get("open_ts", 0)) / 3600 if w.get("close_ts") else 0
+            success_patterns.append(f"{sym} +${pnl:.2f} за {hold_h:.1f}ч")
+        _quantum_commander_state["success_patterns"] = success_patterns
+
+        # ── Build commander context ──
+        total_trades = perf.get("total_trades", 0)
+        wins_count = perf.get("wins", 0)
+        wr = round(wins_count / max(1, total_trades) * 100)
+        total_pnl = perf.get("total_pnl", 0)
+
+        earn_kc = earn.get("kc_usdt", 0)
+        earn_apr = earn.get("current_apr", 0)
+        earn_errs = earn.get("errors", 0)
+
+        mf_score = mf_recent.get("score", 0)
+        mf_dir = mf_recent.get("direction", "HOLD")
+        mf_synth = mf_recent.get("synthesizer", {})
+        mf_synth_str = ""
+        if mf_synth:
+            mf_synth_str = f" | Synthesizer: {mf_synth.get('final','?')} (conviction={mf_synth.get('conviction',0)}/10)"
+
+        agency_summary = agency.get("summary", "Нет данных")[:200]
+        agency_warnings = [f for f in agency.get("findings", []) if f.get("severity") == "warning"]
+        agency_warn_str = " | ".join(f["text"][:80] for f in agency_warnings[:2]) if agency_warnings else "нет"
+
+        btc_dom = macro.get("btc_dominance", 0)
+        mcap = macro.get("total_mcap", 0)
+
+        context = (
+            f"=== QUANTUM Commander Context — Cycle #{_quantum_commander_state['cycle']+1} ===\n"
+            f"📊 Performance: {total_trades} trades | WR: {wr}% | PnL: ${total_pnl:.2f}\n"
+            f"🔓 Open positions: {len(open_positions)} ({', '.join(t.get('symbol','?') for t in open_positions) or 'none'})\n"
+            f"🏆 Recent wins: {', '.join(success_patterns) or 'нет данных'}\n"
+            f"🧠 Agency: {agency_summary} | Warnings: {agency_warn_str}\n"
+            f"🐟 MiroFish: score={mf_score:+d} dir={mf_dir}{mf_synth_str}\n"
+            f"😱 F&G: {fg} ({fg_label}) | 🐋 Whales: {whale}\n"
+            f"💰 Earn: KC=${earn_kc:.1f} APR={earn_apr:.1f}% errs={earn_errs}\n"
+            f"📈 Macro: BTC.D={btc_dom}% MCap=${mcap:.0f}B\n"
+            f"🕐 UTC: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
+        )
+
+        commander_system = (
+            "Ты — QUANTUM Commander, главный AI-стратег автономного криптотрейдингового бота.\n"
+            "Анализируй все данные и выдай стратегический отчёт СТРОГО в формате JSON:\n"
+            '{"market_phase":"accumulation|distribution|trending_up|trending_down|sideways",'
+            '"money_working_score":0-100,'
+            '"top_insights":["инсайт 1","инсайт 2","инсайт 3"],'
+            '"opportunities":["конкретная возможность заработать 1","возможность 2"],'
+            '"risks":["риск 1"],'
+            '"channel_post":"Пост для ТГ канала (2-3 предложения, с emoji, реальные цифры из данных)",'
+            '"priority_action":"одно конкретное действие прямо сейчас"}'
+        )
+
+        result = await ai_call_deepseek(
+            [{"role": "user", "content": context}],
+            max_tokens=600, system=commander_system
+        )
+
+        if not result.get("success"):
+            return {"error": "DeepSeek unavailable", "cycle": _quantum_commander_state["cycle"]}
+
+        raw = result.get("text", "").strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1].strip()
+            if raw.startswith("json"):
+                raw = raw[4:].strip()
+        try:
+            report = json.loads(raw)
+        except Exception:
+            if "{" in raw and "}" in raw:
+                raw = raw[raw.index("{"):raw.rindex("}")+1]
+                try:
+                    report = json.loads(raw)
+                except Exception:
+                    report = {"raw": raw[:200], "parse_error": True}
+            else:
+                report = {"parse_error": True, "raw": raw[:200]}
+
+        # ── Update state ──
+        _quantum_commander_state.update({
+            "last_run": datetime.utcnow().isoformat(),
+            "cycle": _quantum_commander_state["cycle"] + 1,
+            "last_report": report,
+            "market_phase": report.get("market_phase", "unknown"),
+            "money_working_score": report.get("money_working_score", 0),
+            "insights": report.get("top_insights", []),
+            "opportunities": report.get("opportunities", []),
+        })
+
+        # ── Save to vault ──
+        vault_dir = "vault/sessions"
+        try:
+            os.makedirs(vault_dir, exist_ok=True)
+            vault_path = f"{vault_dir}/commander-{datetime.utcnow().strftime('%Y-%m-%d')}.md"
+            vault_entry = (
+                f"# Commander Report #{_quantum_commander_state['cycle']}\n"
+                f"date: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n"
+                f"tags: [commander, auto]\n\n"
+                f"## Фаза рынка: {report.get('market_phase','?')}\n"
+                f"**Money Working Score:** {report.get('money_working_score',0)}/100\n\n"
+                f"## Ключевые инсайты\n"
+                + "\n".join(f"- {i}" for i in report.get("top_insights", [])) + "\n\n"
+                f"## Возможности\n"
+                + "\n".join(f"- {o}" for o in report.get("opportunities", [])) + "\n\n"
+                f"## Риски\n"
+                + "\n".join(f"- {r}" for r in report.get("risks", [])) + "\n\n"
+                f"## Приоритет\n{report.get('priority_action','')}\n\n"
+                f"## Пост для канала\n{report.get('channel_post','')}\n\n"
+                f"## Контекст\n```\n{context}\n```\n"
+            )
+            # Append if file exists (multiple cycles per day)
+            mode = "a" if os.path.exists(vault_path) else "w"
+            with open(vault_path, mode) as f:
+                f.write(vault_entry + "\n---\n")
+        except Exception as ve:
+            log_activity(f"[commander] vault write error: {ve}")
+
+        log_activity(
+            f"[commander] ✅ cycle #{_quantum_commander_state['cycle']} | "
+            f"phase={report.get('market_phase','?')} | "
+            f"money={report.get('money_working_score',0)}/100 | "
+            f"opps={len(report.get('opportunities',[]))}"
+        )
+        return report
+
+    except Exception as e:
+        log_activity(f"[commander] cycle error: {e}")
+        return {"error": str(e)[:100]}
+
+
+async def quantum_commander_loop():
+    """v10.20.15: Background loop — QUANTUM Commander runs every 4 hours.
+    First run: 5 min after startup (after agency has had time to initialize).
+    """
+    print("[commander] QUANTUM Commander started, waiting 5min for warmup...", flush=True)
+    await asyncio.sleep(300)
+    print("[commander] starting first cycle", flush=True)
+    while True:
+        try:
+            report = await quantum_commander_cycle()
+            money_score = report.get("money_working_score", 0)
+            phase = report.get("market_phase", "?")
+            log_activity(f"[commander] loop tick: {phase} | money_score={money_score}/100")
+        except Exception as e:
+            print(f"[commander] loop error: {e}", flush=True)
+        await asyncio.sleep(4 * 3600)  # every 4 hours
 
 
 async def agency_agent_loop():
