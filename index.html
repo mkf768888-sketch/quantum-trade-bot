@@ -309,6 +309,86 @@ body { padding-bottom:var(--nav-h); -webkit-font-smoothing:antialiased; }
 .soon-feat:last-child { border-bottom:none; }
 .soon-feat-icon { flex-shrink:0;width:20px;height:20px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10px; }
 
+/* ── SCANLINE ── */
+.scanline { position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:0; }
+.scanline::after { content:'';position:absolute;top:-100%;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,rgba(72,202,228,.35),transparent);animation:scan 4s ease-in-out infinite; }
+@keyframes scan { 0%{top:-5%} 100%{top:105%} }
+
+/* ── QUANTUM COMMANDER CARD ── */
+.cmd-card { background:linear-gradient(135deg,rgba(124,58,237,.12),rgba(72,202,228,.06));border:1px solid rgba(124,58,237,.30);border-radius:16px;padding:13px 14px;position:relative;overflow:hidden;animation:jellyfish 6s ease-in-out infinite; }
+.cmd-card::before { content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--cyan),transparent);animation:scan 5s ease-in-out infinite; }
+.cmd-grid { display:grid;grid-template-columns:auto 1fr;gap:12px;align-items:center; }
+.cmd-ring-wrap { flex-shrink:0; }
+.cmd-ring { width:72px;height:72px;position:relative; }
+.cmd-ring svg { width:72px;height:72px;transform:rotate(-90deg); }
+.cmd-ring-bg { fill:none;stroke:rgba(124,58,237,.18);stroke-width:5; }
+.cmd-ring-fg { fill:none;stroke-width:5;stroke-linecap:round;transition:stroke-dashoffset 1s ease; }
+.cmd-ring-label { position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center; }
+.cmd-ring-val { font-size:18px;font-weight:800;font-family:var(--mono);background:linear-gradient(135deg,var(--purple-soft),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;line-height:1; }
+.cmd-ring-lbl { font-size:7px;color:var(--text3);letter-spacing:.3px;margin-top:1px; }
+.cmd-info { display:flex;flex-direction:column;gap:5px; }
+.cmd-phase { display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:10px;font-weight:700;letter-spacing:.4px; }
+.phase-bull { background:rgba(72,202,228,.12);border:1px solid rgba(72,202,228,.28);color:var(--cyan); }
+.phase-bear { background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.28);color:var(--loss); }
+.phase-side { background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.28);color:var(--gold); }
+.phase-unk  { background:rgba(90,130,180,.12);border:1px solid rgba(90,130,180,.20);color:var(--text3); }
+.cmd-opp { font-size:10px;color:var(--text2);line-height:1.4; }
+.cmd-cycle { font-size:9px;color:var(--text3);font-family:var(--mono); }
+
+/* ── MIROFISH WIDGET ── */
+.mf-card { background:linear-gradient(135deg,rgba(0,20,80,.30),rgba(124,58,237,.08));border:1px solid rgba(124,58,237,.22);border-radius:16px;padding:13px 14px;position:relative;overflow:hidden; }
+.mf-card::before { content:'MIROFISH';position:absolute;top:-1px;right:12px;font-size:7px;color:rgba(124,58,237,.45);font-weight:700;letter-spacing:2px; }
+.mf-row { display:flex;align-items:center;gap:10px; }
+.mf-dir { font-size:28px;font-weight:900;font-family:var(--mono);line-height:1;letter-spacing:-1px; }
+.mf-dir.buy { color:var(--cyan);text-shadow:0 0 12px var(--profit-glow); }
+.mf-dir.sell { color:var(--loss);text-shadow:0 0 12px var(--loss-glow); }
+.mf-dir.hold { color:var(--gold); }
+.mf-conviction { flex:1; }
+.mf-conv-label { font-size:9px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.4px; }
+.mf-dots { display:flex;gap:3px; }
+.mf-dot { width:18px;height:6px;border-radius:3px;background:rgba(124,58,237,.15);transition:background .3s; }
+.mf-dot.active-buy { background:var(--cyan); }
+.mf-dot.active-sell { background:var(--loss); }
+.mf-dot.active-hold { background:var(--gold); }
+.mf-stats { display:flex;gap:10px;margin-top:8px; }
+.mf-stat { font-size:10px;font-family:var(--mono); }
+.mf-consensus { font-size:10px;color:var(--text2);margin-top:5px;line-height:1.4;font-style:italic; }
+
+/* ── AGENTS SUBPAGE ── */
+.agent-card { border-radius:14px;padding:12px 13px;position:relative;overflow:hidden;margin-bottom:0; }
+.agent-card.commander { background:linear-gradient(135deg,rgba(124,58,237,.15),rgba(72,202,228,.06));border:1px solid rgba(124,58,237,.32); }
+.agent-card.mirofish  { background:linear-gradient(135deg,rgba(0,20,90,.35),rgba(124,58,237,.10));border:1px solid rgba(124,58,237,.24); }
+.agent-card.scanner   { background:linear-gradient(135deg,rgba(251,191,36,.08),rgba(0,20,80,.35));border:1px solid rgba(251,191,36,.20); }
+.agent-card.agency    { background:linear-gradient(135deg,rgba(72,202,228,.08),rgba(0,20,80,.30));border:1px solid rgba(72,202,228,.20); }
+.agent-name { font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px; }
+.agent-metric { font-size:22px;font-weight:800;font-family:var(--mono);line-height:1;background:linear-gradient(90deg,var(--purple-soft),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text; }
+.agent-detail { font-size:10px;color:var(--text2);margin-top:5px;line-height:1.5; }
+.agent-chip { display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:8px;font-size:9px;font-weight:600; }
+
+/* ── FEAR & GREED METER ── */
+.fg-wrap { display:flex;align-items:center;gap:10px; }
+.fg-gauge { flex-shrink:0;width:54px;height:54px;position:relative; }
+.fg-gauge svg { width:54px;height:54px;transform:rotate(-90deg); }
+.fg-arc-bg { fill:none;stroke:rgba(124,58,237,.15);stroke-width:5; }
+.fg-arc-fg { fill:none;stroke-width:5;stroke-linecap:round;transition:stroke-dashoffset .8s; }
+.fg-val { position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;font-family:var(--mono); }
+.fg-info { flex:1; }
+.fg-label { font-size:11px;font-weight:600;margin-bottom:2px; }
+.fg-sub { font-size:9px;color:var(--text3); }
+
+/* ── MARKET STAT PILLS ── */
+.mstat-row { display:flex;gap:5px;flex-wrap:wrap;margin-top:6px; }
+.mstat { padding:3px 9px;border-radius:10px;font-size:9px;font-weight:600;border:1px solid; }
+.mstat-bull { background:rgba(72,202,228,.10);border-color:rgba(72,202,228,.25);color:var(--cyan); }
+.mstat-bear { background:rgba(255,107,107,.10);border-color:rgba(255,107,107,.25);color:var(--loss); }
+.mstat-gold { background:rgba(251,191,36,.10);border-color:rgba(251,191,36,.25);color:var(--gold); }
+
+/* ── HEADER SCANNER INDICATOR ── */
+.scanner-dot { width:5px;height:5px;border-radius:50%;flex-shrink:0; }
+.scanner-dot.ok  { background:var(--cyan);box-shadow:0 0 5px var(--cyan); }
+.scanner-dot.warn { background:var(--gold);box-shadow:0 0 5px var(--gold); }
+.scanner-dot.err  { background:var(--loss);box-shadow:0 0 5px var(--loss); }
+
 /* ── BOTTOM NAV ── */
 .bottom-nav { position:fixed;bottom:0;left:0;right:0;height:var(--nav-h);background:rgba(2,0,16,.94);backdrop-filter:blur(28px);-webkit-backdrop-filter:blur(28px);border-top:1px solid rgba(124,58,237,.18);box-shadow:0 -4px 22px rgba(124,58,237,.10);display:flex;z-index:100;padding-bottom:env(safe-area-inset-bottom); }
 .nav-item { flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;cursor:pointer;transition:all .2s;position:relative; }
@@ -346,7 +426,8 @@ body { padding-bottom:var(--nav-h); -webkit-font-smoothing:antialiased; }
 
 <div class="app">
   <!-- HEADER -->
-  <div class="header">
+  <div class="header" style="position:relative">
+    <div class="scanline"></div>
     <div class="header-row">
       <div class="logo">
         <div class="orbit-container">
@@ -363,6 +444,7 @@ body { padding-bottom:var(--nav-h); -webkit-font-smoothing:antialiased; }
           <span id="apHeaderText">AUTOPILOT</span>
         </div>
         <div class="pill pill-status" id="statusPill"><div class="dot"></div><span id="statusText">LIVE</span></div>
+        <div class="scanner-dot ok" id="scannerDot" title="Scanner"></div>
       </div>
     </div>
   </div>
@@ -393,6 +475,7 @@ body { padding-bottom:var(--nav-h); -webkit-font-smoothing:antialiased; }
     <div class="sub-tab" onclick="showSub('arb')">⚡ Арбитраж</div>
     <div class="sub-tab" onclick="showSub('signals')">📡 Сигналы</div>
     <div class="sub-tab" onclick="showSub('ai')">🧠 AI</div>
+    <div class="sub-tab" onclick="showSub('agents')">🤖 Агенты</div>
     <div class="sub-tab" onclick="showSub('settings')">⚙️</div>
   </div>
 
@@ -483,6 +566,73 @@ body { padding-bottom:var(--nav-h); -webkit-font-smoothing:antialiased; }
             <div class="ab" onclick="toggleArb()"><div class="ab-icon">⚡</div><div class="ab-label">Арбитраж</div></div>
             <div class="ab" onclick="loadData()"><div class="ab-icon">🔄</div><div class="ab-label">Обновить</div></div>
             <div class="ab" onclick="showSub('settings')"><div class="ab-icon">⚙️</div><div class="ab-label">Настройки</div></div>
+          </div>
+        </div>
+
+        <!-- QUANTUM Commander Widget -->
+        <div class="cmd-card" id="cmdWidget">
+          <div class="card-header" style="position:relative;z-index:1">
+            <div class="card-title">⚛ QUANTUM Commander</div>
+            <div class="badge badge-p" id="cmdCycleBadge">Цикл 0</div>
+          </div>
+          <div class="cmd-grid" style="position:relative;z-index:1">
+            <div class="cmd-ring-wrap">
+              <div class="cmd-ring">
+                <svg viewBox="0 0 72 72"><circle class="cmd-ring-bg" cx="36" cy="36" r="30"/><circle class="cmd-ring-fg" id="cmdRingFg" cx="36" cy="36" r="30" stroke="url(#cmdGrad)" stroke-dasharray="188.5" stroke-dashoffset="188.5"/><defs><linearGradient id="cmdGrad" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="var(--purple-soft)"/><stop offset="100%" stop-color="var(--cyan)"/></linearGradient></defs></svg>
+                <div class="cmd-ring-label"><div class="cmd-ring-val" id="cmdScore">—</div><div class="cmd-ring-lbl">MONEY</div></div>
+              </div>
+            </div>
+            <div class="cmd-info">
+              <div id="cmdPhase" class="cmd-phase phase-unk">◈ ОЖИДАНИЕ</div>
+              <div class="cmd-opp" id="cmdOpp" style="margin-top:5px">Commander анализирует рынок...</div>
+              <div class="cmd-cycle" id="cmdTime" style="margin-top:3px">Последний запуск: —</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- MiroFish Synthesizer Widget -->
+        <div class="mf-card" id="mfWidget">
+          <div class="card-header" style="position:relative;z-index:1">
+            <div class="card-title">🐟 MiroFish · 16 агентов</div>
+            <div class="badge" id="mfTimeBadge" style="background:rgba(124,58,237,.12);color:var(--purple-soft)">—</div>
+          </div>
+          <div style="position:relative;z-index:1">
+            <div class="mf-row">
+              <div class="mf-dir hold" id="mfDir">—</div>
+              <div class="mf-conviction">
+                <div class="mf-conv-label">Убеждённость Синтезатора</div>
+                <div class="mf-dots" id="mfDots">
+                  <div class="mf-dot"></div><div class="mf-dot"></div><div class="mf-dot"></div>
+                  <div class="mf-dot"></div><div class="mf-dot"></div><div class="mf-dot"></div>
+                  <div class="mf-dot"></div><div class="mf-dot"></div><div class="mf-dot"></div>
+                  <div class="mf-dot"></div>
+                </div>
+              </div>
+            </div>
+            <div class="mf-stats">
+              <div class="mf-stat"><span style="color:var(--cyan)">▲</span> <span id="mfBull" style="color:var(--cyan)">—</span>%</div>
+              <div class="mf-stat"><span style="color:var(--loss)">▼</span> <span id="mfBear" style="color:var(--loss)">—</span>%</div>
+              <div class="mf-stat" style="color:var(--text3)">15 агентов</div>
+            </div>
+            <div class="mf-consensus" id="mfConsensus">Ожидание анализа MiroFish...</div>
+          </div>
+        </div>
+
+        <!-- Fear & Greed + Market Stats -->
+        <div class="card" id="fgWidget">
+          <div class="card-header" style="position:relative;z-index:1"><div class="card-title">📊 Рыночный контекст</div></div>
+          <div style="position:relative;z-index:1">
+            <div class="fg-wrap">
+              <div class="fg-gauge">
+                <svg viewBox="0 0 54 54"><circle class="fg-arc-bg" cx="27" cy="27" r="22"/><circle class="fg-arc-fg" id="fgArc" cx="27" cy="27" r="22" stroke="var(--gold)" stroke-dasharray="138.2" stroke-dashoffset="138.2"/></svg>
+                <div class="fg-val" id="fgVal" style="color:var(--gold)">—</div>
+              </div>
+              <div class="fg-info">
+                <div class="fg-label" id="fgLabel">Fear & Greed</div>
+                <div class="fg-sub">Индекс страха и жадности</div>
+                <div class="mstat-row" id="whaleStats"></div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -598,6 +748,52 @@ body { padding-bottom:var(--nav-h); -webkit-font-smoothing:antialiased; }
             <input class="chat-input" id="chatInput" placeholder="Спроси что угодно..." onkeydown="if(event.key==='Enter')sendChat()">
             <button class="chat-send" onclick="sendChat()">↑</button>
           </div>
+        </div>
+      </div>
+
+      <!-- AGENTS -->
+      <div class="subpage" id="sub-agents">
+        <!-- Commander full card -->
+        <div class="card agent-card commander">
+          <div class="card-header" style="position:relative;z-index:1">
+            <div class="card-title">⚛ QUANTUM Commander</div>
+            <div id="agCmdBadge" class="badge badge-p">—</div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;position:relative;z-index:1;margin-bottom:10px">
+            <div class="m"><div class="m-label">Money Working</div><div class="m-val vy" id="agCmdScore" style="font-size:22px">—</div><div class="m-sub">/100</div></div>
+            <div class="m"><div class="m-label">Фаза рынка</div><div class="m-val" id="agCmdPhaseVal" style="font-size:13px;color:var(--purple-soft)">—</div><div class="m-sub" id="agCmdCycle">цикл —</div></div>
+          </div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px;position:relative;z-index:1;text-transform:uppercase;letter-spacing:.5px">Возможности</div>
+          <div id="agCmdOpps" style="position:relative;z-index:1;font-size:11px;color:var(--text2);line-height:1.6">Ожидание следующего цикла Commander...</div>
+          <div style="margin-top:8px;position:relative;z-index:1"><div id="agCmdInsights" style="font-size:10px;color:var(--text3);line-height:1.5"></div></div>
+        </div>
+        <!-- MiroFish full card -->
+        <div class="card agent-card mirofish">
+          <div class="card-header" style="position:relative;z-index:1">
+            <div class="card-title">🐟 MiroFish Synthesizer</div>
+            <div id="agMfBadge" class="badge" style="background:rgba(124,58,237,.12);color:var(--purple-soft)">16 агентов</div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;position:relative;z-index:1;margin-bottom:10px">
+            <div class="m" style="text-align:center"><div class="m-label">Сигнал</div><div class="m-val" id="agMfDir" style="font-size:18px;color:var(--cyan)">—</div></div>
+            <div class="m" style="text-align:center"><div class="m-label">Убеждённость</div><div class="m-val vy" id="agMfConv" style="font-size:18px">—/10</div></div>
+            <div class="m" style="text-align:center"><div class="m-label">Бычьи</div><div class="m-val vg" id="agMfBull">—%</div></div>
+          </div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px;position:relative;z-index:1;text-transform:uppercase;letter-spacing:.5px">Консенсус Синтезатора</div>
+          <div id="agMfConsensus" style="font-size:11px;color:var(--text2);line-height:1.6;position:relative;z-index:1;font-style:italic">—</div>
+        </div>
+        <!-- Scanner card -->
+        <div class="card agent-card scanner">
+          <div class="card-header" style="position:relative;z-index:1">
+            <div class="card-title">🔍 AutoScanner v2</div>
+            <div id="agScanBadge" class="badge badge-g">OK</div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;position:relative;z-index:1;margin-bottom:8px">
+            <div class="m" style="text-align:center"><div class="m-label">Ошибок</div><div class="m-val vr" id="agScanIssues">—</div></div>
+            <div class="m" style="text-align:center"><div class="m-label">Варнингов</div><div class="m-val vy" id="agScanWarns">—</div></div>
+            <div class="m" style="text-align:center"><div class="m-label">OK серия</div><div class="m-val vg" id="agScanStreak">—</div></div>
+          </div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px;position:relative;z-index:1;text-transform:uppercase;letter-spacing:.5px">Mini App Health</div>
+          <div id="agScanHealth" style="font-size:11px;color:var(--text2);line-height:1.8;font-family:var(--mono);position:relative;z-index:1">—</div>
         </div>
       </div>
 
@@ -885,6 +1081,12 @@ async function loadData(){
 
 // ── Dashboard ──
 function renderDashboard(s){
+  // New widgets
+  renderCommander(s.commander);
+  renderMiroFish(s.mirofish);
+  renderFearGreed(s.fear_greed, s.whales);
+  renderScannerWidget(s.scanner);
+
   const t=s.trading||{};const pnl=t.total_pnl||0;const cls=pnl>=0?'vg':'vr';
   document.getElementById('pnlBlock').innerHTML=
     `<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(72,202,228,.08);border:1px solid rgba(72,202,228,.20);border-radius:20px;padding:5px 13px">
@@ -1190,6 +1392,151 @@ async function loadArbStats(){
       }).join('');
     }
   }catch(e){console.log('[arb] load error:',e);}
+}
+
+// ── Commander Widget ──
+function renderCommander(cmd) {
+  if(!cmd) return;
+  const score = cmd.money_working_score || 0;
+  const phase = cmd.market_phase || 'unknown';
+  const cycle = cmd.cycle || 0;
+  const opps  = cmd.opportunities || [];
+  const ins   = cmd.insights || [];
+
+  // Ring
+  const fg = document.getElementById('cmdRingFg');
+  if(fg){ const circ=188.5; fg.style.strokeDashoffset = circ - (circ * score / 100); }
+  const scoreEl = document.getElementById('cmdScore'); if(scoreEl) scoreEl.textContent = score;
+
+  // Phase badge
+  const phaseEl = document.getElementById('cmdPhase');
+  const phaseAgEl = document.getElementById('agCmdPhaseVal');
+  if(phaseEl){
+    const ph = phase.toLowerCase();
+    const isBull = ph.includes('bull') || ph.includes('рост') || ph.includes('up');
+    const isBear = ph.includes('bear') || ph.includes('паде') || ph.includes('down');
+    const cls = isBull ? 'phase-bull' : isBear ? 'phase-bear' : phase === 'unknown' ? 'phase-unk' : 'phase-side';
+    const icon = isBull ? '🚀' : isBear ? '⚠️' : '◈';
+    phaseEl.className = 'cmd-phase ' + cls;
+    phaseEl.textContent = icon + ' ' + phase.toUpperCase();
+  }
+  if(phaseAgEl) phaseAgEl.textContent = phase;
+
+  // Opportunity text
+  const oppEl = document.getElementById('cmdOpp');
+  if(oppEl) oppEl.textContent = opps.length ? opps[0] : (cycle > 0 ? 'Нет активных возможностей' : 'Commander анализирует рынок...');
+
+  // Cycle / time
+  const timeEl = document.getElementById('cmdTime');
+  if(timeEl) timeEl.textContent = cmd.last_run ? 'Цикл #'+cycle+' · '+ new Date(cmd.last_run).toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'}) : 'Первый запуск через 5 мин';
+
+  // Agents subpage
+  const agScore = document.getElementById('agCmdScore'); if(agScore) agScore.textContent = score;
+  const agCycle = document.getElementById('agCmdCycle'); if(agCycle) agCycle.textContent = 'цикл ' + cycle;
+  const agBadge = document.getElementById('agCmdBadge');
+  if(agBadge){ agBadge.textContent = score >= 60 ? 'Активен' : score > 0 ? 'Слабо' : 'Прогрев'; agBadge.className = 'badge ' + (score >= 60 ? 'badge-g' : score > 0 ? 'badge-y' : 'badge-r'); }
+  const cmdBadge = document.getElementById('cmdCycleBadge'); if(cmdBadge) cmdBadge.textContent = 'Цикл ' + cycle;
+  const agOpps = document.getElementById('agCmdOpps');
+  if(agOpps) agOpps.innerHTML = opps.length ? opps.map(o=>`<div style="padding:3px 0;border-bottom:1px solid rgba(124,58,237,.08)">💡 ${escHtml(String(o))}</div>`).join('') : '<span style="color:var(--text3)">Ожидание следующего цикла...</span>';
+  const agIns = document.getElementById('agCmdInsights');
+  if(agIns && ins.length) agIns.innerHTML = ins.map(i=>`<span style="color:var(--text3)">◦ ${escHtml(String(i))}</span><br>`).join('');
+}
+
+// ── MiroFish Widget ──
+function renderMiroFish(mf) {
+  if(!mf || !mf.direction || mf.direction === '—') return;
+  const dir = mf.direction || 'HOLD';
+  const conv = mf.conviction || 0;
+  const bull = mf.bullish || 0;
+  const bear = mf.bearish || 0;
+  const cons = mf.consensus || '';
+  const ts   = mf.ts;
+
+  // Direction
+  const dirCls = dir === 'BUY' ? 'buy' : dir === 'SELL' ? 'sell' : 'hold';
+  const dirEl = document.getElementById('mfDir'); if(dirEl){ dirEl.textContent = dir; dirEl.className = 'mf-dir ' + dirCls; }
+  const agDirEl = document.getElementById('agMfDir');
+  if(agDirEl){ agDirEl.textContent = dir; agDirEl.style.color = dir==='BUY'?'var(--cyan)':dir==='SELL'?'var(--loss)':'var(--gold)'; }
+
+  // Conviction dots
+  const dotsEl = document.getElementById('mfDots');
+  if(dotsEl){
+    const dots = dotsEl.querySelectorAll('.mf-dot');
+    dots.forEach((d,i) => { d.className = 'mf-dot ' + (i < conv ? 'active-'+dirCls : ''); });
+  }
+
+  // Stats
+  const bullEl = document.getElementById('mfBull'); if(bullEl) bullEl.textContent = Math.round(bull);
+  const bearEl = document.getElementById('mfBear'); if(bearEl) bearEl.textContent = Math.round(bear);
+  const consEl = document.getElementById('mfConsensus'); if(consEl) consEl.textContent = cons || (dir !== '—' ? dir + ' · ' + conv + '/10 убеждённость' : '—');
+
+  // Time badge
+  const mfTime = document.getElementById('mfTimeBadge');
+  if(mfTime && ts){ const d=new Date(ts*1000); mfTime.textContent = d.toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'}); }
+
+  // Agents subpage
+  const agConv = document.getElementById('agMfConv'); if(agConv) agConv.textContent = conv + '/10';
+  const agBull = document.getElementById('agMfBull'); if(agBull) agBull.textContent = Math.round(bull) + '%';
+  const agCons = document.getElementById('agMfConsensus'); if(agCons) agCons.textContent = cons || '—';
+  const agBadge = document.getElementById('agMfBadge');
+  if(agBadge){ agBadge.textContent = dir + ' · ' + conv + '/10'; agBadge.style.color = dir==='BUY'?'var(--cyan)':dir==='SELL'?'var(--loss)':'var(--gold)'; }
+}
+
+// ── Fear & Greed Widget ──
+function renderFearGreed(fg, whales) {
+  const val = fg?.value || 0;
+  const label = fg?.label || '—';
+  const arc = document.getElementById('fgArc');
+  if(arc){
+    const circ = 138.2;
+    arc.style.strokeDashoffset = circ - (circ * val / 100);
+    arc.style.stroke = val < 25 ? 'var(--loss)' : val > 70 ? 'var(--cyan)' : 'var(--gold)';
+  }
+  const fgVal = document.getElementById('fgVal'); if(fgVal){ fgVal.textContent = val; fgVal.style.color = val < 25 ? 'var(--loss)' : val > 70 ? 'var(--cyan)' : 'var(--gold)'; }
+  const fgLbl = document.getElementById('fgLabel'); if(fgLbl) fgLbl.textContent = label;
+  // Whale pills
+  const wh = document.getElementById('whaleStats');
+  if(wh && whales){
+    const bullCoins = Object.entries(whales).filter(([_,w])=>w.signal==='bullish').map(([s])=>s.replace('-USDT',''));
+    const bearCoins = Object.entries(whales).filter(([_,w])=>w.signal==='bearish').map(([s])=>s.replace('-USDT',''));
+    let html = '';
+    bullCoins.forEach(c => { html += `<div class="mstat mstat-bull">🐋 ${c}</div>`; });
+    bearCoins.forEach(c => { html += `<div class="mstat mstat-bear">⚠️ ${c}</div>`; });
+    wh.innerHTML = html;
+  }
+}
+
+// ── Scanner Widget ──
+function renderScannerWidget(sc) {
+  if(!sc) return;
+  const issues  = sc.issues || 0;
+  const warns   = sc.warnings || 0;
+  const streak  = sc.ok_streak || 0;
+  const health  = sc.miniapp_health || {};
+
+  // Header dot
+  const dot = document.getElementById('scannerDot');
+  if(dot) dot.className = 'scanner-dot ' + (issues > 0 ? 'err' : warns > 0 ? 'warn' : 'ok');
+
+  // Agents subpage
+  const iEl = document.getElementById('agScanIssues'); if(iEl) iEl.textContent = issues;
+  const wEl = document.getElementById('agScanWarns'); if(wEl) wEl.textContent = warns;
+  const sEl = document.getElementById('agScanStreak'); if(sEl) sEl.textContent = streak;
+  const bEl = document.getElementById('agScanBadge');
+  if(bEl){ bEl.textContent = issues > 0 ? issues+' ISSUES' : warns > 0 ? warns+' WARN' : '✓ OK'; bEl.className = 'badge ' + (issues > 0 ? 'badge-r' : warns > 0 ? 'badge-y' : 'badge-g'); }
+
+  // Health endpoints
+  const hEl = document.getElementById('agScanHealth');
+  if(hEl){
+    const entries = Object.entries(health);
+    if(entries.length){
+      hEl.innerHTML = entries.map(([ep, d]) => {
+        const ms = d.ms || 0; const ok = d.status === 'ok';
+        const col = !ok ? 'var(--loss)' : ms > 2000 ? 'var(--gold)' : 'var(--cyan)';
+        return `<div><span style="color:${col}">${ok?'●':'✕'}</span> ${escHtml(ep.split('/').pop())} <span style="color:var(--text3)">${ms}ms</span></div>`;
+      }).join('');
+    } else { hEl.textContent = 'Данные будут после первого скана (5 мин)'; }
+  }
 }
 
 // ── Init ──

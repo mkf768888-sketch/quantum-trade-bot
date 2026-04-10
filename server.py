@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.20.18")
+app = FastAPI(title="QuantumTrade AI", version="10.20.19")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -17356,7 +17356,30 @@ async def api_public_stats():
             "total_usdt":     bal.get("total_usdt", 0),
         },
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "10.20.12",
+        "version": app.version,
+        # v10.20.19: Commander + MiroFish + Scanner data for Mini App widgets
+        "commander": {
+            "market_phase":        _quantum_commander_state.get("market_phase", "unknown"),
+            "money_working_score": _quantum_commander_state.get("money_working_score", 0),
+            "last_run":            _quantum_commander_state.get("last_run"),
+            "cycle":               _quantum_commander_state.get("cycle", 0),
+            "opportunities":       (_quantum_commander_state.get("opportunities") or [])[:3],
+            "insights":            (_quantum_commander_state.get("insights") or [])[:2],
+        },
+        "mirofish": (lambda mf: {
+            "direction":  mf.get("direction", "—"),
+            "conviction": mf.get("synthesizer", {}).get("conviction", 0) if isinstance(mf.get("synthesizer"), dict) else 0,
+            "consensus":  mf.get("synthesizer", {}).get("consensus_reason", "") if isinstance(mf.get("synthesizer"), dict) else "",
+            "bullish":    mf.get("bullish_pct", 0),
+            "bearish":    mf.get("bearish_pct", 0),
+            "ts":         mf.get("ts"),
+        })(list(_mirofish_cache.values())[-1] if _mirofish_cache else {}),
+        "scanner": {
+            "issues":        len(_scanner_state.get("issues", [])),
+            "warnings":      len(_scanner_state.get("warnings", [])),
+            "ok_streak":     _scanner_state.get("ok_streak", 0),
+            "miniapp_health": _scanner_state.get("miniapp_health", {}),
+        },
     }
 
 @app.get("/api/dashboard")
