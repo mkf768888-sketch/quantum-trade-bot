@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.20.16")
+app = FastAPI(title="QuantumTrade AI", version="10.20.17")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -12126,6 +12126,107 @@ async def _tg_commander(chat_id: int):
     await _tg_send(chat_id, msg)
 
 
+async def _tg_wins(chat_id: int):
+    """v10.20.17: /wins — Success Case Tracker: show winning patterns from vault (7 days)."""
+    wins_dir = "vault/knowledge/wins"
+    try:
+        if not os.path.exists(wins_dir):
+            await _tg_send(chat_id,
+                "📭 <b>Vault Wins</b>\n\nПока нет записей. "
+                "Файлы появятся автоматически после первой прибыльной сделки (≥$0.05).\n"
+                f"Путь: <code>{wins_dir}/YYYY-MM-DD.md</code>")
+            return
+
+        import re as _re_wins
+        win_files = sorted([f for f in os.listdir(wins_dir) if f.endswith(".md")], reverse=True)[:7]
+        if not win_files:
+            await _tg_send(chat_id, "📭 Нет файлов побед за последние 7 дней.")
+            return
+
+        all_wins = []
+        sym_stats: dict = {}
+        strat_stats: dict = {}
+        hold_times = []
+
+        for wf in win_files:
+            with open(os.path.join(wins_dir, wf), "r") as f:
+                content = f.read()
+            for m in _re_wins.finditer(
+                r'## WIN: (\S+) \+\$([0-9.]+) \(([+-][0-9.]+)%\)\n'
+                r'- date: (.+?)\n'
+                r'- symbol: \S+ \| side: \S+ \| account: \S+\n'
+                r'- entry: \S+ → exit: \S+\n'
+                r'- hold_time: ([0-9.]+)h \| q_score: ([0-9.]+) \| strategy: (\w+)',
+                content
+            ):
+                sym_w = m.group(1)
+                pnl_w = float(m.group(2))
+                pct_w = float(m.group(3))
+                date_w = m.group(4)[:10]
+                hold_w = float(m.group(5))
+                q_w = float(m.group(6))
+                strat_w = m.group(7)
+                all_wins.append({"sym": sym_w, "pnl": pnl_w, "pct": pct_w,
+                                  "date": date_w, "hold_h": hold_w, "q": q_w, "strat": strat_w})
+                if sym_w not in sym_stats:
+                    sym_stats[sym_w] = {"count": 0, "pnl": 0.0, "pct_sum": 0.0}
+                sym_stats[sym_w]["count"] += 1
+                sym_stats[sym_w]["pnl"] += pnl_w
+                sym_stats[sym_w]["pct_sum"] += pct_w
+                if strat_w not in strat_stats:
+                    strat_stats[strat_w] = {"count": 0, "pnl": 0.0}
+                strat_stats[strat_w]["count"] += 1
+                strat_stats[strat_w]["pnl"] += pnl_w
+                hold_times.append(hold_w)
+
+        if not all_wins:
+            await _tg_send(chat_id, "📭 Победы есть в vault, но парсинг не нашёл записей.")
+            return
+
+        total_pnl = sum(w["pnl"] for w in all_wins)
+        avg_pct = round(sum(w["pct"] for w in all_wins) / len(all_wins), 1)
+        avg_hold = round(sum(hold_times) / len(hold_times), 1) if hold_times else 0
+        best_sym = max(sym_stats, key=lambda s: sym_stats[s]["pnl"]) if sym_stats else "?"
+        best_strat = max(strat_stats, key=lambda s: strat_stats[s]["pnl"]) if strat_stats else "?"
+
+        msg = (
+            f"🏆 <b>Success Case Tracker — {len(all_wins)} побед за 7 дней</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"💰 Суммарный PnL: <b>+${total_pnl:.2f}</b>\n"
+            f"📈 Средний %: +{avg_pct}%\n"
+            f"⏱ Среднее время удержания: {avg_hold}ч\n\n"
+        )
+
+        # Top symbols
+        msg += "📊 <b>Лучшие символы:</b>\n"
+        for sym, data in sorted(sym_stats.items(), key=lambda x: x[1]["pnl"], reverse=True)[:4]:
+            avg_p = round(data["pct_sum"] / data["count"], 1)
+            msg += f"  • {sym}: {data['count']}x | +${data['pnl']:.2f} | avg +{avg_p}%\n"
+
+        # Best strategy
+        msg += f"\n⚙️ <b>Лучшая стратегия:</b> {best_strat} "
+        if best_strat in strat_stats:
+            msg += f"({strat_stats[best_strat]['count']}x, +${strat_stats[best_strat]['pnl']:.2f})\n"
+
+        # Recent wins (last 3)
+        recent = sorted(all_wins, key=lambda w: w["date"], reverse=True)[:3]
+        msg += "\n📋 <b>Последние победы:</b>\n"
+        for w in recent:
+            msg += f"  • {w['date']} {w['sym']} +${w['pnl']:.2f} ({w['pct']:+.1f}%) за {w['hold_h']:.1f}ч\n"
+
+        # Scale recommendation
+        msg += (
+            f"\n💡 <b>Рекомендация Стратега:</b>\n"
+            f"Фокус на <b>{best_sym}</b> со стратегией <b>{best_strat}</b> — "
+            f"именно этот паттерн приносит максимум. "
+            f"Масштабируй: увеличь RISK_PER_TRADE для этой связки."
+        )
+        await _tg_send(chat_id, msg)
+
+    except Exception as e:
+        await _tg_send(chat_id, f"❌ /wins error: {html_mod.escape(str(e)[:150])}")
+
+
 async def _tg_vstats(chat_id: int):
     """v10.20.16: /vstats — Voice stats summary via Edge TTS."""
     if not VOICE_ENABLED:
@@ -13480,6 +13581,7 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/commander":           await _tg_commander(chat_id)
         elif cmd == "/vstats":              await _tg_vstats(chat_id)
         elif cmd == "/vcommander":          await _tg_vcommander(chat_id)
+        elif cmd == "/wins":                await _tg_wins(chat_id)
         elif cmd == "/router":              await _tg_router(chat_id)
         elif cmd == "/command":             await _tg_command_center(chat_id)
         elif cmd == "/app":
@@ -15691,6 +15793,7 @@ async def setup_webhook(request: Request, _auth=Depends(verify_api_key)):
                     {"command": "settings",  "description": "⚙️ Настройки (Q-Score, Cooldown)"},
                     {"command": "diag",      "description": "🔬 Диагностика всех подключений"},
                     {"command": "commander", "description": "🤖 QUANTUM Commander — мозг системы"},
+                    {"command": "wins",       "description": "🏆 Success Tracker — паттерны побед (7д)"},
                     {"command": "vstats",    "description": "🎙️ Голосовая статистика (Edge TTS)"},
                     {"command": "vcommander","description": "🎙️ Голосовой отчёт Коммандера"},
                 ]},
@@ -16167,6 +16270,53 @@ async def _agent_strategy() -> list:
                 findings.append({"agent": "Strategy", "severity": "suggestion",
                     "text": f"Q-Score: wins avg {q_win:.0f}, losses avg {q_loss:.0f}. "
                             f"Suggested MIN_Q_SCORE: {optimal_q} (current: {MIN_Q_SCORE})"})
+
+        # v10.20.17: 3e. Read vault/knowledge/wins/ for multi-day pattern analysis
+        # This is Wave 2 completion — historical wins survive restarts
+        try:
+            wins_dir = "vault/knowledge/wins"
+            if os.path.exists(wins_dir):
+                win_files = sorted(
+                    [f for f in os.listdir(wins_dir) if f.endswith(".md")],
+                    reverse=True
+                )[:7]  # last 7 days
+                vault_wins = []
+                sym_counter: dict = {}
+                strat_counter: dict = {}
+                hold_times = []
+                for wf in win_files:
+                    try:
+                        with open(os.path.join(wins_dir, wf), "r") as f:
+                            content = f.read()
+                        # Parse win entries: "## WIN: BTC-USDT +$0.45 (2.3%)"
+                        import re as _re_w
+                        for m in _re_w.finditer(
+                            r'## WIN: (\S+) \+\$([0-9.]+).*?\n.*?symbol: \S+ \| side: \S+ \| account: \S+\n.*?hold_time: ([0-9.]+)h.*?strategy: (\w+)',
+                            content, _re_w.DOTALL
+                        ):
+                            sym_w = m.group(1)
+                            pnl_w = float(m.group(2))
+                            hold_w = float(m.group(3))
+                            strat_w = m.group(4)
+                            vault_wins.append({"sym": sym_w, "pnl": pnl_w, "hold_h": hold_w, "strat": strat_w})
+                            sym_counter[sym_w] = sym_counter.get(sym_w, 0) + 1
+                            strat_counter[strat_w] = strat_counter.get(strat_w, 0) + 1
+                            hold_times.append(hold_w)
+                    except Exception:
+                        continue
+
+                if vault_wins:
+                    total_vault_pnl = sum(w["pnl"] for w in vault_wins)
+                    best_sym = max(sym_counter, key=sym_counter.get) if sym_counter else "?"
+                    best_strat = max(strat_counter, key=strat_counter.get) if strat_counter else "?"
+                    avg_hold = round(sum(hold_times) / len(hold_times), 1) if hold_times else 0
+                    findings.append({"agent": "Strategy", "severity": "suggestion",
+                        "text": f"Vault wins (7d): {len(vault_wins)} wins, ${total_vault_pnl:.2f} total. "
+                                f"Best symbol: {best_sym} ({sym_counter.get(best_sym,0)}x). "
+                                f"Best strategy: {best_strat}. Avg hold: {avg_hold}h. "
+                                f"→ Scale: focus on {best_sym} with {best_strat} strategy"})
+        except Exception as ve:
+            pass  # vault read is non-critical for agency
 
         if not findings:
             findings.append({"agent": "Strategy", "severity": "info",
