@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.20.21")
+app = FastAPI(title="QuantumTrade AI", version="10.20.22")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -10640,6 +10640,8 @@ async def spot_monitor_loop():
                     reason = ""
 
                     # v10.12.0: Partial Exit — TP1 sells 50%, trails the other 50% to TP2
+                    # v10.20.22: fixed — continue only on success, otherwise fall through to stale checks
+                    _partial_ok = False
                     if side == "buy" and price_now >= tp * 0.998 and not trade.get("partial_exit_done"):
                         # ── Первый TP: фиксируем 50%, трейлим остаток ────────────
                         half_size = round(min(trade_size * 0.5, bal_info["available"] * 0.5), 6)
@@ -10650,6 +10652,7 @@ async def spot_monitor_loop():
                             else:
                                 half_res = await sell_spot_to_usdt(symbol, half_size)
                             if half_res.get("success"):
+                                _partial_ok = True
                                 half_pnl = round(pnl_pct * entry * half_size, 4)
                                 trade["size"] = round(trade_size - half_size, 6)
                                 trade["partial_exit_done"] = True
@@ -10668,6 +10671,9 @@ async def spot_monitor_loop():
                                     f"Остаток трейлится до TP2 ({TP_PCT*150:.0f}%)"
                                 )
                                 log_activity(f"[spot_mon] {symbol} partial TP1 sold {half_size} PnL=${half_pnl:+.4f}")
+                            else:
+                                log_activity(f"[spot_mon] {symbol} partial TP1 FAILED: {half_res.get('error','?')} — falling through to stale checks")
+                    if _partial_ok:
                         continue  # остаток продолжает трейлиться
 
                     # TP hit (full close or TP2 after partial)
@@ -10761,7 +10767,23 @@ async def spot_monitor_loop():
                             _earn_exch = "bybit" if _trade_acct == "bybit_spot" else "kucoin"
                             asyncio.ensure_future(smart_money_post_sell(_earn_exch))
                         else:
-                            log_activity(f"[spot_mon] {symbol} ({_exch_label}) sell FAILED: {sell_result.get('error', sell_result.get('msg','?'))}")
+                            # v10.20.22: track sell failures — force-close after 5 failures to prevent eternal lock
+                            _sell_fails = trade.get("_sell_fail_count", 0) + 1
+                            trade["_sell_fail_count"] = _sell_fails
+                            _err_msg = sell_result.get("error", sell_result.get("msg", "?"))
+                            log_activity(f"[spot_mon] {symbol} ({_exch_label}) sell FAILED #{_sell_fails}: {_err_msg}")
+                            if _sell_fails >= 5:
+                                # Force-close as orphan — exchange balance likely 0 or minSize issue
+                                trade["status"] = "closed"
+                                trade["pnl"] = 0.0
+                                trade["close_reason"] = f"force_close_sell_failed_{_sell_fails}x"
+                                _save_trades_to_disk()
+                                log_activity(f"[spot_mon] {symbol}: FORCE CLOSED after {_sell_fails} sell failures — likely no balance or minSize")
+                                await notify(
+                                    f"⚠️ <b>Force-close: {symbol}</b> ({_exch_label})\n"
+                                    f"Sell failed {_sell_fails}x подряд. Позиция закрыта как orphan.\n"
+                                    f"Проверь биржу вручную: возможно монеты уже проданы."
+                                )
                     else:
                         # Just log status
                         if int(time.time()) % 300 < 50:  # every ~5 min
