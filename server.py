@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.20.24")
+app = FastAPI(title="QuantumTrade AI", version="10.20.25")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -7248,6 +7248,16 @@ MIROFISH_PERSONAS = [
               "70%+ топов Long + whale_bonus>0 = двойное подтверждение → BUY уверенно. "
               "70%+ топов Short + whale_dump = избегай лонги → SELL. "
               "Расхождение между топ-трейдерами и whale = неопределённость → HOLD."},
+    # ── v10.20.25: Devil's Advocate — всегда ищет причины НЕ покупать ─────
+    {"id": "devils_advocate", "name": "Адвокат дьявола",
+     "style": "Твоя единственная задача — найти причины НЕ входить в сделку. Думай шаг за шагом: "
+              "Шаг 1: Какие индикаторы ПРОТИВ входа? RSI>60 при BUY = опасно, F&G>65 = жадность толпы. "
+              "Шаг 2: Что может пойти не так в ближайшие 4 часа? Крупные разблокировки, макро-события. "
+              "Шаг 3: Корреляция — если BTC падает, альт упадёт сильнее. "
+              "Шаг 4: Ликвидность — низкий объём = ловушка. "
+              "BUY только если не нашёл ни одной серьёзной причины против. "
+              "Иначе HOLD. Никогда не голосуй BUY при RSI>65 или F&G>70 или ADX<15. "
+              "Ты — последняя линия защиты капитала."},
 ]
 
 async def mirofish_simulate(symbol: str, price: float, q_score: float,
@@ -17415,12 +17425,20 @@ async def quantum_commander_cycle() -> dict:
 
         commander_system = (
             "Ты — QUANTUM Commander, главный AI-стратег автономного криптотрейдингового бота.\n"
-            "Анализируй все данные и выдай стратегический отчёт СТРОГО в формате JSON:\n"
+            "ДУМАЙ ШАГ ЗА ШАГОМ:\n"
+            "Шаг 1: Оцени текущую фазу рынка по всем данным (F&G, whale, macro, MiroFish).\n"
+            "Шаг 2: Проверь эффективность денег — сколько капитала работает vs простаивает.\n"
+            "Шаг 3: Найди конкретные возможности заработка (spot, earn, arb, funding).\n"
+            "Шаг 4: Выступи как ЖЁСТКИЙ КРИТИК — что может пойти не так? Какие риски я упускаю?\n"
+            "Шаг 5: ЧТО Я УПУСКАЮ? Скрытые корреляции, приближающиеся события, ликвидационные зоны.\n"
+            "Шаг 6: Сформулируй одно приоритетное действие.\n\n"
+            "Выдай стратегический отчёт СТРОГО в формате JSON:\n"
             '{"market_phase":"accumulation|distribution|trending_up|trending_down|sideways",'
             '"money_working_score":0-100,'
             '"top_insights":["инсайт 1","инсайт 2","инсайт 3"],'
             '"opportunities":["конкретная возможность заработать 1","возможность 2"],'
-            '"risks":["риск 1"],'
+            '"risks":["риск 1","скрытый риск который легко упустить"],'
+            '"blind_spots":["что упускаю 1","неочевидная угроза или возможность"],'
             '"channel_post":"Пост для ТГ канала (2-3 предложения, с emoji, реальные цифры из данных)",'
             '"priority_action":"одно конкретное действие прямо сейчас"}'
         )
@@ -17459,6 +17477,7 @@ async def quantum_commander_cycle() -> dict:
             "money_working_score": report.get("money_working_score", 0),
             "insights": report.get("top_insights", []),
             "opportunities": report.get("opportunities", []),
+            "blind_spots": report.get("blind_spots", []),
         })
 
         # ── Save to vault ──
@@ -17478,6 +17497,8 @@ async def quantum_commander_cycle() -> dict:
                 + "\n".join(f"- {o}" for o in report.get("opportunities", [])) + "\n\n"
                 f"## Риски\n"
                 + "\n".join(f"- {r}" for r in report.get("risks", [])) + "\n\n"
+                f"## Слепые зоны (Что упускаю?)\n"
+                + "\n".join(f"- {b}" for b in report.get("blind_spots", [])) + "\n\n"
                 f"## Приоритет\n{report.get('priority_action','')}\n\n"
                 f"## Пост для канала\n{report.get('channel_post','')}\n\n"
                 f"## Контекст\n```\n{context}\n```\n"
