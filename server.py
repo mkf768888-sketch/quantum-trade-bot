@@ -1,6 +1,6 @@
 """
-QuantumTrade AI - FastAPI Backend v10.17.0
-Full-stack AI trading platform with multi-exchange support, 15-agent MiroFish v3,
+QuantumTrade AI - FastAPI Backend v10.20.26
+Full-stack AI trading platform with multi-exchange support, 16-agent MiroFish v3,
 advanced technical analysis (pandas-ta), social sentiment (LunarCrush + Reddit),
 whale tracking, copy-trading intelligence, and continuous self-learning.
 
@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.20.25")
+app = FastAPI(title="QuantumTrade AI", version="10.20.26")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -7374,7 +7374,7 @@ async def mirofish_simulate(symbol: str, price: float, q_score: float,
     all_personas = "\n".join([f"- {p['name']}: {p['style']}" for p in MIROFISH_PERSONAS])
 
     system = f"""Ты — MiroFish движок мульти-агентной симуляции.
-Тебе даны 8 различных трейдерских персон. Каждая должна проголосовать BUY, SELL или HOLD.
+Тебе даны {len(MIROFISH_PERSONAS)} различных трейдерских персон. Каждая должна проголосовать BUY, SELL или HOLD.
 Отвечай СТРОГО в формате JSON массива (без markdown):
 [{{"id":"whale","vote":"BUY","reason":"краткая причина"}},{{"id":"scalper","vote":"SELL","reason":"причина"}}...]
 
@@ -7390,7 +7390,7 @@ async def mirofish_simulate(symbol: str, price: float, q_score: float,
             # Rule-based fallback: vote based on TA indicators only
             _fb_votes = []
             _rsi = rsi or 50
-            for p in MIROFISH_PERSONAS[:8]:
+            for p in MIROFISH_PERSONAS:
                 if _rsi < 30:
                     _v = "BUY"
                 elif _rsi > 70:
@@ -7410,7 +7410,7 @@ async def mirofish_simulate(symbol: str, price: float, q_score: float,
                 # DeepSeek failed — use rule-based
                 _fb_votes = []
                 _rsi = rsi or 50
-                for p in MIROFISH_PERSONAS[:8]:
+                for p in MIROFISH_PERSONAS:
                     _v = "BUY" if _rsi < 30 else ("SELL" if _rsi > 70 else "HOLD")
                     _fb_votes.append({"id": p["id"], "vote": _v, "reason": f"RSI={_rsi:.0f} rule-based"})
                 agents = _fb_votes
@@ -7453,8 +7453,8 @@ async def mirofish_simulate(symbol: str, price: float, q_score: float,
                     for a in agents
                 ])
                 synth_system = (
-                    "Ты — QUANTUM Синтезатор, 16-й мета-агент команды MiroFish.\n"
-                    "Тебе показаны голоса всех 15 специализированных трейдеров.\n"
+                    "Ты — QUANTUM Синтезатор, 17-й мета-агент команды MiroFish.\n"
+                    "Тебе показаны голоса всех 16 специализированных трейдеров.\n"
                     "Найди консенсус, выяви противоречия и дай финальный вердикт.\n"
                     "Отвечай СТРОГО JSON (без markdown):\n"
                     '{"final":"BUY"|"SELL"|"HOLD","conviction":1-10,'
@@ -7464,7 +7464,7 @@ async def mirofish_simulate(symbol: str, price: float, q_score: float,
                 )
                 synth_result = await ai_call_deepseek(
                     [{"role": "user", "content":
-                      f"Рыночный контекст:\n{market_ctx}\n\nГолоса 15 агентов:\n{synth_votes}"}],
+                      f"Рыночный контекст:\n{market_ctx}\n\nГолоса {len(agents)} агентов:\n{synth_votes}"}],
                     max_tokens=250, system=synth_system
                 )
                 if synth_result.get("success") and synth_result.get("text"):
@@ -8632,10 +8632,10 @@ _EDU_POSTS = [
             "• Настроение рынка и китов — 20%\n"
             "• Что говорят в соцсетях о монете — 15%\n"
             "• Индекс страха/жадности — 10%\n"
-            "• ИИ-анализ 15 агентов MiroFish — остальное\n\n"
+            "• ИИ-анализ 16 агентов MiroFish — остальное\n\n"
             "Бот покупает только при Q ≥ 77. Сейчас это правило защищает от убыточных сделок."
         ),
-        "pro": "Q-Score = weighted ensemble: TA indicators 25%, macro context 20%, whale flow 10%, F&G 10%, MiroFish consensus 15 agents, Polymarket prediction markets, QAOA quantum bias. Min threshold 77/100."
+        "pro": "Q-Score = weighted ensemble: TA indicators 25%, macro context 20%, whale flow 10%, F&G 10%, MiroFish consensus 16 agents (+Devil's Advocate), Polymarket prediction markets, QAOA quantum bias. Min threshold 77/100."
     },
     # 6 — Sunday
     {
@@ -12319,6 +12319,13 @@ async def _tg_commander(chat_id: int):
         msg += f"⚠️ <b>Риски:</b>\n"
         for r in risks[:2]:
             msg += f"  • {html_mod.escape(str(r)[:120])}\n"
+        msg += "\n"
+
+    blind_spots = report.get("blind_spots", [])
+    if blind_spots:
+        msg += f"🔍 <b>Слепые зоны (Что упускаю?):</b>\n"
+        for b in blind_spots[:2]:
+            msg += f"  • {html_mod.escape(str(b)[:120])}\n"
         msg += "\n"
 
     if patterns:
