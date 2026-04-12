@@ -215,7 +215,7 @@ except ImportError:
     _TA_AVAILABLE = False
     print("[ta] pandas-ta not available — using built-in indicators")
 
-app = FastAPI(title="QuantumTrade AI", version="10.20.26")
+app = FastAPI(title="QuantumTrade AI", version="10.20.27")
 
 # v10.0: CORS — allow_origins=["*"] is intentional for Telegram Mini App.
 # Telegram WebApp origin is unpredictable (null, web.telegram.org, t.me, varies by platform).
@@ -467,6 +467,145 @@ def get_dead_tasks() -> list:
 
 # v10.20.23: DB Health — track fire-and-forget task failures
 _db_health: dict = {"ok": True, "last_success": None, "last_error": None, "fail_count": 0}
+
+# ── QUANTUM OPS Layer v10.20.27 ────────────────────────────────────────────────
+# 8 operational agents: СТРАЖ, КАЗНАЧЕЙ, АУДИТОР, ОРАКУЛ, ИНЖЕНЕР,
+#                       ДИПЛОМАТ, ЛЕТОПИСЕЦ, РЕГУЛЯТОР
+_quantum_ops_state: dict = {
+    "guardian":   {"alerts": [], "anomalies_detected": 0, "last_check": None, "status": "ok"},
+    "treasury":   {"last_report": None, "last_rebalance": None, "capital_map": {}},
+    "auditor":    {"post_trade_logs": [], "calibration_weights": {}, "last_audit": None},
+    "oracle":     {"predictions": [], "accuracy": 0.0, "last_run": None},
+    "engineer":   {"uptime_start": time.time(), "latency_kc": None, "latency_bb": None},
+    "diplomat":   {"exchange_status": {}, "last_check": None},
+    "chronicler": {"entries": 0, "last_entry": None},
+    "regulator":  {"alerts": [], "last_check": None},
+}
+
+def _ops_guardian_check() -> list:
+    """СТРАЖ: scan for anomalies across all subsystems. Returns list of alert strings."""
+    alerts = []
+    now = time.time()
+    # 1. Dead tasks check
+    dead = get_dead_tasks()
+    for dt in dead:
+        alerts.append(f"💀 СТРАЖ: Task '{dt['task']}' silent {dt['silent_min']}min — возможно завис!")
+    # 2. DB health
+    if not _db_health["ok"] and _db_health["fail_count"] >= 3:
+        alerts.append(f"🔴 СТРАЖ: DB {_db_health['fail_count']}x failures — {(_db_health.get('last_error') or '')[:60]}")
+    # 3. Sell-fail blacklist spike
+    bl_count = sum(1 for v in _sell_fail_blacklist.values() if v["count"] >= _SELL_FAIL_BLACKLIST_THRESHOLD)
+    if bl_count >= 2:
+        alerts.append(f"⚠️ СТРАЖ: {bl_count} монет в sell-fail blacklist — возможна биржевая проблема")
+    # 4. Balance anomaly — use earn_stats as proxy (always available)
+    earn_kc = _earn_stats.get("kc_usdt", -1)
+    if earn_kc == 0 and len([t for t in trade_log if t.get("status") == "open"]) == 0:
+        alerts.append("🔴 СТРАЖ: KuCoin earn = 0 и нет позиций — возможна проблема с капиталом")
+    # 5. Too many open positions
+    open_pos = [t for t in trade_log if t.get("status") == "open"]
+    if len(open_pos) > MAX_OPEN_POSITIONS + 1:
+        alerts.append(f"⚠️ СТРАЖ: {len(open_pos)} открытых позиций > MAX_OPEN_POSITIONS ({MAX_OPEN_POSITIONS})")
+    # 6. F&G extreme
+    fg_val = _fg_cache.get("value", 50)
+    if fg_val <= 10:
+        alerts.append(f"🚨 СТРАЖ: Fear&Greed = {fg_val} — EXTREME FEAR, торговля заблокирована")
+    # 7. Streak danger
+    streak = _perf_stats.get("streak", 0)
+    if streak <= -4:
+        alerts.append(f"🔴 СТРАЖ: Серия {streak} убыточных сделок — рекомендую /pause")
+    _quantum_ops_state["guardian"]["alerts"] = alerts
+    _quantum_ops_state["guardian"]["anomalies_detected"] += len(alerts)
+    _quantum_ops_state["guardian"]["last_check"] = datetime.utcnow().isoformat()
+    _quantum_ops_state["guardian"]["status"] = "warning" if alerts else "ok"
+    return alerts
+
+def _ops_auditor_post_trade(trade: dict):
+    """АУДИТОР: analyze closed trade, calibrate agent weights, write to vault."""
+    try:
+        sym = trade.get("symbol", "?")
+        pnl = trade.get("pnl", 0) or 0
+        q   = trade.get("q_score", 0) or 0
+        won = pnl > 0
+        reason = trade.get("close_reason", "?")
+        # Find which MiroFish agents voted correctly
+        mf_cache_recent = list(_mirofish_cache.values())[-1] if _mirofish_cache else {}
+        agents_votes = mf_cache_recent.get("agents", [])
+        correct_agents = []
+        wrong_agents   = []
+        if agents_votes:
+            expected_vote = "BUY" if won else "SELL"
+            for a in agents_votes:
+                if a.get("vote") == expected_vote or (won and a.get("vote") == "BUY") or (not won and a.get("vote") == "SELL"):
+                    correct_agents.append(a.get("id", "?"))
+                elif a.get("vote") == ("SELL" if won else "BUY"):
+                    wrong_agents.append(a.get("id", "?"))
+            # Update calibration weights
+            for aid in correct_agents:
+                _quantum_ops_state["auditor"]["calibration_weights"][aid] = \
+                    _quantum_ops_state["auditor"]["calibration_weights"].get(aid, 1.0) * 1.05
+            for aid in wrong_agents:
+                _quantum_ops_state["auditor"]["calibration_weights"][aid] = \
+                    max(0.5, _quantum_ops_state["auditor"]["calibration_weights"].get(aid, 1.0) * 0.97)
+        # Write post-trade log
+        entry = {
+            "ts": datetime.utcnow().isoformat(), "symbol": sym, "pnl": round(pnl, 4),
+            "q_score": q, "won": won, "reason": reason,
+            "correct_agents": correct_agents[:5], "wrong_agents": wrong_agents[:5],
+            "what_worked": f"Q={q:.0f} + {reason}" if won else "",
+            "what_failed": f"Q={q:.0f} — {reason}" if not won else "",
+        }
+        logs = _quantum_ops_state["auditor"]["post_trade_logs"]
+        logs.append(entry)
+        if len(logs) > 50:  # keep last 50
+            _quantum_ops_state["auditor"]["post_trade_logs"] = logs[-50:]
+        _quantum_ops_state["auditor"]["last_audit"] = datetime.utcnow().isoformat()
+        # Vault write
+        try:
+            os.makedirs("vault/knowledge/auditor", exist_ok=True)
+            audit_path = f"vault/knowledge/auditor/audit-{datetime.utcnow().strftime('%Y-%m-%d')}.md"
+            verdict = "✅ WIN" if won else "❌ LOSS"
+            audit_line = (
+                f"\n## {verdict} {sym} | PnL: ${pnl:+.4f} | Q:{q:.0f}\n"
+                f"- Время: {entry['ts'][:16]}\n"
+                f"- Причина закрытия: {reason}\n"
+                f"- Правы были: {', '.join(correct_agents[:5]) or 'нет данных'}\n"
+                f"- Ошиблись: {', '.join(wrong_agents[:5]) or 'нет данных'}\n"
+            )
+            mode = "a" if os.path.exists(audit_path) else "w"
+            with open(audit_path, mode) as f:
+                if mode == "w":
+                    f.write(f"# АУДИТОР — {datetime.utcnow().strftime('%Y-%m-%d')}\n\n")
+                f.write(audit_line)
+        except Exception:
+            pass
+    except Exception as e:
+        log_activity(f"[auditor] post-trade analysis error: {e}")
+
+def _ops_treasury_snapshot() -> dict:
+    """КАЗНАЧЕЙ: capital distribution snapshot across all accounts."""
+    # Use perf_stats and earn_stats as available proxies (no direct balance cache access)
+    kc_usdt  = _perf_stats.get("kc_usdt_available", 0)
+    kc_total = _perf_stats.get("kc_total", 0)
+    bb_usdt  = _perf_stats.get("bb_usdt_available", 0)
+    earn_kc   = _earn_stats.get("kc_usdt", 0)
+    earn_apr  = _earn_stats.get("current_apr", 0)
+    open_pos  = [t for t in trade_log if t.get("status") == "open"]
+    locked    = sum(t.get("usdt_size", 0) for t in open_pos)
+    total     = kc_total + bb_usdt + earn_kc
+    snap = {
+        "kc_trading": round(kc_usdt, 2),
+        "kc_total":   round(kc_total, 2),
+        "bb_trading": round(bb_usdt, 2),
+        "earn":       round(earn_kc, 2),
+        "earn_apr":   round(earn_apr, 2),
+        "locked_positions": round(locked, 2),
+        "total_estimated":  round(total, 2),
+        "positions_count":  len(open_pos),
+        "capital_efficiency": round(((earn_kc + locked) / max(total, 1)) * 100, 1),
+    }
+    _quantum_ops_state["treasury"]["capital_map"] = snap
+    _quantum_ops_state["treasury"]["last_report"] = datetime.utcnow().isoformat()
+    return snap
 
 def _db_fire_and_forget(coro, label: str = "db"):
     """Wrap asyncio.ensure_future with error tracking for DB operations."""
@@ -10899,6 +11038,8 @@ async def spot_monitor_loop():
                             # v10.3: Smart Money Router — route freed USDT after SELL
                             _earn_exch = "bybit" if _trade_acct == "bybit_spot" else "kucoin"
                             asyncio.ensure_future(smart_money_post_sell(_earn_exch))
+                            # v10.20.27: АУДИТОР — post-trade analysis after each close
+                            _ops_auditor_post_trade(trade)
                         else:
                             # v10.20.22: track sell failures — force-close after 5 failures to prevent eternal lock
                             _sell_fails = trade.get("_sell_fail_count", 0) + 1
@@ -12323,9 +12464,31 @@ async def _tg_commander(chat_id: int):
 
     blind_spots = report.get("blind_spots", [])
     if blind_spots:
-        msg += f"🔍 <b>Слепые зоны (Что упускаю?):</b>\n"
+        msg += f"🔍 <b>Слепые зоны:</b>\n"
         for b in blind_spots[:2]:
             msg += f"  • {html_mod.escape(str(b)[:120])}\n"
+        msg += "\n"
+
+    pre_mortem = report.get("pre_mortem", [])
+    if pre_mortem:
+        msg += f"💀 <b>Pre-mortem (как можем провалиться):</b>\n"
+        for p in pre_mortem[:2]:
+            msg += f"  • {html_mod.escape(str(p)[:120])}\n"
+        msg += "\n"
+
+    wargame = report.get("wargame", "")
+    if wargame:
+        msg += f"⚔️ <b>Wargame:</b> {html_mod.escape(str(wargame)[:150])}\n\n"
+
+    pareto = report.get("pareto_action", "")
+    if pareto:
+        msg += f"🎯 <b>Pareto 20/80:</b> {html_mod.escape(str(pareto)[:150])}\n\n"
+
+    guardian_alerts = state.get("guardian_alerts", [])
+    if guardian_alerts:
+        msg += f"🚨 <b>СТРАЖ ({len(guardian_alerts)} алерт{'а' if len(guardian_alerts) < 5 else 'ов'}):</b>\n"
+        for a in guardian_alerts[:3]:
+            msg += f"  {html_mod.escape(str(a)[:100])}\n"
         msg += "\n"
 
     if patterns:
@@ -13801,6 +13964,13 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/vcommander":          await _tg_vcommander(chat_id)
         elif cmd == "/wins":                await _tg_wins(chat_id)
         elif cmd == "/router":              await _tg_router(chat_id)
+        # v10.20.27: QUANTUM OPS Layer commands
+        elif cmd == "/ops":                 await _tg_ops(chat_id)
+        elif cmd == "/guardian":            await _tg_guardian(chat_id)
+        elif cmd == "/treasury":            await _tg_treasury(chat_id)
+        elif cmd == "/audit":               await _tg_audit_report(chat_id)
+        elif cmd == "/dissent":             await _tg_dissent(chat_id)
+        elif cmd == "/calibrate":           await _tg_calibrate(chat_id)
         elif cmd == "/command":             await _tg_command_center(chat_id)
         elif cmd == "/app":
             _base = WEBAPP_URL or (f"https://{RAILWAY_PUBLIC_DOMAIN}" if RAILWAY_PUBLIC_DOMAIN else "")
@@ -14899,6 +15069,177 @@ async def _tg_whalealerts(chat_id: int):
     else:
         msg += f"\n⚙️ Канал не настроен — добавь WHALE_CHANNEL_ID в Railway Variables"
 
+    await _tg_send(chat_id, msg)
+
+
+async def _tg_ops(chat_id: int):
+    """v10.20.27: /ops — QUANTUM OPS Layer status: 8 operational agents."""
+    ops = _quantum_ops_state
+    guardian = ops["guardian"]
+    treasury = ops["treasury"]
+    auditor  = ops["auditor"]
+    engineer = ops["engineer"]
+
+    uptime_h = round((time.time() - engineer["uptime_start"]) / 3600, 1)
+    audit_count = len(auditor["post_trade_logs"])
+    weights = auditor["calibration_weights"]
+    top_agent = max(weights, key=weights.get) if weights else "—"
+    worst_agent = min(weights, key=weights.get) if weights else "—"
+    guardian_status = "🟢 OK" if guardian["status"] == "ok" else f"🔴 {len(guardian['alerts'])} alerts"
+
+    cap = treasury.get("capital_map", {})
+    cap_eff = cap.get("capital_efficiency", 0)
+    cap_total = cap.get("total_estimated", 0)
+
+    msg = (
+        "🛡️ <b>QUANTUM OPS Layer — v10.20.27</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"😈 <b>СТРАЖ</b>: {guardian_status}\n"
+        f"  Аномалий обнаружено: {guardian['anomalies_detected']}\n"
+        + (("\n").join(f"  ⚠️ {html_mod.escape(a[:80])}" for a in guardian["alerts"][:3]) + "\n" if guardian["alerts"] else "") +
+        f"\n💼 <b>КАЗНАЧЕЙ</b>:\n"
+        f"  Капитал ~${cap_total:.1f} | Эффективность: {cap_eff:.0f}%\n"
+        f"  KC: ${cap.get('kc_trading',0):.1f} | BB: ${cap.get('bb_trading',0):.1f} | Earn: ${cap.get('earn',0):.1f}\n"
+        f"  Заморожено в позициях: ${cap.get('locked_positions',0):.1f}\n"
+        f"\n📊 <b>АУДИТОР</b>:\n"
+        f"  Post-trade анализов: {audit_count}\n"
+        f"  Лучший агент: {top_agent} | Худший: {worst_agent}\n"
+        f"\n⚙️ <b>ИНЖЕНЕР</b>:\n"
+        f"  Uptime: {uptime_h}ч\n"
+        f"  DB: {'🟢 OK' if _db_health['ok'] else '🔴 FAIL'} | Tasks: {len(_task_heartbeats)} live\n"
+        f"\n💡 Команды: /treasury /guardian /audit /dissent /calibrate"
+    )
+    await _tg_send(chat_id, msg)
+
+
+async def _tg_guardian(chat_id: int):
+    """v10.20.27: /guardian — СТРАЖ anomaly report."""
+    alerts = _ops_guardian_check()
+    if not alerts:
+        await _tg_send(chat_id,
+            "😈 <b>СТРАЖ — Всё спокойно</b>\n\n"
+            "✅ Аномалий не обнаружено.\n"
+            f"Проверок выполнено: {_quantum_ops_state['guardian']['anomalies_detected']}\n"
+            f"Последняя: {(_quantum_ops_state['guardian']['last_check'] or '?')[:16]} UTC")
+        return
+    msg = f"🚨 <b>СТРАЖ — {len(alerts)} аномали{'я' if len(alerts)==1 else 'и'}</b>\n\n"
+    for a in alerts:
+        msg += f"{html_mod.escape(a)}\n\n"
+    msg += f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}"
+    await _tg_send(chat_id, msg)
+
+
+async def _tg_treasury(chat_id: int):
+    """v10.20.27: /treasury — КАЗНАЧЕЙ capital distribution report."""
+    snap = _ops_treasury_snapshot()
+    total = snap["total_estimated"]
+    eff   = snap["capital_efficiency"]
+    bar   = "█" * int(eff / 10) + "░" * (10 - int(eff / 10))
+    msg = (
+        f"💼 <b>КАЗНАЧЕЙ — Treasury Report</b>\n"
+        f"🕐 {datetime.utcnow().strftime('%H:%M UTC')}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"💰 <b>Общий капитал (est.):</b> ${total:.2f}\n\n"
+        f"📊 <b>Распределение:</b>\n"
+        f"  KuCoin торговый: <code>${snap['kc_trading']:.2f}</code>\n"
+        f"  ByBit торговый:  <code>${snap['bb_trading']:.2f}</code>\n"
+        f"  Earn/Lending:    <code>${snap['earn']:.2f}</code> ({snap['earn_apr']:.1f}% APR)\n"
+        f"  В позициях:      <code>${snap['locked_positions']:.2f}</code> ({snap['positions_count']} pos)\n\n"
+        f"⚡ <b>Эффективность капитала:</b>\n"
+        f"[{bar}] {eff:.0f}%\n"
+        f"(earn + locked / total)\n\n"
+        f"💡 Рекомендация: {'✅ Хорошо' if eff >= 60 else ('⚠️ Часть капитала простаивает — рассмотри earn' if eff < 40 else '🟡 Можно оптимизировать')}"
+    )
+    await _tg_send(chat_id, msg)
+
+
+async def _tg_audit_report(chat_id: int):
+    """v10.20.27: /audit — АУДИТОР post-trade analysis report."""
+    logs = _quantum_ops_state["auditor"]["post_trade_logs"]
+    weights = _quantum_ops_state["auditor"]["calibration_weights"]
+    if not logs:
+        await _tg_send(chat_id,
+            "📊 <b>АУДИТОР</b>\n\nПока нет закрытых сделок для анализа.\n"
+            "После первой сделки появится автоматический разбор.")
+        return
+    last10 = logs[-10:]
+    wins   = [l for l in last10 if l["won"]]
+    losses = [l for l in last10 if not l["won"]]
+    wr     = round(len(wins) / max(len(last10), 1) * 100)
+    avg_pnl = round(sum(l["pnl"] for l in last10) / max(len(last10), 1), 4)
+    msg = (
+        f"📊 <b>АУДИТОР — Post-trade Analysis</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Последние {len(last10)} сделок: {len(wins)}W/{len(losses)}L | WR: {wr}% | Avg PnL: ${avg_pnl:+.4f}\n\n"
+    )
+    if weights:
+        sorted_w = sorted(weights.items(), key=lambda x: x[1], reverse=True)
+        msg += "🏆 <b>Калибровка агентов MiroFish:</b>\n"
+        for aid, w in sorted_w[:5]:
+            bar = "🟢" if w >= 1.0 else "🔴"
+            msg += f"  {bar} {aid}: {w:.2f}x\n"
+        msg += "\n"
+    if last10:
+        msg += "📋 <b>Последняя сделка:</b>\n"
+        last = last10[-1]
+        emoji = "✅" if last["won"] else "❌"
+        msg += (
+            f"  {emoji} {last['symbol']} | PnL: ${last['pnl']:+.4f} | Q:{last['q_score']:.0f}\n"
+            f"  Правы: {', '.join(last['correct_agents'][:3]) or '—'}\n"
+            f"  Ошиблись: {', '.join(last['wrong_agents'][:3]) or '—'}\n"
+        )
+    await _tg_send(chat_id, msg)
+
+
+async def _tg_dissent(chat_id: int):
+    """v10.20.27: /dissent — show MiroFish minority voices (agents against consensus)."""
+    if not _mirofish_cache:
+        await _tg_send(chat_id, "🔍 <b>Dissent</b>\n\nНет данных MiroFish. Запусти /mirofish сначала.")
+        return
+    recent = list(_mirofish_cache.values())[-1]
+    agents = recent.get("agents", [])
+    direction = recent.get("direction", "HOLD")
+    symbol = recent.get("symbol", "?")
+    if not agents:
+        await _tg_send(chat_id, "🔍 Нет голосований агентов в кэше.")
+        return
+    # Find dissenters — voted against majority
+    vote_counts = {"BUY": 0, "SELL": 0, "HOLD": 0}
+    for a in agents:
+        vote_counts[a.get("vote", "HOLD")] = vote_counts.get(a.get("vote", "HOLD"), 0) + 1
+    majority = max(vote_counts, key=vote_counts.get)
+    dissenters = [a for a in agents if a.get("vote") != majority]
+    supporters = [a for a in agents if a.get("vote") == majority]
+    msg = (
+        f"🔍 <b>DISSENT — {symbol}</b>\n"
+        f"Консенсус: <b>{majority}</b> ({vote_counts[majority]}/{len(agents)} агентов)\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🏴 <b>ПРОТИВ ({len(dissenters)}) — самое ценное!</b>\n"
+    )
+    for d in dissenters:
+        msg += f"  • [{d.get('id','?')}] {d.get('vote','?')}: <i>{html_mod.escape(str(d.get('reason',''))[:80])}</i>\n"
+    if dissenters:
+        msg += "\n⚠️ Когда диссентеров >= 5 — рынок неопределён. Снизь размер позиции.\n"
+    msg += f"\n✅ <b>ЗА ({len(supporters)}):</b> {', '.join(s.get('id','?') for s in supporters[:6])}"
+    await _tg_send(chat_id, msg)
+
+
+async def _tg_calibrate(chat_id: int):
+    """v10.20.27: /calibrate — show АУДИТОР agent weight calibration."""
+    weights = _quantum_ops_state["auditor"]["calibration_weights"]
+    audit_count = len(_quantum_ops_state["auditor"]["post_trade_logs"])
+    if not weights:
+        await _tg_send(chat_id,
+            "⚖️ <b>Calibrate</b>\n\nПока нет данных для калибровки.\n"
+            f"Нужно хотя бы 1 закрытая сделка. Анализов: {audit_count}")
+        return
+    sorted_w = sorted(weights.items(), key=lambda x: x[1], reverse=True)
+    msg = f"⚖️ <b>MiroFish Calibration</b>\n{audit_count} анализов\n━━━━━━━━━━━━━━\n\n"
+    for aid, w in sorted_w:
+        bar = "🟢" if w > 1.05 else ("🔴" if w < 0.95 else "🟡")
+        trend = f"+{(w-1)*100:.1f}%" if w >= 1.0 else f"{(w-1)*100:.1f}%"
+        msg += f"{bar} <code>{aid:20s}</code> {trend}\n"
+    msg += "\n💡 Зелёный = стабильно прав | Красный = ошибается | Жёлтый = нейтральный"
     await _tg_send(chat_id, msg)
 
 
@@ -17428,17 +17769,35 @@ async def quantum_commander_cycle() -> dict:
             f"🔮 Polymarket Smart: {poly_str}\n"
             f"🤖 ML Score: {ml_status}\n"
             f"🕐 UTC: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
+            + guardian_ctx + treasury_ctx
+        )
+
+        # СТРАЖ pre-check — inject anomalies into Commander context
+        guardian_alerts = _ops_guardian_check()
+        guardian_ctx = ""
+        if guardian_alerts:
+            guardian_ctx = "\n🚨 СТРАЖ алерты:\n" + "\n".join(f"  - {a}" for a in guardian_alerts[:4])
+
+        # КАЗНАЧЕЙ snapshot — inject capital map
+        treasury = _ops_treasury_snapshot()
+        treasury_ctx = (
+            f"\n💼 КАЗНАЧЕЙ: trading_kc=${treasury['kc_trading']:.1f} "
+            f"bb=${treasury['bb_trading']:.1f} earn=${treasury['earn']}({treasury['earn_apr']:.1f}% APR) "
+            f"locked=${treasury['locked_positions']:.1f} efficiency={treasury['capital_efficiency']}%"
         )
 
         commander_system = (
             "Ты — QUANTUM Commander, главный AI-стратег автономного криптотрейдингового бота.\n"
-            "ДУМАЙ ШАГ ЗА ШАГОМ:\n"
-            "Шаг 1: Оцени текущую фазу рынка по всем данным (F&G, whale, macro, MiroFish).\n"
-            "Шаг 2: Проверь эффективность денег — сколько капитала работает vs простаивает.\n"
+            "ДУМАЙ ШАГ ЗА ШАГОМ (BABYLON COMBO-анализ):\n"
+            "Шаг 1: Оцени фазу рынка по всем данным (F&G, whale, macro, MiroFish).\n"
+            "Шаг 2: Проверь эффективность капитала (Money Working Score) — КАЗНАЧЕЙ данные доступны.\n"
             "Шаг 3: Найди конкретные возможности заработка (spot, earn, arb, funding).\n"
-            "Шаг 4: Выступи как ЖЁСТКИЙ КРИТИК — что может пойти не так? Какие риски я упускаю?\n"
-            "Шаг 5: ЧТО Я УПУСКАЮ? Скрытые корреляции, приближающиеся события, ликвидационные зоны.\n"
-            "Шаг 6: Сформулируй одно приоритетное действие.\n\n"
+            "Шаг 4: ЖЁСТКИЙ КРИТИК — что может пойти не так? Учти алерты СТРАЖА если есть.\n"
+            "Шаг 5: СЛЕПЫЕ ЗОНЫ — скрытые корреляции, события, ликвидационные зоны.\n"
+            "Шаг 6: PRE-MORTEM — представь что этот цикл уже провалился. 2 конкретные причины почему.\n"
+            "Шаг 7: WARGAME — если мы действуем, кто на другой стороне? Где ловушки и стопы?\n"
+            "Шаг 8: LEVERAGE CHECK — какое ОДНО действие даёт максимум при минимуме риска? Pareto 20/80.\n"
+            "Шаг 9: Сформулируй финальное приоритетное действие.\n\n"
             "Выдай стратегический отчёт СТРОГО в формате JSON:\n"
             '{"market_phase":"accumulation|distribution|trending_up|trending_down|sideways",'
             '"money_working_score":0-100,'
@@ -17446,8 +17805,11 @@ async def quantum_commander_cycle() -> dict:
             '"opportunities":["конкретная возможность заработать 1","возможность 2"],'
             '"risks":["риск 1","скрытый риск который легко упустить"],'
             '"blind_spots":["что упускаю 1","неочевидная угроза или возможность"],'
+            '"pre_mortem":["причина провала 1","причина провала 2"],'
+            '"wargame":"кто на другой стороне и где ловушки",'
+            '"pareto_action":"одно действие 20% усилий = 80% результата",'
             '"channel_post":"Пост для ТГ канала (2-3 предложения, с emoji, реальные цифры из данных)",'
-            '"priority_action":"одно конкретное действие прямо сейчас"}'
+            '"priority_action":"финальное приоритетное действие прямо сейчас"}'
         )
 
         result = await ai_call_deepseek(
@@ -17485,6 +17847,10 @@ async def quantum_commander_cycle() -> dict:
             "insights": report.get("top_insights", []),
             "opportunities": report.get("opportunities", []),
             "blind_spots": report.get("blind_spots", []),
+            "pre_mortem": report.get("pre_mortem", []),
+            "wargame": report.get("wargame", ""),
+            "pareto_action": report.get("pareto_action", ""),
+            "guardian_alerts": guardian_alerts,
         })
 
         # ── Save to vault ──
@@ -17504,8 +17870,12 @@ async def quantum_commander_cycle() -> dict:
                 + "\n".join(f"- {o}" for o in report.get("opportunities", [])) + "\n\n"
                 f"## Риски\n"
                 + "\n".join(f"- {r}" for r in report.get("risks", [])) + "\n\n"
-                f"## Слепые зоны (Что упускаю?)\n"
+                f"## Слепые зоны\n"
                 + "\n".join(f"- {b}" for b in report.get("blind_spots", [])) + "\n\n"
+                f"## Pre-mortem\n"
+                + "\n".join(f"- {p}" for p in report.get("pre_mortem", [])) + "\n\n"
+                f"## Wargame\n{report.get('wargame','')}\n\n"
+                f"## Pareto 20/80\n{report.get('pareto_action','')}\n\n"
                 f"## Приоритет\n{report.get('priority_action','')}\n\n"
                 f"## Пост для канала\n{report.get('channel_post','')}\n\n"
                 f"## Контекст\n```\n{context}\n```\n"
