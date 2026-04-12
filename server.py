@@ -13971,6 +13971,15 @@ async def _telegram_callback_inner(req: TelegramUpdate):
         elif cmd == "/audit":               await _tg_audit_report(chat_id)
         elif cmd == "/dissent":             await _tg_dissent(chat_id)
         elif cmd == "/calibrate":           await _tg_calibrate(chat_id)
+        elif cmd == "/crm":
+            _base = WEBAPP_URL or (f"https://{RAILWAY_PUBLIC_DOMAIN}" if RAILWAY_PUBLIC_DOMAIN else "")
+            if _base:
+                _crm_url = _base + "/crm"
+                await _tg_send(chat_id, f"📊 <b>QUANTUM CRM</b>\n\nЕдиный операционный дашборд: 6 вкладок\n⚡ Command Center | 📊 Trading | 💰 Earn | 🤖 HFT | 🔧 System | 📚 Vault\n\n🔗 {_crm_url}", keyboard={
+                    "inline_keyboard": [[{"text": "📊 Открыть QUANTUM CRM", "url": _crm_url}]]
+                })
+            else:
+                await _tg_send(chat_id, "❌ RAILWAY_PUBLIC_DOMAIN не настроен")
         elif cmd == "/command":             await _tg_command_center(chat_id)
         elif cmd == "/app":
             _base = WEBAPP_URL or (f"https://{RAILWAY_PUBLIC_DOMAIN}" if RAILWAY_PUBLIC_DOMAIN else "")
@@ -18734,6 +18743,19 @@ async def qa_dashboard_page():
         with open(_html_path, "r", encoding="utf-8") as _f:
             return HTMLResponse(content=_f.read())
     return HTMLResponse(content="<h1>qa-dashboard.html not found</h1>", status_code=404)
+
+
+@app.get("/crm", response_class=HTMLResponse)
+async def crm_dashboard_page():
+    """v10.20.28: QUANTUM CRM — unified 6-tab operations dashboard."""
+    _html_path = os.path.join(os.path.dirname(__file__), "quantum-crm.html")
+    if os.path.exists(_html_path):
+        with open(_html_path, "r", encoding="utf-8") as _f:
+            return HTMLResponse(content=_f.read(), headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+                "Pragma": "no-cache"
+            })
+    return HTMLResponse(content="<h1>QUANTUM CRM not found. Deploy quantum-crm.html first.</h1>", status_code=404)
 
 
 @app.websocket("/ws/live")

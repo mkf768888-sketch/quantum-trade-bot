@@ -1,0 +1,1358 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>QUANTUM CRM</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+:root{
+  --bg:#03000f;--bg2:#06021a;--bg3:#0a0420;
+  --purple:#7c3aed;--purple-s:#9f67ff;--purple-d:rgba(124,58,237,.28);
+  --gold:#fbbf24;--gold-s:#fde68a;--gold-d:rgba(251,191,36,.22);
+  --cyan:#48cae4;--cyan-d:rgba(72,202,228,.25);
+  --green:#34d399;--red:#f87171;--orange:#fb923c;
+  --glass:rgba(10,6,30,.6);--glass2:rgba(20,10,50,.5);
+  --border:rgba(124,58,237,.22);--border-g:rgba(251,191,36,.25);
+  --text:rgba(215,228,255,.95);--text2:rgba(150,185,230,.70);--text3:rgba(90,120,170,.50);
+  --font:-apple-system,'SF Pro Display','Inter',sans-serif;
+  --nav:60px;--safe:env(safe-area-inset-bottom,0px);
+}
+html,body{width:100%;min-height:100vh;background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;overflow-x:hidden}
+body{padding-bottom:calc(var(--nav) + var(--safe) + 8px);-webkit-font-smoothing:antialiased}
+
+/* ══ BG ══════════════════════════════════════════════════════ */
+.qbg{position:fixed;inset:0;z-index:0;pointer-events:none}
+.qbg::before{content:'';position:absolute;inset:0;
+  background:radial-gradient(ellipse at 20% 10%,rgba(80,20,180,.35) 0%,transparent 55%),
+    radial-gradient(ellipse at 85% 80%,rgba(20,5,80,.30) 0%,transparent 50%),
+    radial-gradient(ellipse at 60% 40%,rgba(251,191,36,.05) 0%,transparent 40%),
+    linear-gradient(180deg,#03000f 0%,#060220 45%,#02001a 100%);
+  animation:breathe 16s ease-in-out infinite}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.92;filter:brightness(1.08)}}
+.qbg::after{content:'';position:absolute;inset:0;
+  background-image:radial-gradient(1.5px 1.5px at 15% 10%,rgba(255,255,255,.8) 0%,transparent 100%),
+    radial-gradient(1px 1px at 40% 25%,rgba(255,255,255,.6) 0%,transparent 100%),
+    radial-gradient(2px 2px at 70% 5%,rgba(255,255,255,.85) 0%,transparent 100%),
+    radial-gradient(1px 1px at 88% 40%,rgba(255,255,255,.5) 0%,transparent 100%),
+    radial-gradient(1.5px 1.5px at 55% 60%,rgba(124,58,237,.7) 0%,transparent 100%),
+    radial-gradient(2px 2px at 25% 80%,rgba(72,202,228,.6) 0%,transparent 100%),
+    radial-gradient(1px 1px at 75% 85%,rgba(251,191,36,.4) 0%,transparent 100%);
+  animation:twinkle 8s ease-in-out infinite alternate}
+@keyframes twinkle{0%{opacity:.7}100%{opacity:1}}
+
+/* ══ LAYOUT ══════════════════════════════════════════════════ */
+.main{position:relative;z-index:1;padding:0 12px 12px}
+
+/* ══ HEADER ══════════════════════════════════════════════════ */
+.header{display:flex;align-items:center;justify-content:space-between;padding:14px 0 10px}
+.logo-wrap{display:flex;align-items:center;gap:8px}
+.logo-orb{width:32px;height:32px;border-radius:50%;background:radial-gradient(circle at 35% 35%,var(--purple-s),var(--purple));box-shadow:0 0 16px rgba(124,58,237,.6);animation:orb-pulse 3s ease-in-out infinite;flex-shrink:0}
+@keyframes orb-pulse{0%,100%{box-shadow:0 0 16px rgba(124,58,237,.6),0 0 32px rgba(124,58,237,.2)}50%{box-shadow:0 0 24px rgba(159,103,255,.8),0 0 48px rgba(124,58,237,.3)}}
+.logo-text{font-size:15px;font-weight:700;background:linear-gradient(135deg,var(--gold),var(--purple-s));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.logo-sub{font-size:9px;color:var(--text3);font-weight:500;letter-spacing:.5px;margin-top:1px}
+.header-btns{display:flex;align-items:center;gap:6px}
+.icon-btn{width:32px;height:32px;border-radius:10px;background:var(--glass);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;transition:all .2s}
+.icon-btn:hover{background:var(--glass2);border-color:var(--purple)}
+.status-dot-wrap{display:flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:10px;font-weight:600;background:rgba(52,211,153,.08);border:1px solid rgba(52,211,153,.3);color:var(--green)}
+.s-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:blink 2s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.status-dot-wrap.offline{background:rgba(248,113,113,.08);border-color:rgba(248,113,113,.3);color:var(--red)}
+.status-dot-wrap.offline .s-dot{background:var(--red)}
+
+/* ══ GLASS CARD ══════════════════════════════════════════════ */
+.card{background:var(--glass);border:1px solid var(--border);border-radius:16px;padding:14px;margin-bottom:10px;position:relative;overflow:hidden}
+.card::before{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(135deg,rgba(124,58,237,.06) 0%,transparent 60%);pointer-events:none}
+.card-gold{border-color:var(--border-g)}
+.card-gold::before{background:linear-gradient(135deg,rgba(251,191,36,.08) 0%,transparent 60%)}
+.card-cyan{border-color:rgba(72,202,228,.25)}
+.card-cyan::before{background:linear-gradient(135deg,rgba(72,202,228,.06) 0%,transparent 60%)}
+
+/* ══ SECTION TITLE ═══════════════════════════════════════════ */
+.section-title{font-size:10px;font-weight:700;letter-spacing:.8px;color:var(--text3);text-transform:uppercase;margin:14px 0 8px;display:flex;align-items:center;gap:6px}
+.section-title::after{content:'';flex:1;height:1px;background:var(--border);opacity:.5}
+
+/* ══ METRIC GRID ══════════════════════════════════════════════ */
+.metric-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+.metric-card{background:var(--glass);border:1px solid var(--border);border-radius:14px;padding:12px;position:relative;overflow:hidden}
+.metric-card::before{content:'';position:absolute;top:0;right:0;width:40px;height:40px;border-radius:0 14px 0 40px;background:rgba(124,58,237,.08)}
+.metric-icon{font-size:16px;margin-bottom:4px}
+.metric-label{font-size:9px;color:var(--text3);font-weight:600;letter-spacing:.4px;text-transform:uppercase}
+.metric-value{font-size:20px;font-weight:800;margin:2px 0;line-height:1}
+.metric-sub{font-size:9px;color:var(--text2)}
+.mv-gold{color:var(--gold);text-shadow:0 0 12px rgba(251,191,36,.4)}
+.mv-green{color:var(--green);text-shadow:0 0 10px rgba(52,211,153,.4)}
+.mv-red{color:var(--red);text-shadow:0 0 10px rgba(248,113,113,.4)}
+.mv-cyan{color:var(--cyan);text-shadow:0 0 10px rgba(72,202,228,.35)}
+.mv-purple{color:var(--purple-s);text-shadow:0 0 10px rgba(124,58,237,.5)}
+
+/* ══ TAB CONTENT ═════════════════════════════════════════════ */
+.tab-content{display:none}
+.tab-content.active{display:block}
+
+/* ══ BOTTOM NAV ══════════════════════════════════════════════ */
+.bottom-nav{position:fixed;bottom:0;left:0;right:0;z-index:100;background:rgba(6,2,26,.92);border-top:1px solid var(--border);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);display:flex;padding:6px 0 calc(6px + var(--safe));safe-area-inset-bottom:var(--safe)}
+.nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:4px 2px;cursor:pointer;transition:all .2s;border:none;background:transparent;color:var(--text3);font-family:var(--font)}
+.nav-btn.active{color:var(--purple-s)}
+.nav-btn .nav-icon{font-size:18px;transition:transform .2s}
+.nav-btn.active .nav-icon{transform:scale(1.15)}
+.nav-btn .nav-label{font-size:8px;font-weight:600;letter-spacing:.3px;text-transform:uppercase}
+.nav-indicator{width:24px;height:2px;border-radius:2px;background:var(--purple-s);margin:1px auto 0;opacity:0;transition:opacity .2s}
+.nav-btn.active .nav-indicator{opacity:1}
+
+/* ══ MIROFISH CONSENSUS ══════════════════════════════════════ */
+.consensus-bar{width:100%;height:10px;border-radius:6px;background:rgba(255,255,255,.05);overflow:hidden;position:relative;margin:8px 0 4px}
+.consensus-fill{height:100%;border-radius:6px;transition:width .6s ease;position:absolute;left:0;top:0}
+.cf-buy{background:linear-gradient(90deg,var(--green),rgba(52,211,153,.7))}
+.cf-sell{background:linear-gradient(90deg,var(--red),rgba(248,113,113,.7));left:auto;right:0}
+.cf-hold{background:rgba(251,191,36,.5)}
+
+/* ══ AGENT ROW ═══════════════════════════════════════════════ */
+.agent-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid rgba(124,58,237,.08)}
+.agent-row:last-child{border-bottom:none}
+.agent-icon{font-size:18px;flex-shrink:0;width:28px;text-align:center}
+.agent-info{flex:1;min-width:0}
+.agent-name{font-size:11px;font-weight:700;color:var(--text)}
+.agent-status{font-size:10px;color:var(--text3);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent-badge{font-size:9px;font-weight:700;padding:2px 7px;border-radius:8px;flex-shrink:0}
+.ab-ok{background:rgba(52,211,153,.12);color:var(--green);border:1px solid rgba(52,211,153,.3)}
+.ab-warn{background:rgba(251,191,36,.12);color:var(--gold);border:1px solid rgba(251,191,36,.3)}
+.ab-err{background:rgba(248,113,113,.12);color:var(--red);border:1px solid rgba(248,113,113,.3)}
+.ab-idle{background:rgba(90,120,170,.1);color:var(--text3);border:1px solid rgba(90,120,170,.2)}
+
+/* ══ EARN CARD ═══════════════════════════════════════════════ */
+.earn-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.earn-card{background:var(--glass);border:1px solid var(--border);border-radius:14px;padding:11px;position:relative;overflow:hidden;transition:all .25s}
+.earn-card.active{border-color:rgba(52,211,153,.4);background:rgba(52,211,153,.04)}
+.earn-card.inactive{opacity:.55}
+.earn-icon{font-size:20px;margin-bottom:3px}
+.earn-name{font-size:10px;font-weight:700}
+.earn-apy{font-size:17px;font-weight:800;margin:3px 0 2px}
+.earn-apy.gold{color:var(--gold)}
+.earn-apy.cyan{color:var(--cyan)}
+.earn-apy.green{color:var(--green)}
+.earn-apy.purple{color:var(--purple-s)}
+.earn-sub{font-size:9px;color:var(--text3);line-height:1.4}
+.earn-badge{position:absolute;top:8px;right:8px;font-size:8px;font-weight:700;padding:2px 6px;border-radius:8px}
+.eb-on{background:rgba(52,211,153,.15);color:var(--green);border:1px solid rgba(52,211,153,.35)}
+.eb-off{background:rgba(248,113,113,.12);color:var(--red);border:1px solid rgba(248,113,113,.3)}
+.eb-ready{background:rgba(251,191,36,.12);color:var(--gold);border:1px solid rgba(251,191,36,.3)}
+
+/* ══ TRADE ROW ═══════════════════════════════════════════════ */
+.trade-row{display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid rgba(124,58,237,.08)}
+.trade-row:last-child{border-bottom:none}
+.trade-side{font-size:9px;font-weight:700;padding:2px 7px;border-radius:6px;flex-shrink:0}
+.ts-buy{background:rgba(52,211,153,.12);color:var(--green);border:1px solid rgba(52,211,153,.3)}
+.ts-sell{background:rgba(248,113,113,.12);color:var(--red);border:1px solid rgba(248,113,113,.3)}
+.ts-open{background:rgba(124,58,237,.12);color:var(--purple-s);border:1px solid rgba(124,58,237,.3)}
+.trade-sym{font-size:12px;font-weight:700;flex:1}
+.trade-sub{font-size:9px;color:var(--text3);margin-top:1px}
+.trade-pnl{font-size:12px;font-weight:800;flex-shrink:0;text-align:right}
+.pnl-pos{color:var(--green)}
+.pnl-neg{color:var(--red)}
+.pnl-neu{color:var(--text3)}
+
+/* ══ FILTER BAR ══════════════════════════════════════════════ */
+.filter-bar{display:flex;gap:6px;margin-bottom:10px;overflow-x:auto;padding-bottom:2px}
+.filter-bar::-webkit-scrollbar{display:none}
+.filter-chip{flex-shrink:0;padding:5px 12px;border-radius:20px;font-size:10px;font-weight:600;background:var(--glass);border:1px solid var(--border);color:var(--text2);cursor:pointer;transition:all .2s}
+.filter-chip.active{background:rgba(124,58,237,.2);border-color:var(--purple);color:var(--purple-s)}
+
+/* ══ QA CHECK ════════════════════════════════════════════════ */
+.qa-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid rgba(124,58,237,.08)}
+.qa-row:last-child{border-bottom:none}
+.qa-icon{font-size:14px;flex-shrink:0;width:20px;text-align:center}
+.qa-name{flex:1;font-size:11px;font-weight:600}
+.qa-val{font-size:10px;color:var(--text2);flex-shrink:0}
+.qa-status{font-size:8px;font-weight:700;padding:2px 7px;border-radius:8px;flex-shrink:0}
+.qs-ok{background:rgba(52,211,153,.12);color:var(--green);border:1px solid rgba(52,211,153,.3)}
+.qs-warn{background:rgba(251,191,36,.12);color:var(--gold);border:1px solid rgba(251,191,36,.3)}
+.qs-err{background:rgba(248,113,113,.12);color:var(--red);border:1px solid rgba(248,113,113,.3)}
+
+/* ══ VAULT ENTRY ══════════════════════════════════════════════ */
+.vault-entry{background:var(--glass);border:1px solid var(--border);border-radius:14px;padding:12px;margin-bottom:8px;position:relative}
+.ve-tag{display:inline-block;font-size:8px;font-weight:700;padding:2px 7px;border-radius:8px;margin-bottom:6px;background:rgba(124,58,237,.15);color:var(--purple-s);border:1px solid rgba(124,58,237,.3)}
+.ve-tag.gold{background:rgba(251,191,36,.1);color:var(--gold);border-color:rgba(251,191,36,.3)}
+.ve-tag.cyan{background:rgba(72,202,228,.1);color:var(--cyan);border-color:rgba(72,202,228,.3)}
+.ve-title{font-size:12px;font-weight:700;margin-bottom:4px}
+.ve-body{font-size:10px;color:var(--text2);line-height:1.5}
+.ve-time{font-size:9px;color:var(--text3);margin-top:6px}
+
+/* ══ HFT SPREAD TABLE ════════════════════════════════════════ */
+.spread-table{width:100%;border-collapse:collapse}
+.spread-table th{font-size:9px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;padding:6px 0;text-align:left;border-bottom:1px solid var(--border)}
+.spread-table td{padding:7px 0;font-size:11px;border-bottom:1px solid rgba(124,58,237,.06)}
+.spread-table tr:last-child td{border-bottom:none}
+.spread-pos{color:var(--green);font-weight:700}
+.spread-neg{color:var(--red);font-weight:700}
+
+/* ══ PROGRESS BAR ════════════════════════════════════════════ */
+.progress-bar{width:100%;height:6px;border-radius:4px;background:rgba(255,255,255,.06);overflow:hidden;margin-top:4px}
+.progress-fill{height:100%;border-radius:4px;background:linear-gradient(90deg,var(--purple),var(--purple-s));transition:width .6s ease}
+.progress-fill.gold{background:linear-gradient(90deg,#b45309,var(--gold))}
+.progress-fill.green{background:linear-gradient(90deg,#059669,var(--green))}
+
+/* ══ GUARDIAN ALERT ══════════════════════════════════════════ */
+.alert-banner{background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.3);border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;align-items:flex-start;gap:8px}
+.alert-icon{font-size:16px;flex-shrink:0;margin-top:1px}
+.alert-text{font-size:11px;color:var(--red);line-height:1.4}
+.alert-time{font-size:9px;color:rgba(248,113,113,.5);margin-top:2px}
+.alert-banner.warn{background:rgba(251,191,36,.06);border-color:rgba(251,191,36,.25)}
+.alert-banner.warn .alert-text{color:var(--gold)}
+.alert-banner.warn .alert-time{color:rgba(251,191,36,.5)}
+
+/* ══ COMMANDER BOX ═══════════════════════════════════════════ */
+.cmd-box{background:rgba(124,58,237,.06);border:1px solid rgba(124,58,237,.25);border-radius:14px;padding:12px;margin-bottom:8px}
+.cmd-header{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.cmd-orb{width:24px;height:24px;border-radius:50%;background:radial-gradient(circle at 35% 35%,var(--purple-s),var(--purple));box-shadow:0 0 12px rgba(124,58,237,.5);flex-shrink:0}
+.cmd-title{font-size:11px;font-weight:700;color:var(--purple-s)}
+.cmd-time{font-size:9px;color:var(--text3);margin-left:auto}
+.cmd-text{font-size:11px;color:var(--text2);line-height:1.55}
+.cmd-priority{margin-top:8px;padding-top:8px;border-top:1px solid rgba(124,58,237,.15)}
+.cp-label{font-size:9px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.4px}
+.cp-action{font-size:12px;font-weight:700;color:var(--gold);margin-top:2px}
+
+/* ══ PORTFOLIO PIE ════════════════════════════════════════════ */
+.pie-wrap{display:flex;align-items:center;gap:14px;margin-top:8px}
+.pie-canvas-wrap{position:relative;flex-shrink:0}
+.pie-chart{width:90px;height:90px}
+.pie-legend{flex:1}
+.pie-leg-row{display:flex;align-items:center;gap:7px;margin-bottom:5px}
+.pie-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.pie-leg-name{font-size:9px;color:var(--text2);flex:1}
+.pie-leg-val{font-size:10px;font-weight:700}
+
+/* ══ PNL CHART ═══════════════════════════════════════════════ */
+.chart-wrap{height:100px;margin-top:8px;position:relative}
+
+/* ══ SETTINGS OVERLAY ════════════════════════════════════════ */
+.overlay{position:fixed;inset:0;z-index:200;background:rgba(3,0,15,.85);backdrop-filter:blur(12px);display:none;align-items:flex-end;justify-content:center}
+.overlay.show{display:flex}
+.settings-panel{width:100%;max-width:420px;background:var(--bg2);border-radius:24px 24px 0 0;border:1px solid var(--border);border-bottom:none;padding:24px 20px calc(24px + var(--safe));animation:slide-up .3s ease}
+@keyframes slide-up{from{transform:translateY(100%)}to{transform:translateY(0)}}
+.settings-title{font-size:16px;font-weight:700;margin-bottom:18px;display:flex;align-items:center;gap:8px}
+.settings-close{margin-left:auto;width:28px;height:28px;border-radius:8px;background:var(--glass);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px}
+.settings-label{font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+.settings-input{width:100%;background:var(--glass);border:1px solid var(--border);border-radius:10px;padding:10px 14px;color:var(--text);font-family:var(--font);font-size:12px;outline:none;transition:border-color .2s;margin-bottom:14px}
+.settings-input:focus{border-color:var(--purple)}
+.settings-input::placeholder{color:var(--text3)}
+.btn{width:100%;padding:12px;border-radius:12px;border:none;font-family:var(--font);font-size:13px;font-weight:700;cursor:pointer;transition:all .2s;margin-bottom:8px}
+.btn-primary{background:linear-gradient(135deg,var(--purple),rgba(124,58,237,.7));color:#fff;box-shadow:0 4px 16px rgba(124,58,237,.3)}
+.btn-primary:hover{box-shadow:0 4px 24px rgba(124,58,237,.5);transform:translateY(-1px)}
+.btn-secondary{background:var(--glass);border:1px solid var(--border);color:var(--text2)}
+
+/* ══ TOAST ═══════════════════════════════════════════════════ */
+.toast{position:fixed;top:60px;left:50%;transform:translateX(-50%) translateY(-80px);z-index:300;background:rgba(20,10,50,.95);border:1px solid var(--border);border-radius:12px;padding:10px 18px;font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;transition:transform .3s ease;pointer-events:none;backdrop-filter:blur(10px)}
+.toast.show{transform:translateX(-50%) translateY(0)}
+
+/* ══ LOADING SHIMMER ═════════════════════════════════════════ */
+.shimmer{background:linear-gradient(90deg,rgba(124,58,237,.06) 0%,rgba(124,58,237,.15) 50%,rgba(124,58,237,.06) 100%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:6px;color:transparent!important}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+/* ══ REFRESH BTN ══════════════════════════════════════════════ */
+.refresh-spin{animation:spin .6s linear infinite}
+@keyframes spin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}
+
+/* ══ EMPTY STATE ══════════════════════════════════════════════ */
+.empty-state{text-align:center;padding:32px 16px;color:var(--text3)}
+.empty-state .es-icon{font-size:36px;margin-bottom:10px;opacity:.5}
+.empty-state .es-text{font-size:12px}
+</style>
+</head>
+<body>
+
+<div class="qbg"></div>
+
+<!-- TOAST -->
+<div class="toast" id="toast"></div>
+
+<!-- SETTINGS OVERLAY -->
+<div class="overlay" id="settingsOverlay">
+  <div class="settings-panel">
+    <div class="settings-title">
+      ⚙️ Настройки
+      <span class="settings-close" onclick="toggleSettings()">✕</span>
+    </div>
+    <div class="settings-label">Railway URL</div>
+    <input class="settings-input" id="urlInput" type="url" placeholder="https://your-bot.railway.app" />
+    <div class="settings-label">API Key</div>
+    <input class="settings-input" id="keyInput" type="password" placeholder="Ваш API ключ" />
+    <button class="btn btn-primary" onclick="saveSettings()">💾 Сохранить</button>
+    <button class="btn btn-secondary" onclick="toggleSettings()">Отмена</button>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div class="main">
+
+  <!-- HEADER -->
+  <div class="header">
+    <div class="logo-wrap">
+      <div class="logo-orb"></div>
+      <div>
+        <div class="logo-text">QUANTUM CRM</div>
+        <div class="logo-sub">Operations Intelligence</div>
+      </div>
+    </div>
+    <div class="header-btns">
+      <div class="status-dot-wrap" id="statusPill">
+        <div class="s-dot"></div>
+        <span id="statusLabel">LIVE</span>
+      </div>
+      <div class="icon-btn" onclick="doRefresh()" id="refreshBtn" title="Обновить">🔄</div>
+      <div class="icon-btn" onclick="toggleSettings()" title="Настройки">⚙️</div>
+    </div>
+  </div>
+
+  <!-- ══════════ TAB 1: COMMAND CENTER ══════════ -->
+  <div class="tab-content active" id="tab-home">
+
+    <!-- METRIC GRID -->
+    <div class="metric-grid">
+      <div class="metric-card">
+        <div class="metric-icon">💰</div>
+        <div class="metric-label">Total Balance</div>
+        <div class="metric-value mv-gold" id="m-balance">—</div>
+        <div class="metric-sub" id="m-balance-sub">KuCoin + ByBit</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-icon">📊</div>
+        <div class="metric-label">Q-Score</div>
+        <div class="metric-value mv-purple" id="m-qscore">—</div>
+        <div class="metric-sub" id="m-qscore-sub">порог: 77</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-icon">🎯</div>
+        <div class="metric-label">Win Rate</div>
+        <div class="metric-value mv-green" id="m-winrate">—</div>
+        <div class="metric-sub" id="m-winrate-sub">из 0 сделок</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-icon">⚡</div>
+        <div class="metric-label">Uptime</div>
+        <div class="metric-value mv-cyan" id="m-uptime">—</div>
+        <div class="metric-sub" id="m-uptime-sub">с запуска</div>
+      </div>
+    </div>
+
+    <!-- PNL CHART -->
+    <div class="card card-gold">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div>
+          <div style="font-size:11px;font-weight:700;color:var(--text2)">📈 Cumulative PnL</div>
+          <div style="font-size:20px;font-weight:800;margin-top:2px" id="m-total-pnl">—</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:9px;color:var(--text3)">Страх / Жадность</div>
+          <div style="font-size:18px;font-weight:800;margin-top:2px" id="m-fg">—</div>
+          <div style="font-size:9px;color:var(--text3)" id="m-fg-label"></div>
+        </div>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="pnlChart"></canvas>
+      </div>
+    </div>
+
+    <!-- PORTFOLIO PIE -->
+    <div class="card card-cyan">
+      <div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:2px">🥧 Портфель</div>
+      <div class="pie-wrap">
+        <div class="pie-canvas-wrap">
+          <canvas class="pie-chart" id="pieChart"></canvas>
+        </div>
+        <div class="pie-legend" id="pieLegend">
+          <div class="pie-leg-row"><div class="pie-dot" style="background:#7c3aed"></div><div class="pie-leg-name">Загрузка...</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MIROFISH CONSENSUS -->
+    <div class="card">
+      <div style="font-size:11px;font-weight:700;margin-bottom:8px">🐟 MiroFish v3 Консенсус</div>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text3);margin-bottom:4px">
+        <span>BUY <span id="mf-buy-pct" style="color:var(--green);font-weight:700">—</span></span>
+        <span>HOLD <span id="mf-hold-pct" style="color:var(--gold);font-weight:700">—</span></span>
+        <span>SELL <span id="mf-sell-pct" style="color:var(--red);font-weight:700">—</span></span>
+      </div>
+      <div class="consensus-bar">
+        <div class="consensus-fill cf-buy" id="mf-bar-buy" style="width:0%"></div>
+        <div class="consensus-fill cf-sell" id="mf-bar-sell" style="width:0%"></div>
+      </div>
+      <div style="font-size:10px;color:var(--text2);margin-top:6px" id="mf-decision">Загрузка консенсуса...</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:3px" id="mf-conviction"></div>
+    </div>
+
+    <!-- COMMANDER -->
+    <div class="section-title">⚡ Commander</div>
+    <div class="cmd-box" id="cmdBox">
+      <div class="cmd-header">
+        <div class="cmd-orb"></div>
+        <div class="cmd-title">QUANTUM Commander</div>
+        <div class="cmd-time" id="cmd-time">—</div>
+      </div>
+      <div class="cmd-text" id="cmd-insight">Загрузка...</div>
+      <div class="cmd-priority">
+        <div class="cp-label">🎯 Приоритет</div>
+        <div class="cp-action" id="cmd-priority">—</div>
+      </div>
+    </div>
+
+    <!-- GUARDIAN ALERTS -->
+    <div id="guardian-alerts"></div>
+
+  </div><!-- /tab-home -->
+
+  <!-- ══════════ TAB 2: TRADING ══════════ -->
+  <div class="tab-content" id="tab-trading">
+
+    <!-- OPEN POSITIONS -->
+    <div class="section-title">🟢 Открытые позиции</div>
+    <div class="card" id="open-pos-card">
+      <div id="open-pos-list">
+        <div class="empty-state"><div class="es-icon">📭</div><div class="es-text">Нет открытых позиций</div></div>
+      </div>
+    </div>
+
+    <!-- TRADE HISTORY -->
+    <div class="section-title" style="margin-top:6px">📋 История сделок</div>
+    <div class="filter-bar" id="tradeFilters">
+      <div class="filter-chip active" onclick="setTradeFilter('all',this)">Все</div>
+      <div class="filter-chip" onclick="setTradeFilter('buy',this)">BUY</div>
+      <div class="filter-chip" onclick="setTradeFilter('sell',this)">SELL</div>
+      <div class="filter-chip" onclick="setTradeFilter('win',this)">Win</div>
+      <div class="filter-chip" onclick="setTradeFilter('loss',this)">Loss</div>
+    </div>
+    <div class="card">
+      <div id="trade-history-list">
+        <div class="empty-state"><div class="es-icon">📊</div><div class="es-text">Загрузка...</div></div>
+      </div>
+    </div>
+
+    <!-- STATS ROW -->
+    <div class="metric-grid" style="margin-top:10px">
+      <div class="metric-card">
+        <div class="metric-icon">💰</div>
+        <div class="metric-label">Total PnL</div>
+        <div class="metric-value" id="t-total-pnl">—</div>
+        <div class="metric-sub">все сделки</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-icon">📈</div>
+        <div class="metric-label">Сделок</div>
+        <div class="metric-value mv-cyan" id="t-total-trades">—</div>
+        <div class="metric-sub" id="t-win-count">побед —</div>
+      </div>
+    </div>
+
+  </div><!-- /tab-trading -->
+
+  <!-- ══════════ TAB 3: EARN ══════════ -->
+  <div class="tab-content" id="tab-earn">
+
+    <!-- YIELD ROUTER -->
+    <div class="section-title">🚀 Yield Router</div>
+    <div class="card card-gold" id="yield-router-card">
+      <div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:6px">🤖 Рекомендация</div>
+      <div id="yield-recommendation" style="font-size:20px;font-weight:800;color:var(--gold)">—</div>
+      <div id="yield-sub" style="font-size:10px;color:var(--text2);margin-top:4px">Загрузка...</div>
+    </div>
+
+    <!-- EARN SYSTEMS -->
+    <div class="section-title">📦 Earn системы</div>
+    <div class="earn-grid" id="earnGrid">
+      <div class="earn-card"><div class="earn-icon">⏳</div><div class="earn-name" style="color:var(--text3)">Загрузка...</div></div>
+      <div class="earn-card"><div class="earn-icon">⏳</div><div class="earn-name" style="color:var(--text3)">Загрузка...</div></div>
+    </div>
+
+    <!-- ARB STATS -->
+    <div class="section-title" style="margin-top:6px">🔀 Арбитраж</div>
+    <div class="card">
+      <div class="metric-grid">
+        <div>
+          <div style="font-size:9px;color:var(--text3);margin-bottom:3px">ВСЕГО ARB</div>
+          <div style="font-size:18px;font-weight:800" id="arb-total">—</div>
+        </div>
+        <div>
+          <div style="font-size:9px;color:var(--text3);margin-bottom:3px">ARB PNL</div>
+          <div style="font-size:18px;font-weight:800" id="arb-pnl">—</div>
+        </div>
+      </div>
+      <div style="font-size:10px;color:var(--text2);margin-top:8px" id="arb-status">Статус: —</div>
+    </div>
+
+  </div><!-- /tab-earn -->
+
+  <!-- ══════════ TAB 4: HFT ══════════ -->
+  <div class="tab-content" id="tab-hft">
+
+    <!-- HFT SCORES -->
+    <div class="metric-grid">
+      <div class="metric-card">
+        <div class="metric-icon">🤖</div>
+        <div class="metric-label">HFT Score</div>
+        <div class="metric-value mv-purple" id="h-hft-score">—</div>
+        <div class="metric-sub">≥70 для MM</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-icon">📊</div>
+        <div class="metric-label">Grid Score</div>
+        <div class="metric-value mv-cyan" id="h-grid-score">—</div>
+        <div class="metric-sub">≥70 для Grid</div>
+      </div>
+    </div>
+
+    <!-- STRATEGIES STATUS -->
+    <div class="section-title">⚡ Статус стратегий</div>
+    <div class="card">
+      <div class="agent-row">
+        <div class="agent-icon">📊</div>
+        <div class="agent-info">
+          <div class="agent-name">Grid Trading</div>
+          <div class="agent-status" id="grid-status-text">Phase 1 — готов к запуску</div>
+        </div>
+        <div class="agent-badge ab-idle" id="grid-badge">PHASE 1</div>
+      </div>
+      <div class="agent-row">
+        <div class="agent-icon">🔀</div>
+        <div class="agent-info">
+          <div class="agent-name">Cross-Exchange Arb v2</div>
+          <div class="agent-status" id="arb-v2-status-text">Phase 2 — в разработке</div>
+        </div>
+        <div class="agent-badge ab-idle" id="arb-v2-badge">PHASE 2</div>
+      </div>
+      <div class="agent-row">
+        <div class="agent-icon">🌊</div>
+        <div class="agent-info">
+          <div class="agent-name">Market Making</div>
+          <div class="agent-status" id="mm-status-text">Phase 3 — в разработке</div>
+        </div>
+        <div class="agent-badge ab-idle" id="mm-badge">PHASE 3</div>
+      </div>
+      <div class="agent-row">
+        <div class="agent-icon">💸</div>
+        <div class="agent-info">
+          <div class="agent-name">Funding Arb</div>
+          <div class="agent-status" id="fundarb-status-text">Delta-neutral стратегия</div>
+        </div>
+        <div class="agent-badge" id="fundarb-badge" style="background:rgba(52,211,153,.12);color:var(--green);border:1px solid rgba(52,211,153,.3)">ACTIVE</div>
+      </div>
+    </div>
+
+    <!-- SPREADS -->
+    <div class="section-title">💹 Спреды KC ↔ BB</div>
+    <div class="card">
+      <table class="spread-table">
+        <thead>
+          <tr>
+            <th>Пара</th>
+            <th>KC</th>
+            <th>BB</th>
+            <th>Спред</th>
+          </tr>
+        </thead>
+        <tbody id="spread-tbody">
+          <tr><td colspan="4" style="text-align:center;color:var(--text3);font-size:10px;padding:16px 0">Загрузка...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- GRID CONFIG HINT -->
+    <div class="section-title">🔧 Запуск Grid</div>
+    <div class="vault-entry">
+      <span class="ve-tag">ℹ️ Команды Telegram</span>
+      <div class="ve-body">
+        <code style="color:var(--purple-s)">/gridstart BTCUSDT $50 20 levels</code><br>
+        Выключено по умолчанию. GRID_ENABLED=false в Railway.<br><br>
+        <code style="color:var(--cyan)">/gridscore</code> — рассчитать Grid Score<br>
+        <code style="color:var(--cyan)">/gridstop</code> — отменить все ордера сетки<br>
+        <code style="color:var(--cyan)">/hftscore</code> — Market Making Score
+      </div>
+    </div>
+
+  </div><!-- /tab-hft -->
+
+  <!-- ══════════ TAB 5: SYSTEM ══════════ -->
+  <div class="tab-content" id="tab-system">
+
+    <!-- HEALTH METRICS -->
+    <div class="metric-grid">
+      <div class="metric-card">
+        <div class="metric-icon">🔋</div>
+        <div class="metric-label">Uptime</div>
+        <div class="metric-value mv-green" id="sys-uptime">—</div>
+        <div class="metric-sub">без сбоев</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-icon">🌐</div>
+        <div class="metric-label">Задержка KC</div>
+        <div class="metric-value mv-cyan" id="sys-latency">—</div>
+        <div class="metric-sub">мс</div>
+      </div>
+    </div>
+
+    <!-- QUANTUM OPS AGENTS -->
+    <div class="section-title">🧠 QUANTUM OPS Агенты</div>
+    <div class="card">
+      <div id="ops-agents-list">
+        <div class="empty-state"><div class="es-icon">⏳</div><div class="es-text">Загрузка агентов...</div></div>
+      </div>
+    </div>
+
+    <!-- QA CHECKS -->
+    <div class="section-title" style="margin-top:6px">✅ QA Проверки</div>
+    <div class="card" id="qa-card">
+      <div id="qa-list">
+        <div class="empty-state"><div class="es-icon">⏳</div><div class="es-text">Запуск QA...</div></div>
+      </div>
+    </div>
+    <div style="text-align:center;margin-top:8px">
+      <button class="filter-chip" onclick="runQA()">▶ Запустить QA</button>
+    </div>
+
+    <!-- ACTIVITY LOG -->
+    <div class="section-title" style="margin-top:10px">📋 Активность</div>
+    <div class="card">
+      <div id="activity-list">
+        <div class="empty-state"><div class="es-icon">📝</div><div class="es-text">Загрузка логов...</div></div>
+      </div>
+    </div>
+
+  </div><!-- /tab-system -->
+
+  <!-- ══════════ TAB 6: VAULT ══════════ -->
+  <div class="tab-content" id="tab-vault">
+
+    <!-- COMMANDER INSIGHTS -->
+    <div class="section-title">📖 Vault — Аудитор</div>
+    <div id="vault-auditor">
+      <div class="vault-entry">
+        <span class="ve-tag gold">АУДИТОР</span>
+        <div class="ve-title">Записи аудита</div>
+        <div class="ve-body" id="vault-audit-body">Загрузка данных аудита...</div>
+      </div>
+    </div>
+
+    <!-- SELF LEARNING -->
+    <div class="section-title">🧬 Self-Learning</div>
+    <div id="vault-learning">
+      <div class="vault-entry">
+        <span class="ve-tag cyan">ОРАКУЛ</span>
+        <div class="ve-title">Паттерны</div>
+        <div class="ve-body" id="vault-learning-body">Загрузка инсайтов...</div>
+      </div>
+    </div>
+
+    <!-- COMMANDER REPORTS -->
+    <div class="section-title">⚡ Commander Reports</div>
+    <div id="vault-commander">
+      <div class="vault-entry">
+        <span class="ve-tag">COMMANDER</span>
+        <div class="ve-title">Стратегический отчёт</div>
+        <div class="ve-body" id="vault-cmd-body">Загрузка...</div>
+        <div class="ve-time" id="vault-cmd-time">—</div>
+      </div>
+    </div>
+
+    <!-- BLIND SPOTS -->
+    <div class="section-title">⚠️ Слепые зоны</div>
+    <div id="vault-blindspots">
+      <div class="vault-entry">
+        <span class="ve-tag" style="background:rgba(248,113,113,.1);color:var(--red);border-color:rgba(248,113,113,.3)">BLIND SPOTS</span>
+        <div class="ve-body" id="vault-blindspots-body">Анализ Commander...</div>
+      </div>
+    </div>
+
+    <!-- PRE-MORTEM + WARGAME -->
+    <div class="section-title">🎯 Commander COMBO</div>
+    <div class="vault-entry">
+      <span class="ve-tag" style="background:rgba(248,113,113,.1);color:var(--red);border-color:rgba(248,113,113,.3)">PRE-MORTEM</span>
+      <div class="ve-body" id="vault-premortem">Загрузка...</div>
+    </div>
+    <div class="vault-entry">
+      <span class="ve-tag" style="background:rgba(251,191,36,.1);color:var(--gold);border-color:rgba(251,191,36,.3)">WARGAME</span>
+      <div class="ve-body" id="vault-wargame">Загрузка...</div>
+    </div>
+    <div class="vault-entry">
+      <span class="ve-tag cyan">PARETO ACTION</span>
+      <div class="ve-body" id="vault-pareto">Загрузка...</div>
+    </div>
+
+  </div><!-- /tab-vault -->
+
+</div><!-- /main -->
+
+<!-- BOTTOM NAVIGATION -->
+<nav class="bottom-nav">
+  <button class="nav-btn active" id="nav-home" onclick="switchTab('home')">
+    <span class="nav-icon">⚡</span>
+    <span class="nav-label">Command</span>
+    <div class="nav-indicator"></div>
+  </button>
+  <button class="nav-btn" id="nav-trading" onclick="switchTab('trading')">
+    <span class="nav-icon">📊</span>
+    <span class="nav-label">Trading</span>
+    <div class="nav-indicator"></div>
+  </button>
+  <button class="nav-btn" id="nav-earn" onclick="switchTab('earn')">
+    <span class="nav-icon">💰</span>
+    <span class="nav-label">Earn</span>
+    <div class="nav-indicator"></div>
+  </button>
+  <button class="nav-btn" id="nav-hft" onclick="switchTab('hft')">
+    <span class="nav-icon">🤖</span>
+    <span class="nav-label">HFT</span>
+    <div class="nav-indicator"></div>
+  </button>
+  <button class="nav-btn" id="nav-system" onclick="switchTab('system')">
+    <span class="nav-icon">🔧</span>
+    <span class="nav-label">System</span>
+    <div class="nav-indicator"></div>
+  </button>
+  <button class="nav-btn" id="nav-vault" onclick="switchTab('vault')">
+    <span class="nav-icon">📚</span>
+    <span class="nav-label">Vault</span>
+    <div class="nav-indicator"></div>
+  </button>
+</nav>
+
+<script>
+// ══ CONFIG ════════════════════════════════════════════════════
+const LS_URL = 'qt_url';
+const LS_KEY = 'qt_key';
+
+function getBase(){
+  try{
+    const stored = localStorage.getItem(LS_URL);
+    if(stored) return stored.replace(/\/$/,'');
+    if(window.Telegram?.WebApp?.initDataUnsafe?.start_param)
+      return 'https://'+window.Telegram.WebApp.initDataUnsafe.start_param;
+  }catch(e){}
+  return window.location.origin;
+}
+function getApiKey(){ try{return localStorage.getItem(LS_KEY)||'';}catch(e){return '';} }
+function getHeaders(){ return {'X-API-Key':getApiKey(),'Content-Type':'application/json'}; }
+
+async function api(path, opts={}){
+  try{
+    const r = await fetch(getBase()+path, {headers:getHeaders(), signal:AbortSignal.timeout(15000), ...opts});
+    if(!r.ok) return null;
+    return r.json();
+  }catch(e){return null;}
+}
+
+// ══ STATE ══════════════════════════════════════════════════════
+let _liveData = {};
+let _statsData = {};
+let _earnData = {};
+let _tradesData = [];
+let _tradeFilter = 'all';
+let _pnlChart = null;
+let _pieChart = null;
+let _refreshTimer = null;
+let _currentTab = 'home';
+let _isOnline = false;
+
+// ══ TAB SWITCH ═════════════════════════════════════════════════
+function switchTab(tab){
+  _currentTab = tab;
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('tab-'+tab)?.classList.add('active');
+  document.getElementById('nav-'+tab)?.classList.add('active');
+  if(tab==='system' && Object.keys(_liveData).length===0) loadAll();
+  if(tab==='earn') loadEarn();
+}
+
+// ══ TOAST ═══════════════════════════════════════════════════════
+let _toastTimer;
+function showToast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg;
+  t.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer=setTimeout(()=>t.classList.remove('show'),2800);
+}
+
+// ══ SETTINGS ═══════════════════════════════════════════════════
+function toggleSettings(){
+  const o=document.getElementById('settingsOverlay');
+  const isOpen=o.classList.contains('show');
+  if(!isOpen){
+    document.getElementById('urlInput').value=getBase();
+    document.getElementById('keyInput').value=getApiKey();
+  }
+  o.classList.toggle('show');
+}
+function saveSettings(){
+  const url=document.getElementById('urlInput').value.trim().replace(/\/$/,'');
+  const key=document.getElementById('keyInput').value.trim();
+  if(url) try{localStorage.setItem(LS_URL,url);}catch(e){}
+  if(key) try{localStorage.setItem(LS_KEY,key);}catch(e){}
+  toggleSettings();
+  showToast('✅ Настройки сохранены');
+  loadAll();
+}
+
+// ══ REFRESH ═════════════════════════════════════════════════════
+async function doRefresh(){
+  const btn=document.getElementById('refreshBtn');
+  btn.classList.add('refresh-spin');
+  await loadAll();
+  btn.classList.remove('refresh-spin');
+}
+
+// ══ STATUS PILL ═══════════════════════════════════════════════
+function setOnline(v){
+  _isOnline=v;
+  const pill=document.getElementById('statusPill');
+  const lbl=document.getElementById('statusLabel');
+  pill.className='status-dot-wrap'+(v?'':' offline');
+  lbl.textContent=v?'LIVE':'OFFLINE';
+}
+
+// ══ CHARTS ════════════════════════════════════════════════════
+Chart.defaults.color='rgba(150,185,230,.7)';
+Chart.defaults.font.family='-apple-system,Inter,sans-serif';
+Chart.defaults.font.size=9;
+
+function initPnlChart(){
+  const ctx=document.getElementById('pnlChart')?.getContext('2d');
+  if(!ctx) return;
+  if(_pnlChart){_pnlChart.destroy();}
+  _pnlChart=new Chart(ctx,{
+    type:'line',
+    data:{labels:[],datasets:[{
+      data:[],borderColor:'rgba(251,191,36,.9)',backgroundColor:'rgba(251,191,36,.08)',
+      borderWidth:2,fill:true,tension:.4,pointRadius:0,pointHoverRadius:4
+    }]},
+    options:{
+      responsive:true,maintainAspectRatio:false,animation:{duration:400},
+      plugins:{legend:{display:false},tooltip:{
+        callbacks:{label:c=>'$'+c.parsed.y.toFixed(4)}
+      }},
+      scales:{
+        x:{display:false},
+        y:{display:true,grid:{color:'rgba(124,58,237,.1)'},ticks:{
+          callback:v=>v>0?'+$'+v.toFixed(2):'$'+v.toFixed(2),maxTicksLimit:4
+        }}
+      }
+    }
+  });
+}
+
+function updatePnlChart(series){
+  if(!_pnlChart) initPnlChart();
+  if(!series||!series.length) return;
+  const labels=series.map(s=>{
+    if(!s.ts) return '';
+    const d=new Date(s.ts*1000);
+    return d.getMonth()+1+'/'+d.getDate();
+  });
+  _pnlChart.data.labels=labels;
+  _pnlChart.data.datasets[0].data=series.map(s=>s.pnl);
+  const pnl=series[series.length-1]?.pnl||0;
+  _pnlChart.data.datasets[0].borderColor=pnl>=0?'rgba(52,211,153,.9)':'rgba(248,113,113,.9)';
+  _pnlChart.data.datasets[0].backgroundColor=pnl>=0?'rgba(52,211,153,.08)':'rgba(248,113,113,.08)';
+  _pnlChart.update('none');
+}
+
+const PIE_COLORS=['#7c3aed','#48cae4','#34d399','#fbbf24','#f87171','#9f67ff'];
+
+function updatePieChart(slices){
+  const ctx=document.getElementById('pieChart')?.getContext('2d');
+  if(!ctx||!slices||!slices.length) return;
+  if(_pieChart){_pieChart.destroy();}
+  const labels=slices.map(s=>s.label);
+  const values=slices.map(s=>s.value);
+  const colors=slices.map((_,i)=>PIE_COLORS[i%PIE_COLORS.length]);
+  _pieChart=new Chart(ctx,{
+    type:'doughnut',
+    data:{labels,datasets:[{data:values,backgroundColor:colors,borderColor:'rgba(3,0,15,.8)',borderWidth:2}]},
+    options:{
+      responsive:true,maintainAspectRatio:false,animation:{duration:400},
+      plugins:{legend:{display:false},tooltip:{callbacks:{
+        label:c=>c.label+': $'+c.parsed.toFixed(2)
+      }}}
+    }
+  });
+  // legend
+  const leg=document.getElementById('pieLegend');
+  if(leg){
+    leg.innerHTML=slices.map((s,i)=>`
+      <div class="pie-leg-row">
+        <div class="pie-dot" style="background:${colors[i]}"></div>
+        <div class="pie-leg-name">${s.label}</div>
+        <div class="pie-leg-val" style="color:${colors[i]}">$${(s.value||0).toFixed(0)}</div>
+      </div>
+    `).join('');
+  }
+}
+
+// ══ FORMATTERS ════════════════════════════════════════════════
+function fmtPnl(v){
+  if(v===null||v===undefined) return '—';
+  const n=parseFloat(v);
+  return (n>=0?'+':'')+n.toFixed(4);
+}
+function fmtUsd(v,dec=2){ return v===null||v===undefined?'—':'$'+(parseFloat(v)||0).toFixed(dec); }
+function fmtTs(ts){ if(!ts) return ''; const d=new Date(ts*1000); return d.toLocaleDateString('ru')+' '+d.toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'}); }
+function fmtUptime(sec){ const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60); return h+'h '+m+'m'; }
+function pnlClass(v){ const n=parseFloat(v); if(n>0) return 'pnl-pos'; if(n<0) return 'pnl-neg'; return 'pnl-neu'; }
+
+// ══ RENDER FUNCTIONS ══════════════════════════════════════════
+
+function renderHome(live, stats){
+  // Balance
+  const bal = live?.balances || stats?.balance || {};
+  const totalBal = (parseFloat(bal.spot_usdt||0)+parseFloat(bal.futures_equity||0)+parseFloat(bal.bybit_usdt||0)) ||
+                   parseFloat(stats?.balance?.total_usdt||0) || 0;
+  document.getElementById('m-balance').textContent = fmtUsd(totalBal);
+  document.getElementById('m-balance-sub').textContent = `KC: ${fmtUsd(bal.spot_usdt||0)} | BB: ${fmtUsd(bal.bybit_usdt||0)}`;
+
+  // Win Rate
+  const wr = stats?.win_rate ?? live?.win_rate;
+  const tot = stats?.total_trades ?? live?.total_trades ?? 0;
+  const wins = stats?.wins ?? 0;
+  document.getElementById('m-winrate').textContent = wr!=null ? wr+'%' : '—';
+  document.getElementById('m-winrate-sub').textContent = `из ${tot} сделок`;
+
+  // Uptime
+  const uptime = live?.uptime_seconds ?? _liveData?.uptime_seconds;
+  document.getElementById('m-uptime').textContent = uptime ? fmtUptime(uptime) : '—';
+
+  // Q-Score
+  const qs = live?.q_score ?? live?.min_q_score ?? 77;
+  document.getElementById('m-qscore').textContent = qs ?? '—';
+
+  // PnL
+  const totalPnl = parseFloat(stats?.total_pnl ?? live?.total_pnl ?? 0);
+  const pnlEl = document.getElementById('m-total-pnl');
+  pnlEl.textContent = fmtPnl(totalPnl) + ' USDT';
+  pnlEl.className = 'metric-value ' + pnlClass(totalPnl);
+
+  // F&G
+  const fg = stats?.fear_greed ?? live?.fear_greed;
+  if(fg){
+    const fgEl = document.getElementById('m-fg');
+    const fgVal = parseInt(fg.value||fg||50);
+    fgEl.textContent = fgVal;
+    fgEl.className = fgVal<=25?'mv-red':fgVal<=45?'mv-gold':fgVal<=60?'mv-cyan':'mv-green';
+    fgEl.style.fontSize='18px';fgEl.style.fontWeight='800';
+    document.getElementById('m-fg-label').textContent = fg.label||fg.classification||'';
+  }
+
+  // PnL Chart
+  const series = live?.pnl_series ?? live?.pnl_chart;
+  if(series?.length) updatePnlChart(series);
+  else if(!_pnlChart) initPnlChart();
+
+  // Portfolio Pie
+  const balMap = live?.balance_map;
+  if(balMap && Object.keys(balMap).length){
+    const slices = Object.entries(balMap).filter(([_,v])=>parseFloat(v)>0).map(([k,v])=>({label:k, value:parseFloat(v)}));
+    if(slices.length) updatePieChart(slices);
+  } else if(totalBal>0){
+    const slices=[];
+    if(bal.spot_usdt>0) slices.push({label:'KC Spot',value:parseFloat(bal.spot_usdt)});
+    if(bal.futures_equity>0) slices.push({label:'KC Futures',value:parseFloat(bal.futures_equity)});
+    if(bal.bybit_usdt>0) slices.push({label:'BB Spot',value:parseFloat(bal.bybit_usdt)});
+    if(slices.length) updatePieChart(slices);
+  }
+
+  // MiroFish
+  const mf = live?.mirofish ?? live?.mirofish_last;
+  if(mf){
+    const buy=parseInt(mf.buy_pct??mf.buy_count??0);
+    const sell=parseInt(mf.sell_pct??mf.sell_count??0);
+    const hold=100-buy-sell;
+    document.getElementById('mf-buy-pct').textContent = buy+'%';
+    document.getElementById('mf-sell-pct').textContent = sell+'%';
+    document.getElementById('mf-hold-pct').textContent = hold+'%';
+    document.getElementById('mf-bar-buy').style.width = buy+'%';
+    document.getElementById('mf-bar-sell').style.width = sell+'%';
+    document.getElementById('mf-decision').textContent = mf.decision ? '🎯 '+mf.decision : 'Нет данных';
+    document.getElementById('mf-conviction').textContent = mf.conviction ? 'Conviction: '+mf.conviction+'/10' : '';
+  }
+
+  // Commander
+  const cmd = live?.commander ?? live?.commander_state;
+  if(cmd){
+    const ts = cmd.last_run ?? cmd.timestamp;
+    document.getElementById('cmd-time').textContent = ts ? fmtTs(ts) : '';
+    const insight = cmd.top_insights?.[0] ?? cmd.insight ?? cmd.channel_post ?? cmd.priority_action;
+    document.getElementById('cmd-insight').textContent = insight || 'Ожидание следующего цикла...';
+    document.getElementById('cmd-priority').textContent = cmd.priority_action ?? cmd.pareto_action ?? '—';
+  }
+
+  // Guardian alerts
+  const alerts = live?.guardian_alerts ?? live?.ops_guardian?.alerts ?? [];
+  const alertContainer = document.getElementById('guardian-alerts');
+  if(alerts && alerts.length){
+    alertContainer.innerHTML = '<div class="section-title">🛡️ СТРАЖ — Алерты</div>'+
+      alerts.slice(0,3).map(a=>`
+        <div class="alert-banner warn">
+          <div class="alert-icon">⚠️</div>
+          <div><div class="alert-text">${a.message??a}</div><div class="alert-time">${a.ts?fmtTs(a.ts):''}</div></div>
+        </div>`).join('');
+  } else {
+    alertContainer.innerHTML = `
+      <div class="alert-banner" style="background:rgba(52,211,153,.06);border-color:rgba(52,211,153,.25)">
+        <div class="alert-icon">🛡️</div>
+        <div><div class="alert-text" style="color:var(--green)">СТРАЖ: Аномалий не обнаружено</div></div>
+      </div>`;
+  }
+}
+
+function renderTrading(live, stats, trades){
+  // Open positions
+  const openTrades = (trades||[]).filter(t=>t.status==='open');
+  const openEl = document.getElementById('open-pos-list');
+  if(openTrades.length){
+    openEl.innerHTML = openTrades.map(t=>`
+      <div class="trade-row">
+        <div class="trade-side ts-open">OPEN</div>
+        <div>
+          <div class="trade-sym">${t.symbol||'?'}</div>
+          <div class="trade-sub">${fmtTs(t.ts)} · ${t.account||'spot'}</div>
+        </div>
+        <div>
+          <div class="trade-pnl ${t.pnl!=null?pnlClass(t.pnl):'pnl-neu'}">${t.pnl!=null?fmtPnl(t.pnl):'—'}</div>
+          <div style="font-size:9px;color:var(--text3);text-align:right">${fmtUsd(t.usdt_size||t.size_usdt||t.price)}</div>
+        </div>
+      </div>`).join('');
+  } else {
+    openEl.innerHTML='<div class="empty-state"><div class="es-icon">📭</div><div class="es-text">Нет открытых позиций</div></div>';
+  }
+
+  // Trade history
+  _tradesData = (trades||[]).filter(t=>t.status==='closed'||t.status==='open');
+  renderTradeFilter();
+
+  // Stats
+  const tot = stats?.total_trades ?? 0;
+  const wins = stats?.wins ?? 0;
+  const tpnl = parseFloat(stats?.total_pnl??0);
+  const totEl = document.getElementById('t-total-pnl');
+  totEl.textContent = fmtPnl(tpnl);
+  totEl.className = 'metric-value '+pnlClass(tpnl);
+  document.getElementById('t-total-trades').textContent = tot||'—';
+  document.getElementById('t-win-count').textContent = `победа: ${wins}`;
+}
+
+function setTradeFilter(f, el){
+  _tradeFilter = f;
+  document.querySelectorAll('.filter-chip').forEach(c=>c.classList.remove('active'));
+  el?.classList.add('active');
+  renderTradeFilter();
+}
+
+function renderTradeFilter(){
+  let filtered = _tradesData.filter(t=>t.status==='closed');
+  if(_tradeFilter==='buy') filtered=filtered.filter(t=>(t.side||'').toUpperCase()==='BUY');
+  else if(_tradeFilter==='sell') filtered=filtered.filter(t=>(t.side||'').toUpperCase()==='SELL');
+  else if(_tradeFilter==='win') filtered=filtered.filter(t=>parseFloat(t.pnl||0)>0);
+  else if(_tradeFilter==='loss') filtered=filtered.filter(t=>parseFloat(t.pnl||0)<0);
+  const el=document.getElementById('trade-history-list');
+  if(!filtered.length){
+    el.innerHTML='<div class="empty-state"><div class="es-icon">📊</div><div class="es-text">Нет сделок</div></div>';
+    return;
+  }
+  el.innerHTML=filtered.slice(0,30).map(t=>{
+    const side=(t.side||'buy').toUpperCase();
+    const cls=side==='BUY'?'ts-buy':'ts-sell';
+    return `<div class="trade-row">
+      <div class="trade-side ${cls}">${side}</div>
+      <div>
+        <div class="trade-sym">${t.symbol||'?'}</div>
+        <div class="trade-sub">${fmtTs(t.close_ts||t.ts)} · ${t.account||'spot'}</div>
+      </div>
+      <div>
+        <div class="trade-pnl ${pnlClass(t.pnl)}">${fmtPnl(t.pnl)}</div>
+        <div style="font-size:9px;color:var(--text3);text-align:right">${fmtUsd(t.usdt_size||t.size_usdt)}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderEarn(earn, arb){
+  // Yield router
+  const yr = earn?.yield_router ?? earn?.recommendation;
+  if(yr){
+    document.getElementById('yield-recommendation').textContent = yr.best_product||yr.name||'—';
+    document.getElementById('yield-sub').textContent = (yr.apy||yr.apr)?`APY: ${yr.apy||yr.apr}%`:yr.reason||'Анализ...';
+  }
+
+  // Earn grid
+  const systems = [
+    {name:'KC Flex Earn', icon:'⚡', key:'flex_earn', apy_class:'purple', badge_if:earn?.flex_earn?.active},
+    {name:'KC Lending',   icon:'📈', key:'lending',   apy_class:'gold',   badge_if:earn?.lending?.active},
+    {name:'ByBit DCI',    icon:'💎', key:'dci',        apy_class:'cyan',   badge_if:earn?.dci?.active},
+    {name:'Funding Arb',  icon:'💸', key:'funding_arb',apy_class:'green',  badge_if:earn?.funding_arb?.active},
+    {name:'Snowball',     icon:'❄️', key:'snowball',   apy_class:'gold',   badge_if:false},
+  ];
+  const grid = document.getElementById('earnGrid');
+  grid.innerHTML = systems.map(s=>{
+    const data = earn?.[s.key]??{};
+    const isActive = s.badge_if ?? data.active ?? data.enabled ?? false;
+    const apy = data.apy??data.apr??data.current_apy??data.rate;
+    return `<div class="earn-card ${isActive?'active':'inactive'}">
+      <div class="earn-badge ${isActive?'eb-on':'eb-off'}">${isActive?'ON':'OFF'}</div>
+      <div class="earn-icon">${s.icon}</div>
+      <div class="earn-name">${s.name}</div>
+      <div class="earn-apy ${s.apy_class}">${apy!=null?(apy+'%'):'—'}</div>
+      <div class="earn-sub">${data.invested?'Размещено: '+fmtUsd(data.invested):(data.balance?'Баланс: '+fmtUsd(data.balance):'')}</div>
+    </div>`;
+  }).join('');
+
+  // Arb
+  if(arb){
+    document.getElementById('arb-total').textContent = arb.total??'—';
+    const apnlEl = document.getElementById('arb-pnl');
+    const ap = parseFloat(arb.total_pnl??arb.pnl??0);
+    apnlEl.textContent = fmtPnl(ap);
+    apnlEl.className = 'pnl-'+(ap>0?'pos':ap<0?'neg':'neu');
+    apnlEl.style.fontSize='18px';apnlEl.style.fontWeight='800';
+    document.getElementById('arb-status').textContent = 'Статус: '+(arb.enabled?'🟢 Активен':'🔴 Выключен') + ' | Успех: '+(arb.success??0);
+  }
+}
+
+function renderSystem(live){
+  // Uptime
+  const up = live?.uptime_seconds ?? live?.health?.uptime;
+  document.getElementById('sys-uptime').textContent = up ? fmtUptime(up) : '—';
+  const lat = live?.latency_kc ?? live?.health?.latency_kc;
+  document.getElementById('sys-latency').textContent = lat!=null ? lat+'ms' : '—';
+
+  // QUANTUM OPS agents
+  const ops = live?.quantum_ops ?? live?.ops_state ?? {};
+  const opsAgents = [
+    {key:'guardian',  icon:'🛡️', name:'СТРАЖ'},
+    {key:'treasury',  icon:'💰', name:'КАЗНАЧЕЙ'},
+    {key:'auditor',   icon:'🔍', name:'АУДИТОР'},
+    {key:'oracle',    icon:'🔮', name:'ОРАКУЛ'},
+    {key:'engineer',  icon:'⚙️', name:'ИНЖЕНЕР'},
+    {key:'diplomat',  icon:'🌐', name:'ДИПЛОМАТ'},
+    {key:'chronicler',icon:'📚', name:'ЛЕТОПИСЕЦ'},
+    {key:'regulator', icon:'⚖️', name:'РЕГУЛЯТОР'},
+  ];
+  const opsList = document.getElementById('ops-agents-list');
+  if(Object.keys(ops).length){
+    opsList.innerHTML = opsAgents.map(a=>{
+      const d = ops[a.key]??{};
+      const st = d.status??'idle';
+      const badgeClass = st==='ok'||st==='active'?'ab-ok':st==='warn'||st==='warning'?'ab-warn':st==='error'||st==='err'?'ab-err':'ab-idle';
+      const badgeText = st==='ok'?'OK':st==='warn'||st==='warning'?'WARN':st==='error'||st==='err'?'ERR':'IDLE';
+      const lastRun = d.last_check??d.last_run??d.last_entry;
+      return `<div class="agent-row">
+        <div class="agent-icon">${a.icon}</div>
+        <div class="agent-info">
+          <div class="agent-name">${a.name}</div>
+          <div class="agent-status">${lastRun?fmtTs(lastRun):'Не запускался'}</div>
+        </div>
+        <div class="agent-badge ${badgeClass}">${badgeText}</div>
+      </div>`;
+    }).join('');
+  } else {
+    opsList.innerHTML = opsAgents.map(a=>`<div class="agent-row">
+      <div class="agent-icon">${a.icon}</div>
+      <div class="agent-info"><div class="agent-name">${a.name}</div><div class="agent-status">Ожидание данных</div></div>
+      <div class="agent-badge ab-idle">IDLE</div>
+    </div>`).join('');
+  }
+
+  // Activity log
+  const activity = live?.recent_activity ?? live?.activity_log ?? [];
+  const actEl = document.getElementById('activity-list');
+  if(activity.length){
+    actEl.innerHTML = activity.slice(0,10).map(a=>{
+      const msg = a.message??a.text??String(a);
+      const ts = a.ts??a.timestamp;
+      return `<div class="qa-row">
+        <div class="qa-icon">📝</div>
+        <div class="qa-name" style="font-size:10px">${msg}</div>
+        <div class="qa-val">${ts?fmtTs(ts):''}</div>
+      </div>`;
+    }).join('');
+  } else {
+    actEl.innerHTML='<div class="empty-state"><div class="es-icon">📝</div><div class="es-text">Нет активности</div></div>';
+  }
+}
+
+async function runQA(){
+  showToast('▶ Запускаю QA...');
+  const data = await api('/api/qa-run');
+  if(!data){ showToast('❌ QA недоступен'); return; }
+  const el = document.getElementById('qa-list');
+  const checks = data.checks ?? data ?? [];
+  if(!checks.length){ el.innerHTML='<div class="empty-state"><div class="es-text">Нет результатов</div></div>'; return; }
+  el.innerHTML = checks.map(c=>{
+    const ok=c.status==='ok'||c.ok===true||c.pass===true;
+    const warn=c.status==='warn'||c.status==='warning';
+    const cls=ok?'qs-ok':warn?'qs-warn':'qs-err';
+    const ico=ok?'✅':warn?'⚠️':'❌';
+    return `<div class="qa-row">
+      <div class="qa-icon">${ico}</div>
+      <div class="qa-name">${c.name??c.check??'Check'}</div>
+      <div class="qa-val">${c.value??c.detail??''}</div>
+      <div class="qa-status ${cls}">${ok?'OK':warn?'WARN':'FAIL'}</div>
+    </div>`;
+  }).join('');
+  showToast('✅ QA завершён: '+checks.length+' проверок');
+}
+
+function renderVault(live){
+  const cmd = live?.commander ?? live?.commander_state ?? {};
+
+  // Auditor entries
+  const auditLogs = live?.ops_auditor_logs ?? live?.auditor_logs ?? cmd.auditor_logs ?? [];
+  const auditEl = document.getElementById('vault-audit-body');
+  if(auditLogs.length){
+    auditEl.innerHTML = auditLogs.slice(0,5).map(l=>`
+      <div style="margin-bottom:6px;padding-bottom:6px;border-bottom:1px solid rgba(124,58,237,.08)">
+        <div style="font-weight:700;color:var(--text)">${l.symbol??'—'}: ${l.result??'—'}</div>
+        <div style="color:var(--text2);margin-top:2px">${l.what_worked??l.note??''}</div>
+        <div style="color:var(--text3);font-size:9px;margin-top:2px">${fmtTs(l.ts)}</div>
+      </div>`).join('');
+  } else {
+    auditEl.textContent = 'Данные аудита появятся после первой завершённой сделки';
+  }
+
+  // Self-learning / oracle insights
+  const insights = live?.self_learning ?? live?.learning_insights ?? cmd.opportunities ?? [];
+  const learnEl = document.getElementById('vault-learning-body');
+  if(insights.length){
+    learnEl.innerHTML = (Array.isArray(insights)?insights:[insights]).slice(0,5).map(i=>`
+      <div style="margin-bottom:4px">• ${typeof i==='string'?i:i.text??i.insight??JSON.stringify(i)}</div>`).join('');
+  } else {
+    learnEl.textContent = 'Накапливается история сделок для ML-анализа';
+  }
+
+  // Commander report
+  const chanPost = cmd.channel_post ?? cmd.top_insights?.[0];
+  document.getElementById('vault-cmd-body').textContent = chanPost ?? 'Ожидание Commander цикла (каждые 4 часа)';
+  document.getElementById('vault-cmd-time').textContent = cmd.last_run ? 'Обновлено: '+fmtTs(cmd.last_run) : '';
+
+  // Blind spots
+  const bs = cmd.blind_spots ?? [];
+  document.getElementById('vault-blindspots-body').innerHTML = bs.length
+    ? bs.map(b=>`<div style="margin-bottom:4px">⚠️ ${typeof b==='string'?b:b.text??b}</div>`).join('')
+    : 'Слепые зоны не обнаружены в последнем цикле';
+
+  // Pre-mortem
+  const pm = cmd.pre_mortem ?? [];
+  document.getElementById('vault-premortem').innerHTML = pm.length
+    ? pm.map(p=>`<div style="margin-bottom:4px">💀 ${typeof p==='string'?p:p.text??p}</div>`).join('')
+    : 'Данные появятся после следующего Commander цикла';
+
+  // Wargame
+  const wg = cmd.wargame;
+  document.getElementById('vault-wargame').textContent = wg ?? 'Анализ рыночных ловушек в следующем цикле';
+
+  // Pareto
+  const pa = cmd.pareto_action;
+  document.getElementById('vault-pareto').textContent = pa ?? 'Pareto-действие: нет данных';
+}
+
+function renderHft(live, stats){
+  // Prices for spread table
+  const prices = live?.prices ?? live?.price_snapshot ?? {};
+  const pairs = [
+    {sym:'BTCUSDT', lbl:'BTC/USDT'},
+    {sym:'ETHUSDT', lbl:'ETH/USDT'},
+    {sym:'SOLUSDT', lbl:'SOL/USDT'},
+  ];
+  const tbody = document.getElementById('spread-tbody');
+  if(Object.keys(prices).length){
+    tbody.innerHTML = pairs.map(p=>{
+      const kc = prices['BTC-USDT']??prices[p.sym]??prices[p.sym.replace('USDT','-USDT')]??0;
+      const bb = prices[p.sym]??prices[p.sym.replace('-','')]??0;
+      const spread = (kc&&bb) ? ((Math.abs(kc-bb)/((kc+bb)/2))*100).toFixed(4) : '—';
+      return `<tr>
+        <td style="font-weight:700">${p.lbl}</td>
+        <td>${kc?'$'+parseFloat(kc).toLocaleString():'—'}</td>
+        <td>${bb?'$'+parseFloat(bb).toLocaleString():'—'}</td>
+        <td class="${parseFloat(spread)>0?'spread-pos':'spread-neg'}">${spread!=='—'?spread+'%':'—'}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Strategy badges based on live data
+  const hftCfg = live?.hft_config ?? {};
+  if(hftCfg.grid_enabled){
+    document.getElementById('grid-badge').className='agent-badge ab-ok';
+    document.getElementById('grid-badge').textContent='ACTIVE';
+    document.getElementById('grid-status-text').textContent=`Пара: ${hftCfg.grid_pair||'BTCUSDT'} · ${hftCfg.grid_levels||20} уровней`;
+  }
+  if(hftCfg.mm_enabled){
+    document.getElementById('mm-badge').className='agent-badge ab-ok';
+    document.getElementById('mm-badge').textContent='ACTIVE';
+  }
+}
+
+// ══ MAIN LOAD ═════════════════════════════════════════════════
+async function loadAll(){
+  try{
+    const [live, stats, trades, arb] = await Promise.all([
+      api('/api/dashboard/live'),
+      api('/api/public/stats'),
+      api('/api/trades?limit=50'),
+      api('/api/arb/stats'),
+    ]);
+
+    setOnline(!!(live||stats));
+    _liveData = live || {};
+    _statsData = stats || {};
+    _tradesData = trades || [];
+
+    const merged = {...(live||{}), ...(stats||{})};
+
+    renderHome(_liveData, _statsData);
+    renderTrading(_liveData, _statsData, _tradesData);
+    renderSystem(_liveData);
+    renderHft(_liveData, _statsData);
+    renderVault(_liveData);
+
+    // Earn on its own
+    const earnData = await api('/api/earn/status');
+    if(earnData){ _earnData = earnData; renderEarn(earnData, arb); }
+    else { renderEarn({}, arb); }
+
+  }catch(e){
+    console.error('loadAll error', e);
+    setOnline(false);
+  }
+}
+
+async function loadEarn(){
+  if(Object.keys(_earnData).length) return; // already loaded
+  const [earn, arb] = await Promise.all([api('/api/earn/status'), api('/api/arb/stats')]);
+  if(earn){ _earnData=earn; renderEarn(earn, arb); }
+}
+
+// ══ AUTO REFRESH ══════════════════════════════════════════════
+function startAutoRefresh(){
+  clearInterval(_refreshTimer);
+  _refreshTimer = setInterval(loadAll, 30000);
+}
+
+// ══ INIT ══════════════════════════════════════════════════════
+function init(){
+  // Load URL/Key from localStorage
+  const savedUrl = localStorage.getItem(LS_URL);
+  const savedKey = localStorage.getItem(LS_KEY);
+
+  if(!savedUrl && !savedKey){
+    // First time setup
+    setTimeout(toggleSettings, 500);
+  }
+
+  initPnlChart();
+  loadAll();
+  startAutoRefresh();
+}
+
+window.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>
