@@ -16189,6 +16189,11 @@ async def dashboard_live(x_api_key: str = Header(None)):  # v10.11.5 C-04: soft-
     return {
         "ts": time.time(),
         "version": app.version,
+        # v10.20.28: CRM — uptime
+        "uptime_seconds": round(time.time() - _quantum_ops_state["engineer"]["uptime_start"]),
+        # v10.20.28: CRM — quantum_ops agent statuses
+        "quantum_ops": {k: {"status": v.get("status", "idle"), "last_check": v.get("last_check") or v.get("last_run") or v.get("last_entry")}
+                        for k, v in _quantum_ops_state.items()},
         # System state
         "system": {
             "paused": SYSTEM_PAUSED,

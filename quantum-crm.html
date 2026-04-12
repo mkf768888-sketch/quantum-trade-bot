@@ -903,93 +903,91 @@ function pnlClass(v){ const n=parseFloat(v); if(n>0) return 'pnl-pos'; if(n<0) r
 // ══ RENDER FUNCTIONS ══════════════════════════════════════════
 
 function renderHome(live, stats){
-  // Balance
-  const bal = live?.balances || stats?.balance || {};
-  const totalBal = (parseFloat(bal.spot_usdt||0)+parseFloat(bal.futures_equity||0)+parseFloat(bal.bybit_usdt||0)) ||
-                   parseFloat(stats?.balance?.total_usdt||0) || 0;
+  // ── Balance ── stats.balance.{spot_usdt, futures_equity, bybit_fund_usdt, total_usdt}
+  const bal = stats?.balance || {};
+  const spotU  = parseFloat(bal.spot_usdt||0);
+  const futU   = parseFloat(bal.futures_equity||0);
+  const bbU    = parseFloat(bal.bybit_fund_usdt||0);
+  const totalBal = parseFloat(bal.total_usdt||0) || (spotU+futU+bbU) || 0;
   document.getElementById('m-balance').textContent = fmtUsd(totalBal);
-  document.getElementById('m-balance-sub').textContent = `KC: ${fmtUsd(bal.spot_usdt||0)} | BB: ${fmtUsd(bal.bybit_usdt||0)}`;
+  document.getElementById('m-balance-sub').textContent = `KC: ${fmtUsd(spotU+futU)} | BB: ${fmtUsd(bbU)}`;
 
-  // Win Rate
-  const wr = stats?.win_rate ?? live?.win_rate;
-  const tot = stats?.total_trades ?? live?.total_trades ?? 0;
-  const wins = stats?.wins ?? 0;
-  document.getElementById('m-winrate').textContent = wr!=null ? wr+'%' : '—';
+  // ── Win Rate ── stats.trading.win_rate / .total / .wins
+  const trd = stats?.trading || {};
+  const wr  = trd.win_rate ?? live?.performance?.winrate;
+  const tot = trd.total ?? live?.performance?.total_trades ?? 0;
+  const wins = trd.wins ?? live?.performance?.wins ?? 0;
+  document.getElementById('m-winrate').textContent = wr != null ? wr + '%' : '0%';
   document.getElementById('m-winrate-sub').textContent = `из ${tot} сделок`;
 
-  // Uptime
-  const uptime = live?.uptime_seconds ?? _liveData?.uptime_seconds;
+  // ── Uptime ── live.uptime_seconds (added v10.20.28)
+  const uptime = live?.uptime_seconds;
   document.getElementById('m-uptime').textContent = uptime ? fmtUptime(uptime) : '—';
 
-  // Q-Score
-  const qs = live?.q_score ?? live?.min_q_score ?? 77;
-  document.getElementById('m-qscore').textContent = qs ?? '—';
+  // ── Q-Score ── live.trading.last_q_score / min_q_score
+  const qs = live?.trading?.last_q_score ?? live?.trading?.min_q_score ?? 77;
+  document.getElementById('m-qscore').textContent = qs;
+  document.getElementById('m-qscore-sub').textContent = `порог: ${live?.trading?.min_q_score ?? stats?.settings?.min_q_score ?? 77}`;
 
-  // PnL
-  const totalPnl = parseFloat(stats?.total_pnl ?? live?.total_pnl ?? 0);
+  // ── PnL ── stats.trading.total_pnl / live.performance.total_pnl
+  const totalPnl = parseFloat(trd.total_pnl ?? live?.performance?.total_pnl ?? 0);
   const pnlEl = document.getElementById('m-total-pnl');
   pnlEl.textContent = fmtPnl(totalPnl) + ' USDT';
-  pnlEl.className = 'metric-value ' + pnlClass(totalPnl);
+  pnlEl.className = pnlClass(totalPnl);
+  pnlEl.style.fontSize = '20px'; pnlEl.style.fontWeight = '800';
 
-  // F&G
-  const fg = stats?.fear_greed ?? live?.fear_greed;
-  if(fg){
-    const fgEl = document.getElementById('m-fg');
-    const fgVal = parseInt(fg.value||fg||50);
-    fgEl.textContent = fgVal;
-    fgEl.className = fgVal<=25?'mv-red':fgVal<=45?'mv-gold':fgVal<=60?'mv-cyan':'mv-green';
-    fgEl.style.fontSize='18px';fgEl.style.fontWeight='800';
-    document.getElementById('m-fg-label').textContent = fg.label||fg.classification||'';
-  }
+  // ── F&G ── stats.fear_greed.{value, label}  live.macro.{fear_greed, fg_label}
+  const fg = stats?.fear_greed;
+  const fgVal = parseInt(fg?.value ?? live?.macro?.fear_greed ?? 50);
+  const fgLbl = fg?.label ?? live?.macro?.fg_label ?? '';
+  const fgEl = document.getElementById('m-fg');
+  fgEl.textContent = fgVal;
+  fgEl.style.fontSize='18px'; fgEl.style.fontWeight='800';
+  fgEl.className = fgVal<=25?'mv-red':fgVal<=45?'mv-gold':fgVal<=60?'mv-cyan':'mv-green';
+  document.getElementById('m-fg-label').textContent = fgLbl;
 
-  // PnL Chart
-  const series = live?.pnl_series ?? live?.pnl_chart;
+  // ── PnL Chart ── live.pnl_series [{ts, pnl}]
+  const series = live?.pnl_series;
   if(series?.length) updatePnlChart(series);
   else if(!_pnlChart) initPnlChart();
 
-  // Portfolio Pie
-  const balMap = live?.balance_map;
-  if(balMap && Object.keys(balMap).length){
-    const slices = Object.entries(balMap).filter(([_,v])=>parseFloat(v)>0).map(([k,v])=>({label:k, value:parseFloat(v)}));
-    if(slices.length) updatePieChart(slices);
-  } else if(totalBal>0){
-    const slices=[];
-    if(bal.spot_usdt>0) slices.push({label:'KC Spot',value:parseFloat(bal.spot_usdt)});
-    if(bal.futures_equity>0) slices.push({label:'KC Futures',value:parseFloat(bal.futures_equity)});
-    if(bal.bybit_usdt>0) slices.push({label:'BB Spot',value:parseFloat(bal.bybit_usdt)});
-    if(slices.length) updatePieChart(slices);
-  }
+  // ── Portfolio Pie ── stats.balance breakdown
+  const slices = [];
+  if(spotU > 0)  slices.push({label:'KC Spot', value: spotU});
+  if(futU > 0)   slices.push({label:'KC Futures', value: futU});
+  if(bbU > 0)    slices.push({label:'BB Fund', value: bbU});
+  if(slices.length) updatePieChart(slices);
 
-  // MiroFish
-  const mf = live?.mirofish ?? live?.mirofish_last;
+  // ── MiroFish ── stats.mirofish.{bullish, bearish, direction, conviction, consensus}
+  const mf = stats?.mirofish;
   if(mf){
-    const buy=parseInt(mf.buy_pct??mf.buy_count??0);
-    const sell=parseInt(mf.sell_pct??mf.sell_count??0);
-    const hold=100-buy-sell;
-    document.getElementById('mf-buy-pct').textContent = buy+'%';
-    document.getElementById('mf-sell-pct').textContent = sell+'%';
-    document.getElementById('mf-hold-pct').textContent = hold+'%';
-    document.getElementById('mf-bar-buy').style.width = buy+'%';
-    document.getElementById('mf-bar-sell').style.width = sell+'%';
-    document.getElementById('mf-decision').textContent = mf.decision ? '🎯 '+mf.decision : 'Нет данных';
-    document.getElementById('mf-conviction').textContent = mf.conviction ? 'Conviction: '+mf.conviction+'/10' : '';
+    const buy  = parseInt(mf.bullish ?? 0);
+    const sell = parseInt(mf.bearish ?? 0);
+    const hold = Math.max(0, 100 - buy - sell);
+    document.getElementById('mf-buy-pct').textContent  = buy + '%';
+    document.getElementById('mf-sell-pct').textContent = sell + '%';
+    document.getElementById('mf-hold-pct').textContent = hold + '%';
+    document.getElementById('mf-bar-buy').style.width  = buy + '%';
+    document.getElementById('mf-bar-sell').style.width = sell + '%';
+    document.getElementById('mf-decision').textContent = mf.direction ? '🎯 ' + mf.direction : 'Нет данных';
+    document.getElementById('mf-conviction').textContent = mf.conviction ? `Conviction: ${mf.conviction}/10 · ${mf.consensus||''}` : '';
   }
 
-  // Commander
-  const cmd = live?.commander ?? live?.commander_state;
+  // ── Commander ── stats.commander.{market_phase, insights, opportunities, last_run}
+  const cmd = stats?.commander;
   if(cmd){
-    const ts = cmd.last_run ?? cmd.timestamp;
-    document.getElementById('cmd-time').textContent = ts ? fmtTs(ts) : '';
-    const insight = cmd.top_insights?.[0] ?? cmd.insight ?? cmd.channel_post ?? cmd.priority_action;
-    document.getElementById('cmd-insight').textContent = insight || 'Ожидание следующего цикла...';
-    document.getElementById('cmd-priority').textContent = cmd.priority_action ?? cmd.pareto_action ?? '—';
+    document.getElementById('cmd-time').textContent  = cmd.last_run ? fmtTs(cmd.last_run) : '';
+    const insight = cmd.insights?.[0] ?? cmd.opportunities?.[0] ?? '';
+    document.getElementById('cmd-insight').textContent  = insight || `Рынок: ${cmd.market_phase||'—'} · Цикл ${cmd.cycle||0}`;
+    document.getElementById('cmd-priority').textContent = cmd.insights?.[1] ?? cmd.opportunities?.[1] ?? cmd.market_phase ?? '—';
   }
 
-  // Guardian alerts
-  const alerts = live?.guardian_alerts ?? live?.ops_guardian?.alerts ?? [];
+  // ── Guardian alerts ── live.quantum_ops.guardian
+  const guardianState = live?.quantum_ops?.guardian ?? {};
+  const alerts = guardianState.alerts ?? [];
   const alertContainer = document.getElementById('guardian-alerts');
-  if(alerts && alerts.length){
-    alertContainer.innerHTML = '<div class="section-title">🛡️ СТРАЖ — Алерты</div>'+
+  if(alerts.length){
+    alertContainer.innerHTML = '<div class="section-title">🛡️ СТРАЖ — Алерты</div>' +
       alerts.slice(0,3).map(a=>`
         <div class="alert-banner warn">
           <div class="alert-icon">⚠️</div>
@@ -1002,42 +1000,53 @@ function renderHome(live, stats){
         <div><div class="alert-text" style="color:var(--green)">СТРАЖ: Аномалий не обнаружено</div></div>
       </div>`;
   }
+
+  // ── F&G extreme warning (fear < 15 = trading blocked) ──
+  if(fgVal < 15){
+    alertContainer.innerHTML += `
+      <div class="alert-banner">
+        <div class="alert-icon">🚫</div>
+        <div><div class="alert-text">F&G = ${fgVal} (Extreme Fear) — Покупки ЗАБЛОКИРОВАНЫ</div></div>
+      </div>`;
+  }
 }
 
 function renderTrading(live, stats, trades){
-  // Open positions
-  const openTrades = (trades||[]).filter(t=>t.status==='open');
+  // Open positions from live.positions
+  const openPos = live?.positions ?? [];
   const openEl = document.getElementById('open-pos-list');
-  if(openTrades.length){
-    openEl.innerHTML = openTrades.map(t=>`
+  if(openPos.length){
+    openEl.innerHTML = openPos.map(t=>`
       <div class="trade-row">
         <div class="trade-side ts-open">OPEN</div>
         <div>
           <div class="trade-sym">${t.symbol||'?'}</div>
-          <div class="trade-sub">${fmtTs(t.ts)} · ${t.account||'spot'}</div>
+          <div class="trade-sub">${fmtTs(t.open_ts||t.ts)} · ${t.exchange||t.account||'spot'}</div>
         </div>
         <div>
-          <div class="trade-pnl ${t.pnl!=null?pnlClass(t.pnl):'pnl-neu'}">${t.pnl!=null?fmtPnl(t.pnl):'—'}</div>
-          <div style="font-size:9px;color:var(--text3);text-align:right">${fmtUsd(t.usdt_size||t.size_usdt||t.price)}</div>
+          <div class="trade-pnl pnl-neu">${fmtUsd(t.size_usdt||t.usdt_size)}</div>
+          <div style="font-size:9px;color:var(--text3);text-align:right">entry $${parseFloat(t.entry||0).toFixed(4)}</div>
         </div>
       </div>`).join('');
   } else {
     openEl.innerHTML='<div class="empty-state"><div class="es-icon">📭</div><div class="es-text">Нет открытых позиций</div></div>';
   }
 
-  // Trade history
-  _tradesData = (trades||[]).filter(t=>t.status==='closed'||t.status==='open');
+  // Trade history from live.trade_history OR api/trades
+  const hist = live?.trade_history ?? trades ?? [];
+  _tradesData = hist;
   renderTradeFilter();
 
-  // Stats
-  const tot = stats?.total_trades ?? 0;
-  const wins = stats?.wins ?? 0;
-  const tpnl = parseFloat(stats?.total_pnl??0);
+  // Stats — stats.trading.*
+  const trd = stats?.trading || {};
+  const tot  = trd.total ?? live?.performance?.total_trades ?? 0;
+  const twins = trd.wins ?? live?.performance?.wins ?? 0;
+  const tpnl = parseFloat(trd.total_pnl ?? live?.performance?.total_pnl ?? 0);
   const totEl = document.getElementById('t-total-pnl');
   totEl.textContent = fmtPnl(tpnl);
-  totEl.className = 'metric-value '+pnlClass(tpnl);
-  document.getElementById('t-total-trades').textContent = tot||'—';
-  document.getElementById('t-win-count').textContent = `победа: ${wins}`;
+  totEl.className = 'metric-value ' + pnlClass(tpnl);
+  document.getElementById('t-total-trades').textContent = tot || '0';
+  document.getElementById('t-win-count').textContent = `победа: ${twins} из ${tot}`;
 }
 
 function setTradeFilter(f, el){
@@ -1161,13 +1170,13 @@ function renderSystem(live){
     </div>`).join('');
   }
 
-  // Activity log
-  const activity = live?.recent_activity ?? live?.activity_log ?? [];
+  // Activity log  — live.activity (list of strings or {text, ts})
+  const activity = live?.activity ?? live?.recent_activity ?? [];
   const actEl = document.getElementById('activity-list');
   if(activity.length){
-    actEl.innerHTML = activity.slice(0,10).map(a=>{
-      const msg = a.message??a.text??String(a);
-      const ts = a.ts??a.timestamp;
+    actEl.innerHTML = activity.slice(0,12).map(a=>{
+      const msg = typeof a==='string' ? a : (a.message??a.text??String(a));
+      const ts = typeof a==='object' ? (a.ts??a.timestamp) : null;
       return `<div class="qa-row">
         <div class="qa-icon">📝</div>
         <div class="qa-name" style="font-size:10px">${msg}</div>
@@ -1201,78 +1210,82 @@ async function runQA(){
   showToast('✅ QA завершён: '+checks.length+' проверок');
 }
 
-function renderVault(live){
-  const cmd = live?.commander ?? live?.commander_state ?? {};
+function renderVault(live, stats){
+  // Commander comes from stats.commander (public/stats includes it)
+  const cmd = stats?.commander ?? {};
 
-  // Auditor entries
-  const auditLogs = live?.ops_auditor_logs ?? live?.auditor_logs ?? cmd.auditor_logs ?? [];
+  // Auditor entries from OPS state (future)
   const auditEl = document.getElementById('vault-audit-body');
-  if(auditLogs.length){
-    auditEl.innerHTML = auditLogs.slice(0,5).map(l=>`
-      <div style="margin-bottom:6px;padding-bottom:6px;border-bottom:1px solid rgba(124,58,237,.08)">
-        <div style="font-weight:700;color:var(--text)">${l.symbol??'—'}: ${l.result??'—'}</div>
-        <div style="color:var(--text2);margin-top:2px">${l.what_worked??l.note??''}</div>
-        <div style="color:var(--text3);font-size:9px;margin-top:2px">${fmtTs(l.ts)}</div>
-      </div>`).join('');
-  } else {
-    auditEl.textContent = 'Данные аудита появятся после первой завершённой сделки';
-  }
+  auditEl.textContent = 'Данные аудита появятся после первой завершённой сделки в текущей сессии';
 
-  // Self-learning / oracle insights
-  const insights = live?.self_learning ?? live?.learning_insights ?? cmd.opportunities ?? [];
+  // Self-learning insights — stats.commander.opportunities
+  const opps = cmd.opportunities ?? [];
   const learnEl = document.getElementById('vault-learning-body');
-  if(insights.length){
-    learnEl.innerHTML = (Array.isArray(insights)?insights:[insights]).slice(0,5).map(i=>`
-      <div style="margin-bottom:4px">• ${typeof i==='string'?i:i.text??i.insight??JSON.stringify(i)}</div>`).join('');
+  if(opps.length){
+    learnEl.innerHTML = opps.slice(0,5).map(i=>`
+      <div style="margin-bottom:4px">💡 ${typeof i==='string'?i:i.text??JSON.stringify(i)}</div>`).join('');
   } else {
     learnEl.textContent = 'Накапливается история сделок для ML-анализа';
   }
 
-  // Commander report
-  const chanPost = cmd.channel_post ?? cmd.top_insights?.[0];
-  document.getElementById('vault-cmd-body').textContent = chanPost ?? 'Ожидание Commander цикла (каждые 4 часа)';
-  document.getElementById('vault-cmd-time').textContent = cmd.last_run ? 'Обновлено: '+fmtTs(cmd.last_run) : '';
+  // Commander report — stats.commander.insights + market_phase
+  const ins = cmd.insights ?? [];
+  document.getElementById('vault-cmd-body').innerHTML = ins.length
+    ? ins.map(i=>`<div style="margin-bottom:6px">• ${i}</div>`).join('')
+    : `Рынок: ${cmd.market_phase||'—'} · Цикл ${cmd.cycle||0} · Money score: ${cmd.money_working_score||0}`;
+  document.getElementById('vault-cmd-time').textContent = cmd.last_run ? 'Commander: '+fmtTs(cmd.last_run) : 'Commander ожидает следующего цикла (каждые 4ч)';
 
-  // Blind spots
-  const bs = cmd.blind_spots ?? [];
-  document.getElementById('vault-blindspots-body').innerHTML = bs.length
-    ? bs.map(b=>`<div style="margin-bottom:4px">⚠️ ${typeof b==='string'?b:b.text??b}</div>`).join('')
-    : 'Слепые зоны не обнаружены в последнем цикле';
+  // Blind spots — (stored in _quantum_commander_state on server, not yet returned to public API)
+  document.getElementById('vault-blindspots-body').innerHTML =
+    '<div style="color:var(--text3)">Blind spots в следующем /commander отчёте. Команда: /commander в Telegram.</div>';
 
   // Pre-mortem
-  const pm = cmd.pre_mortem ?? [];
-  document.getElementById('vault-premortem').innerHTML = pm.length
-    ? pm.map(p=>`<div style="margin-bottom:4px">💀 ${typeof p==='string'?p:p.text??p}</div>`).join('')
-    : 'Данные появятся после следующего Commander цикла';
+  document.getElementById('vault-premortem').textContent =
+    'Pre-mortem анализ: /commander в Telegram → раздел PRE-MORTEM';
 
   // Wargame
-  const wg = cmd.wargame;
-  document.getElementById('vault-wargame').textContent = wg ?? 'Анализ рыночных ловушек в следующем цикле';
+  document.getElementById('vault-wargame').textContent =
+    'Wargame анализ: /commander в Telegram → раздел WARGAME';
 
   // Pareto
-  const pa = cmd.pareto_action;
-  document.getElementById('vault-pareto').textContent = pa ?? 'Pareto-действие: нет данных';
+  document.getElementById('vault-pareto').textContent =
+    cmd.opportunities?.[0] ?? 'Pareto-действие появится после следующего Commander цикла';
+
+  // ML score from stats
+  const ml = stats?.ml_score ?? {};
+  if(ml.active){
+    document.getElementById('vault-learning-body').innerHTML += `<br><div style="color:var(--green);font-size:9px;margin-top:8px">✅ ML модель активна · ${ml.trades_used||0} сделок в обучении</div>`;
+  }
 }
 
 function renderHft(live, stats){
-  // Prices for spread table
-  const prices = live?.prices ?? live?.price_snapshot ?? {};
+  // live.prices = {symbol: price_float}  OR  stats.prices = {symbol: {price, change}}
+  const lPrices = live?.prices ?? {};        // {"BTC-USDT": 84000, ...}
+  const sPrices = stats?.prices ?? {};       // {"BTC-USDT": {price: 84000, change: -1.2}}
+  const getPrice = sym => {
+    const lv = lPrices[sym];
+    if(lv) return parseFloat(lv);
+    const sv = sPrices[sym];
+    if(sv) return parseFloat(sv?.price ?? sv ?? 0);
+    return 0;
+  };
   const pairs = [
-    {sym:'BTCUSDT', lbl:'BTC/USDT'},
-    {sym:'ETHUSDT', lbl:'ETH/USDT'},
-    {sym:'SOLUSDT', lbl:'SOL/USDT'},
+    {kc:'BTC-USDT', lbl:'BTC/USDT'},
+    {kc:'ETH-USDT', lbl:'ETH/USDT'},
+    {kc:'SOL-USDT', lbl:'SOL/USDT'},
+    {kc:'BNB-USDT', lbl:'BNB/USDT'},
   ];
   const tbody = document.getElementById('spread-tbody');
-  if(Object.keys(prices).length){
+  const hasData = Object.keys(lPrices).length || Object.keys(sPrices).length;
+  if(hasData){
     tbody.innerHTML = pairs.map(p=>{
-      const kc = prices['BTC-USDT']??prices[p.sym]??prices[p.sym.replace('USDT','-USDT')]??0;
-      const bb = prices[p.sym]??prices[p.sym.replace('-','')]??0;
-      const spread = (kc&&bb) ? ((Math.abs(kc-bb)/((kc+bb)/2))*100).toFixed(4) : '—';
+      const price = getPrice(p.kc);
+      const chg = sPrices[p.kc]?.change ?? 0;
       return `<tr>
         <td style="font-weight:700">${p.lbl}</td>
-        <td>${kc?'$'+parseFloat(kc).toLocaleString():'—'}</td>
-        <td>${bb?'$'+parseFloat(bb).toLocaleString():'—'}</td>
-        <td class="${parseFloat(spread)>0?'spread-pos':'spread-neg'}">${spread!=='—'?spread+'%':'—'}</td>
+        <td>${price ? '$'+parseFloat(price).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'}</td>
+        <td class="${parseFloat(chg)>=0?'spread-pos':'spread-neg'}">${chg ? (chg>0?'+':'')+parseFloat(chg).toFixed(2)+'%' : '—'}</td>
+        <td style="color:var(--text3)">KC/BB</td>
       </tr>`;
     }).join('');
   }
@@ -1292,42 +1305,46 @@ function renderHft(live, stats){
 
 // ══ MAIN LOAD ═════════════════════════════════════════════════
 async function loadAll(){
+  // Step 1: fetch data (can set offline if all fail)
+  let live=null, stats=null, trades=null, arb=null;
   try{
-    const [live, stats, trades, arb] = await Promise.all([
+    [live, stats, trades, arb] = await Promise.all([
       api('/api/dashboard/live'),
       api('/api/public/stats'),
       api('/api/trades?limit=50'),
       api('/api/arb/stats'),
     ]);
+  }catch(e){ console.error('fetch error', e); }
 
-    setOnline(!!(live||stats));
-    _liveData = live || {};
-    _statsData = stats || {};
-    _tradesData = trades || [];
+  // Step 2: determine online status based on data availability (not render errors)
+  setOnline(!!(live||stats));
+  if(live)  _liveData  = live;
+  if(stats) _statsData = stats;
+  if(trades) _tradesData = trades;
 
-    const merged = {...(live||{}), ...(stats||{})};
+  // Step 3: render each section independently — catch per-section to avoid cascading
+  const safeRender = (fn, label) => { try{ fn(); }catch(e){ console.warn('render error ['+label+']', e); }};
 
-    renderHome(_liveData, _statsData);
-    renderTrading(_liveData, _statsData, _tradesData);
-    renderSystem(_liveData);
-    renderHft(_liveData, _statsData);
-    renderVault(_liveData);
+  safeRender(()=>renderHome(_liveData, _statsData),              'home');
+  safeRender(()=>renderTrading(_liveData, _statsData, _tradesData), 'trading');
+  safeRender(()=>renderSystem(_liveData),                         'system');
+  safeRender(()=>renderHft(_liveData, _statsData),               'hft');
+  safeRender(()=>renderVault(_liveData, _statsData),             'vault');
 
-    // Earn on its own
+  // Earn (separate call — may be slow)
+  try{
     const earnData = await api('/api/earn/status');
-    if(earnData){ _earnData = earnData; renderEarn(earnData, arb); }
-    else { renderEarn({}, arb); }
-
-  }catch(e){
-    console.error('loadAll error', e);
-    setOnline(false);
-  }
+    if(earnData){ _earnData = earnData; safeRender(()=>renderEarn(earnData, arb), 'earn'); }
+    else { safeRender(()=>renderEarn({}, arb), 'earn-empty'); }
+  }catch(e){ console.warn('earn fetch error', e); }
 }
 
 async function loadEarn(){
   if(Object.keys(_earnData).length) return; // already loaded
-  const [earn, arb] = await Promise.all([api('/api/earn/status'), api('/api/arb/stats')]);
-  if(earn){ _earnData=earn; renderEarn(earn, arb); }
+  try{
+    const [earn, arb] = await Promise.all([api('/api/earn/status'), api('/api/arb/stats')]);
+    if(earn){ _earnData=earn; try{ renderEarn(earn, arb); }catch(e){ console.warn('earn render', e); } }
+  }catch(e){ console.warn('loadEarn error', e); }
 }
 
 // ══ AUTO REFRESH ══════════════════════════════════════════════
